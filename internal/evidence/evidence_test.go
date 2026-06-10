@@ -29,6 +29,28 @@ func TestLedgerRecordsSuccessAndFailureReceipts(t *testing.T) {
 	}
 }
 
+// 硬件/技能流程的验证走 MCP 工具(不产生 bash 收据)。complete_step 的
+// verification command 填工具名时,成功调用过的工具应算有效证据——否则模型
+// 反复撞「no matching successful receipt」(贪吃蛇会话实测的最大慢因)。
+func TestLedgerVerifiesSuccessfulToolCall(t *testing.T) {
+	ledger := NewLedger()
+	ledger.Record(ReceiptFromToolCall("mcp__hardware__hardware_project_validate",
+		json.RawMessage(`{"project_dir":"/p"}`), true, true))
+	ledger.Record(ReceiptFromToolCall("mcp__hardware__hardware_detect",
+		json.RawMessage(`{"project_dir":"/p"}`), false, true)) // 失败的不算
+
+	// 模型常填工具名 + 备注,如 "hardware_project_validate (pio run)"。
+	if !ledger.HasSuccessfulCommand("hardware_project_validate (pio run)") {
+		t.Fatal("成功的 MCP 验证工具应被认作有效证据")
+	}
+	if ledger.HasSuccessfulCommand("hardware_detect") {
+		t.Fatal("失败的工具调用不应被认作证据")
+	}
+	if ledger.HasSuccessfulCommand("hardware_project_audit") {
+		t.Fatal("没调用过的工具不应被认作证据")
+	}
+}
+
 func TestLedgerMatchesFileReadAndWriteReceipts(t *testing.T) {
 	ledger := NewLedger()
 	ledger.Record(Receipt{ToolName: "read_file", Success: true, Paths: []string{`internal/tool/builtin/completestep.go`}, Read: true})

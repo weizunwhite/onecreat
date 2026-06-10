@@ -2836,10 +2836,19 @@ func runArduinoMonitor(args map[string]any) (string, error) {
 		return out, err
 	}
 	if !commandOutputHasBody(out) {
-		return out, errors.New("arduino monitor produced no serial output; verify port, baud rate, board reset, and firmware Serial.begin")
+		return out, errors.New(serialNoOutputGuidance)
 	}
 	return out, nil
 }
+
+// serialNoOutputGuidance 是「采不到串口输出」时给模型的明确指引。实测(贪吃蛇会话)
+// 模型采不到输出后会自己用 bash 的 screen/cu/cat/timeout 反复瞎试十几次(还撞上
+// macOS 没有 timeout 命令),既慢又徒劳。这里直接劝阻、给唯一合理下一步。
+const serialNoOutputGuidance = "串口没采到输出(采集已用 arduino-cli 内置超时正常结束,不是命令失败)。" +
+	"没输出通常是硬件侧:板子没在运行、没接好、波特率不符,或固件缺 Serial.begin。" +
+	"不要再用 bash 的 screen / cu / cat / timeout 反复尝试采集——这些在本机不可靠,且 macOS 默认没有 timeout 命令。" +
+	"如果确认开发板已接好且程序在跑,检查波特率和接线后,最多再重试一次 arduino_monitor_sample;" +
+	"否则如实报告「串口无输出,真机运行待确认」,不要伪造串口证据。"
 
 func runPlatformIO(args map[string]any) (string, error) {
 	dir, err := requirePath(args, "project_dir")

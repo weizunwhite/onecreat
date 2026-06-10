@@ -95,11 +95,36 @@ func (l *Ledger) HasSuccessfulCommand(command string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, r := range l.receipts {
-		if r.Success && r.ToolName == "bash" && r.Command == command {
+		if !r.Success {
+			continue
+		}
+		// 精确的 bash 收据(原行为)。
+		if r.ToolName == "bash" && r.Command == command {
+			return true
+		}
+		// 工具型验证:硬件/技能流程的验证多走 MCP 工具(hardware_project_validate、
+		// hardware_detect 等)或内置工具,它们不产生 bash 收据、没有 Command 字段。
+		// 只要该工具成功调用过、且其核心名(剥掉 mcp__<server>__ 前缀)被模型填的
+		// verification command 提及,就认作有效验证——否则硬件流程里 complete_step
+		// 的证据收据永远凑不齐,模型会反复撞墙。
+		if core := toolCoreName(r.ToolName); core != "bash" && len(core) >= 4 && strings.Contains(command, core) {
 			return true
 		}
 	}
 	return false
+}
+
+// toolCoreName strips the "mcp__<server>__" namespace prefix from an MCP tool
+// name (mcp__hardware__hardware_project_validate → hardware_project_validate);
+// built-in tool names pass through unchanged.
+func toolCoreName(name string) string {
+	if rest := strings.TrimPrefix(name, "mcp__"); rest != name {
+		if i := strings.Index(rest, "__"); i >= 0 {
+			return rest[i+2:]
+		}
+		return rest
+	}
+	return name
 }
 
 func (l *Ledger) HasSuccessfulWrite(paths []string) bool {

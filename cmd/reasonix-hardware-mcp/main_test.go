@@ -1334,8 +1334,14 @@ func TestArduinoMonitorNoOutputIsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("runArduinoMonitor should fail when monitor exits without serial output:\n%s", out)
 	}
-	if !strings.Contains(err.Error(), "no serial output") || !strings.Contains(out, "$ arduino-cli monitor") {
-		t.Fatalf("unexpected no-output monitor result: err=%v out=%s", err, out)
+	// 没采到输出的指引必须:点明串口无输出、明确劝阻 bash 瞎试(screen 等)、
+	// 且仍保留原始命令行供排查。
+	msg := err.Error()
+	if !strings.Contains(msg, "串口") || !strings.Contains(msg, "screen") || !strings.Contains(msg, "不要") {
+		t.Fatalf("no-output guidance should warn against bash retries: %v", msg)
+	}
+	if !strings.Contains(out, "$ arduino-cli monitor") {
+		t.Fatalf("original monitor command line should be preserved: %s", out)
 	}
 }
 
