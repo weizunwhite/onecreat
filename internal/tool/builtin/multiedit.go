@@ -71,10 +71,10 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if p.Path == "" {
-		return "", fmt.Errorf("path is required")
+		return "", fmt.Errorf("path 必填")
 	}
 	if len(p.Edits) == 0 {
-		return "", fmt.Errorf("edits must not be empty")
+		return "", fmt.Errorf("edits 不能为空")
 	}
 	p.Path = resolveIn(m.workDir, p.Path)
 	if err := confine(m.roots, p.Path); err != nil {
@@ -83,7 +83,7 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	content, enc, err := readFileEncoded(p.Path)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", p.Path, err)
+		return "", fmt.Errorf("读取 %s 失败:%w", p.Path, err)
 	}
 
 	// Apply edits in order against the running in-memory buffer. Any failure
@@ -93,12 +93,12 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 	applied, fuzzy := 0, 0
 	for i, step := range p.Edits {
 		if step.OldString == "" {
-			return "", fmt.Errorf("edit %d: old_string is required", i+1)
+			return "", fmt.Errorf("edit %d:old_string 必填", i+1)
 		}
 		if step.ReplaceAll {
 			count := strings.Count(content, step.OldString)
 			if count == 0 {
-				return "", fmt.Errorf("edit %d: old_string not found", i+1)
+				return "", fmt.Errorf("edit %d:在文件中找不到 old_string——注意前面的 edit 可能已改动这段内容,请按改动后的内容写 old_string", i+1)
 			}
 			content = strings.ReplaceAll(content, step.OldString, step.NewString)
 			applied += count
@@ -107,9 +107,9 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 		start, end, note, ferr := findUniqueMatch(content, step.OldString)
 		switch {
 		case errors.Is(ferr, errEditNoMatch):
-			return "", fmt.Errorf("edit %d: old_string not found", i+1)
+			return "", fmt.Errorf("edit %d:在文件中找不到 old_string——注意前面的 edit 可能已改动这段内容,请按改动后的内容写 old_string", i+1)
 		case errors.Is(ferr, errEditNotUnique):
-			return "", fmt.Errorf("edit %d: old_string is not unique; add more surrounding context or set replace_all", i+1)
+			return "", fmt.Errorf("edit %d:old_string 出现多次——多带几行上下文使其唯一,或设置 replace_all", i+1)
 		case ferr != nil:
 			return "", fmt.Errorf("edit %d: %w", i+1, ferr)
 		}
@@ -121,7 +121,7 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if err := writeFileEncoded(p.Path, content, enc); err != nil {
-		return "", fmt.Errorf("write %s: %w", p.Path, err)
+		return "", fmt.Errorf("写入 %s 失败:%w", p.Path, err)
 	}
 	msg := fmt.Sprintf("multi_edit %s: %d edits applied (%d total replacements)", p.Path, len(p.Edits), applied)
 	if fuzzy > 0 {

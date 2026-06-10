@@ -98,7 +98,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// (RequireKey is false so the UI stays reachable) and then fail silently on the
 	// first request, showing as an empty/dead model. Surface the cause up front.
 	if !opts.RequireKey && entry.APIKeyEnv != "" && entry.APIKey() == "" {
-		sink.Emit(event.Event{Kind: event.Notice, Text: fmt.Sprintf("model %q is selected but its API key %s is not set — requests will fail until you set it", modelName, entry.APIKeyEnv)})
+		// 中文 + 给出两条可走的动线(桌面端设置面板 / 命令行环境变量),
+		// 新用户第一分钟最常撞的就是这里,提示必须能照着做。
+		sink.Emit(event.Event{Kind: event.Notice, Text: fmt.Sprintf("模型 %q 还没有配置 API Key(环境变量 %s 为空),发送消息会失败。解决:桌面端点顶栏「设置」→ 找到该模型服务商 → 填入 API Key 即可立刻生效;命令行则先 export %s=你的key 再重启。", modelName, entry.APIKeyEnv, entry.APIKeyEnv)})
 	}
 	jm := jobs.NewManager(sink)
 

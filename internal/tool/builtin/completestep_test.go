@@ -59,7 +59,7 @@ func TestCompleteStepAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid completion rejected: %v", err)
 	}
-	for _, want := range []string{"Add the parser", "2 evidence", "verification", "diff"} {
+	for _, want := range []string{"Add the parser", "2 条 evidence", "verification", "diff"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("ack %q missing %q", out, want)
 		}
@@ -98,7 +98,7 @@ func TestCompleteStepVerifiesHostReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("host-verified evidence rejected: %v", err)
 	}
-	if !strings.Contains(out, "host-verified 3") {
+	if !strings.Contains(out, "已验证 3") {
 		t.Fatalf("ack should report host verification, got %q", out)
 	}
 }
@@ -117,17 +117,17 @@ func TestCompleteStepRejectsUnverifiedHostEvidence(t *testing.T) {
 		{
 			name: "failed verification command",
 			body: `{"step":"x","result":"y","evidence":[{"kind":"verification","summary":"claimed tests","command":"go test ./..."}]}`,
-			want: "successful bash receipt",
+			want: "没有匹配到成功的执行记录",
 		},
 		{
 			name: "missing diff writer",
 			body: `{"step":"x","result":"y","evidence":[{"kind":"diff","summary":"claimed diff","paths":["other.go"]}]}`,
-			want: "successful writer receipt",
+			want: "没有成功写入记录",
 		},
 		{
 			name: "missing file receipt",
 			body: `{"step":"x","result":"y","evidence":[{"kind":"files","summary":"claimed file","paths":["other.go"]}]}`,
-			want: "successful read/write receipt",
+			want: "没有成功读/写记录",
 		},
 		{
 			name: "diff without path",
@@ -158,7 +158,7 @@ func TestCompleteStepAllowsManualAsUnverified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manual evidence should remain allowed: %v", err)
 	}
-	if !strings.Contains(out, "manual/unverified 1") {
+	if !strings.Contains(out, "人工/未验证 1") {
 		t.Fatalf("manual evidence should be marked unverified, got %q", out)
 	}
 }
@@ -184,7 +184,7 @@ func TestCompleteStepMatchesTodoReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatalf("todo-backed step rejected: %v", err)
 			}
-			if !strings.Contains(out, "todo-matched") {
+			if !strings.Contains(out, "对应 todo") {
 				t.Fatalf("ack should mention todo match, got %q", out)
 			}
 		})
@@ -208,7 +208,7 @@ func TestCompleteStepRejectsTodoMismatchAndPending(t *testing.T) {
 		step string
 		want string
 	}{
-		{name: "missing", step: "Ship parser", want: "matching todo_write item"},
+		{name: "missing", step: "Ship parser", want: "找不到对应项"},
 		{name: "pending", step: "Document parser", want: "pending"},
 		{name: "pending number", step: "2", want: "pending"},
 	}

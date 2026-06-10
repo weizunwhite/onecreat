@@ -305,7 +305,7 @@ func TestExecuteBatchFeedsReceiptsToCompleteStep(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
 	}
-	if !strings.Contains(results[1], "host-verified 1") {
+	if !strings.Contains(results[1], "已验证 1") {
 		t.Fatalf("complete_step did not see bash receipt: %q", results[1])
 	}
 }

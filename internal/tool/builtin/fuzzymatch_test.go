@@ -73,8 +73,8 @@ func TestEditFileFuzzyStillRequiresUnique(t *testing.T) {
 	_, err := editFile{}.Execute(t.Context(), argsJSON(t, map[string]any{
 		"path": f, "old_string": "x = 1\ny", "new_string": "x = 2\ny",
 	}))
-	if err == nil || !strings.Contains(err.Error(), "not unique") {
-		t.Fatalf("应报 not unique,err=%v", err)
+	if err == nil || !strings.Contains(err.Error(), "出现多次") {
+		t.Fatalf("应报不唯一,err=%v", err)
 	}
 	got, _ := os.ReadFile(f)
 	if string(got) != body {
@@ -88,8 +88,8 @@ func TestEditFileStillNotFound(t *testing.T) {
 	_, err := editFile{}.Execute(t.Context(), argsJSON(t, map[string]any{
 		"path": f, "old_string": "world", "new_string": "x",
 	}))
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("应报 not found,err=%v", err)
+	if err == nil || !strings.Contains(err.Error(), "找不到 old_string") {
+		t.Fatalf("应报找不到,err=%v", err)
 	}
 }
 

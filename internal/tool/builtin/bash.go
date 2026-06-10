@@ -82,7 +82,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if p.Command == "" {
-		return "", fmt.Errorf("command is required")
+		return "", fmt.Errorf("command 必填——请提供要执行的 shell 命令")
 	}
 
 	sh := b.resolved()
@@ -98,7 +98,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	if p.RunInBackground {
 		jm, ok := jobs.FromContext(ctx)
 		if !ok {
-			return "", fmt.Errorf("background execution is not available in this context")
+			return "", fmt.Errorf("当前环境不支持后台执行(run_in_background)——请去掉该参数直接运行")
 		}
 		workDir := b.workDir
 		// The job runs under the manager's session context (no 120s timeout), so it
@@ -133,11 +133,11 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	out := buf.String()
 
 	if ctx.Err() == context.DeadlineExceeded {
-		return out, fmt.Errorf("command timed out (> %s)", bashTimeout)
+		return out, fmt.Errorf("命令执行超时(超过 %s)——长任务请拆成小步骤,或用 run_in_background 放到后台", bashTimeout)
 	}
 	if err != nil {
 		// Non-zero exit: feed output and error back so the model can self-correct.
-		return out, fmt.Errorf("command exited: %w", err)
+		return out, fmt.Errorf("命令以非零状态退出:%w(输出已附上,请根据报错自行修正)", err)
 	}
 	return out, nil
 }

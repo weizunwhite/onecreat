@@ -42,7 +42,7 @@ func (w writeFile) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if p.Path == "" {
-		return "", fmt.Errorf("path is required")
+		return "", fmt.Errorf("path 必填")
 	}
 	p.Path = resolveIn(w.workDir, p.Path)
 	if err := confine(w.roots, p.Path); err != nil {
@@ -50,11 +50,11 @@ func (w writeFile) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 	if dir := filepath.Dir(p.Path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", fmt.Errorf("mkdir %s: %w", dir, err)
+			return "", fmt.Errorf("创建目录 %s 失败:%w", dir, err)
 		}
 	}
 	if err := os.WriteFile(p.Path, []byte(p.Content), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", p.Path, err)
+		return "", fmt.Errorf("写入 %s 失败:%w", p.Path, err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
 }

@@ -64,7 +64,7 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if p.Path == "" {
-		return "", fmt.Errorf("path is required")
+		return "", fmt.Errorf("path 必填")
 	}
 	p.Path = resolveIn(r.workDir, p.Path)
 	if p.Offset < 0 {
@@ -78,7 +78,7 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 	// an actionable message (and avoid the doubled "read X: read X:" the scanner's
 	// error would otherwise produce) so the model switches to the ls tool.
 	if info, err := os.Stat(p.Path); err == nil && info.IsDir() {
-		return "", fmt.Errorf("%s is a directory, not a file — use the ls tool to list it, or read a specific file inside it", p.Path)
+		return "", fmt.Errorf("%s 是目录而不是文件——用 ls 工具查看目录内容,或指定其中的具体文件", p.Path)
 	}
 
 	f, err := os.Open(p.Path)
@@ -118,7 +118,7 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 	}
 
 	if bytes.IndexByte(peek, 0) >= 0 {
-		return "", fmt.Errorf("binary file %s (NUL byte detected); use `bash hexdump` or another tool", p.Path)
+		return "", fmt.Errorf("%s 是二进制文件(检测到 NUL 字节),无法按文本读取;需要时用 bash 的 hexdump 等工具查看", p.Path)
 	}
 
 	// Read up to a bounded sample for encoding detection, then stream the rest —

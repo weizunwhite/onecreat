@@ -94,7 +94,7 @@ func TestReadFileDirectory(t *testing.T) {
 	}
 	// The message must be actionable (point at ls) and not the doubled
 	// "read X: read X:" the raw scanner error produced.
-	if !strings.Contains(err.Error(), "directory") || !strings.Contains(err.Error(), "ls") {
+	if !strings.Contains(err.Error(), "目录") || !strings.Contains(err.Error(), "ls") {
 		t.Errorf("error should tell the model to use ls, got: %v", err)
 	}
 	if strings.Count(err.Error(), "read "+dir) > 1 {
@@ -134,7 +134,7 @@ func TestReadFileBinary(t *testing.T) {
 	os.WriteFile(f, []byte{0x7f, 'E', 'L', 'F', 0, 0, 0}, 0o644)
 
 	_, err := readFile{}.Execute(context.Background(), argsJSON(t, map[string]any{"path": f}))
-	if err == nil || !strings.Contains(err.Error(), "binary") {
+	if err == nil || !strings.Contains(err.Error(), "二进制") {
 		t.Errorf("expected binary-file error, got %v", err)
 	}
 }

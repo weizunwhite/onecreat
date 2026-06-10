@@ -86,21 +86,21 @@ func (completeStep) Execute(ctx context.Context, args json.RawMessage) (string, 
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if strings.TrimSpace(p.Step) == "" {
-		return "", fmt.Errorf("step is required — name the plan step you are completing")
+		return "", fmt.Errorf("step 必填——写明你正在完成计划里的哪一步")
 	}
 	if strings.TrimSpace(p.Result) == "" {
-		return "", fmt.Errorf("result is required — state what is now true after finishing this step")
+		return "", fmt.Errorf("result 必填——说明这一步完成后什么已成为事实")
 	}
 	if len(p.Evidence) == 0 {
-		return "", fmt.Errorf("at least one evidence item is required — don't mark a step complete without showing why it's done (run a check, cite the diff, or confirm manually)")
+		return "", fmt.Errorf("至少需要 1 条 evidence——不能没有证据就标记完成(运行过的校验、本轮的代码改动,或人工确认)")
 	}
 	kinds := make([]string, 0, len(p.Evidence))
 	for i, e := range p.Evidence {
 		if !validEvidenceKinds[e.Kind] {
-			return "", fmt.Errorf("evidence %d: invalid kind %q (want verification|diff|files|manual)", i+1, e.Kind)
+			return "", fmt.Errorf("evidence %d:kind %q 无效(只能是 verification|diff|files|manual)", i+1, e.Kind)
 		}
 		if strings.TrimSpace(e.Summary) == "" {
-			return "", fmt.Errorf("evidence %d: summary is required — the evidence is the summary, not just its kind", i+1)
+			return "", fmt.Errorf("evidence %d:summary 必填——证据内容写在 summary 里,不能只给 kind", i+1)
 		}
 		kinds = append(kinds, e.Kind)
 	}
@@ -115,13 +115,13 @@ func (completeStep) Execute(ctx context.Context, args json.RawMessage) (string, 
 	}
 	hostStatus := ""
 	if _, ok := evidence.FromContext(ctx); ok {
-		hostStatus = fmt.Sprintf(" Host evidence: host-verified %d, manual/unverified %d.", hostVerified, manualUnverified)
+		hostStatus = fmt.Sprintf(" 主机校验:已验证 %d,人工/未验证 %d。", hostVerified, manualUnverified)
 	}
 	todoStatus := ""
 	if hasTodo {
-		todoStatus = fmt.Sprintf(" Todo step: todo-matched %d.", todoMatch.Index)
+		todoStatus = fmt.Sprintf(" 对应 todo 第 %d 项。", todoMatch.Index)
 	}
-	return fmt.Sprintf("Step %q signed off with %d evidence item(s) [%s].%s Move the next step to in_progress with todo_write.",
+	return fmt.Sprintf("步骤 %q 已签收:%d 条 evidence [%s]。%s 接着用 todo_write 把下一步标为 in_progress。",
 		p.Step, len(p.Evidence), strings.Join(kinds, ", "), hostStatus+todoStatus), nil
 }
 
@@ -135,26 +135,26 @@ func verifyStepEvidence(ctx context.Context, items []stepEvidence) (hostVerified
 		case "verification":
 			command := strings.TrimSpace(e.Command)
 			if command == "" {
-				return 0, 0, fmt.Errorf("evidence %d: verification command is required for host verification", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:verification 证据必须带 command(你本轮真实运行过的命令或调用过的工具名)", i+1)
 			}
 			if !ledger.HasSuccessfulCommand(command) {
-				return 0, 0, fmt.Errorf("evidence %d: verification command %q has no matching successful bash receipt in this turn", i+1, command)
+				return 0, 0, fmt.Errorf("evidence %d:verification command %q 在本轮没有匹配到成功的执行记录——command 只能填本轮真实运行成功的 bash 命令或调用过的工具名,不能凭空声称", i+1, command)
 			}
 			hostVerified++
 		case "diff":
 			if len(e.Paths) == 0 {
-				return 0, 0, fmt.Errorf("evidence %d: diff evidence requires paths for host verification", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:diff 证据必须带 paths(本轮改了哪些文件)", i+1)
 			}
 			if !ledger.HasSuccessfulWrite(e.Paths) {
-				return 0, 0, fmt.Errorf("evidence %d: diff paths have no matching successful writer receipt in this turn", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:diff 的 paths 在本轮没有成功写入记录——只能引用本轮真实改过的文件", i+1)
 			}
 			hostVerified++
 		case "files":
 			if len(e.Paths) == 0 {
-				return 0, 0, fmt.Errorf("evidence %d: files evidence requires paths for host verification", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:files 证据必须带 paths(涉及哪些文件)", i+1)
 			}
 			if !ledger.HasSuccessfulReadOrWrite(e.Paths) {
-				return 0, 0, fmt.Errorf("evidence %d: file paths have no matching successful read/write receipt in this turn", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:files 的 paths 在本轮没有成功读/写记录——只能引用本轮真实读过或改过的文件", i+1)
 			}
 			hostVerified++
 		case "manual":
@@ -174,14 +174,14 @@ func verifyTodoStep(ctx context.Context, step string) (evidence.TodoStepMatch, b
 		return evidence.TodoStepMatch{}, false, nil
 	}
 	if !match.Found {
-		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q has no matching todo_write item in this turn", step)
+		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q 在本轮 todo_write 列表中找不到对应项——step 要与任务列表条目的文字对应", step)
 	}
 	switch match.Status {
 	case "in_progress", "completed":
 		return match, true, nil
 	case "":
-		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q matches todo %d (%q) but its status is pending; complete_step requires in_progress or completed", step, match.Index, match.Content)
+		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q 对应 todo 第 %d 项(%q),但它还是 pending——先用 todo_write 把它标为 in_progress 再签收", step, match.Index, match.Content)
 	default:
-		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q matches todo %d (%q) but its status is %q; complete_step requires in_progress or completed", step, match.Index, match.Content, match.Status)
+		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q 对应 todo 第 %d 项(%q),但状态是 %q;complete_step 只接受 in_progress 或 completed", step, match.Index, match.Content, match.Status)
 	}
 }

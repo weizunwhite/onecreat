@@ -87,7 +87,7 @@ func TestEvidenceFlowEndToEnd(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if got := toolResult(a.session, "complete_step"); !strings.Contains(got, "host-verified 1") {
+	if got := toolResult(a.session, "complete_step"); !strings.Contains(got, "已验证 1") {
 		t.Fatalf("complete_step result = %q, want it host-verified from the bash receipt", got)
 	}
 }
@@ -122,10 +122,10 @@ func TestEvidenceFlowRejectsUncitedCommand(t *testing.T) {
 	}
 
 	got := toolResult(a.session, "complete_step")
-	if !strings.Contains(got, "no matching successful bash receipt") {
+	if !strings.Contains(got, "没有匹配到成功的执行记录") {
 		t.Fatalf("complete_step result = %q, want the uncited command rejected", got)
 	}
-	if strings.Contains(got, "host-verified") {
+	if strings.Contains(got, "已验证") {
 		t.Fatalf("uncited command should not verify, got %q", got)
 	}
 }
@@ -162,7 +162,7 @@ func TestEvidenceFlowRejectsStepMissingFromTodoWrite(t *testing.T) {
 	}
 
 	got := toolResult(a.session, "complete_step")
-	if !strings.Contains(got, "matching todo_write item") {
+	if !strings.Contains(got, "找不到对应项") {
 		t.Fatalf("complete_step result = %q, want todo-backed rejection", got)
 	}
 }

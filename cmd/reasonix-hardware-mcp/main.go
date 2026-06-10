@@ -4096,10 +4096,10 @@ func recommendations(r detectReport) []string {
 		rec = append(rec, "ESP-IDF 项目建议优先接入官方 Tools MCP：使用 esp_idf_mcp_config 生成配置。")
 	}
 	if contains(r.ProjectTypes, "platformio") && !tool["PlatformIO"] {
-		rec = append(rec, "检测到 platformio.ini，但 pio 不在 PATH。")
+		rec = append(rec, "检测到 platformio.ini，但 pio 不在 PATH——没有它无法编译/烧录。安装：`brew install platformio`（macOS）或 `pipx install platformio`；装好后重新运行 hardware_detect 确认。")
 	}
 	if contains(r.ProjectTypes, "arduino") && !tool["arduino-cli"] {
-		rec = append(rec, "检测到 Arduino sketch，但 arduino-cli 不在 PATH。")
+		rec = append(rec, "检测到 Arduino sketch，但 arduino-cli 不在 PATH——没有它无法编译/烧录。安装：`brew install arduino-cli`（macOS），随后 `arduino-cli core install arduino:avr`（Nano/UNO）或 `arduino-cli core install esp32:esp32`（ESP32）；装好后重新运行 hardware_detect 确认。")
 	}
 	return rec
 }

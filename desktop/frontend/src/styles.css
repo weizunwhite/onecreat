@@ -552,19 +552,22 @@ body {
   font-size: 13px;
 }
 /* 待办清单移到侧栏:限高可滚动,不挤占聊天区 */
-.sidebar__todos {
-  flex: 0 0 auto;
-  max-height: 38vh;
+/* 待办清单:任务进行时浮在对话区右上角(不再挤占左侧会话栏)。
+   与右下角的「本次产出」浮条上下错开,互不遮挡。 */
+.main-todos {
+  position: absolute;
+  top: 12px;
+  right: 18px;
+  z-index: 30;
+  width: min(360px, 70vw);
+  max-height: 50vh;
   overflow-y: auto;
-  margin: 2px 4px 6px;
+  border-radius: 9px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
 }
-.sidebar__todos .todobar {
+.main-todos .todobar {
   margin: 0;
   max-width: none;
-}
-/* 侧栏收起(窄条)时不显示待办,避免挤成一团 */
-.sidebar--collapsed .sidebar__todos {
-  display: none;
 }
 
 .sidebar__section {

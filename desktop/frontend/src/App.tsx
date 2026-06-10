@@ -1178,13 +1178,6 @@ export default function App() {
             <span>{t("sidebar.hardware")}</span>
           </button>
 
-          {/* 待办清单放侧栏(限高可滚动),不再挤占聊天区上方、遮挡模型回复 */}
-          {showTodos && (
-            <div className="sidebar__todos">
-              <TodoPanel todos={todos} onDismiss={() => setDismissedTodo(todoItem!.id)} />
-            </div>
-          )}
-
           <section className="sidebar__section">
             <div className="sidebar__section-head">
               <div className="sidebar__section-title">{t("sidebar.conversations")}</div>
@@ -1463,6 +1456,12 @@ export default function App() {
                     onRewind={rewind}
                     onOpenHardware={() => setMainView("hardware")}
                   />
+                  {/* 待办清单:任务进行时浮在对话区右上角,不再挤占左侧会话栏 */}
+                  {showTodos && (
+                    <div className="main-todos">
+                      <TodoPanel todos={todos} onDismiss={() => setDismissedTodo(todoItem!.id)} />
+                    </div>
+                  )}
                   {/* 本次产出:聚合会话写过的文件,右下角浮条,点条目在工作区面板打开 */}
                   <SessionArtifacts items={state.items} onOpenFile={openWorkspaceFile} />
                 </div>

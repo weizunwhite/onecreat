@@ -41,10 +41,10 @@ func (e editFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if p.Path == "" {
-		return "", fmt.Errorf("path is required")
+		return "", fmt.Errorf("path 必填")
 	}
 	if p.OldString == "" {
-		return "", fmt.Errorf("old_string is required")
+		return "", fmt.Errorf("old_string 必填")
 	}
 	p.Path = resolveIn(e.workDir, p.Path)
 	if err := confine(e.roots, p.Path); err != nil {
@@ -53,22 +53,22 @@ func (e editFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 	content, enc, err := readFileEncoded(p.Path)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", p.Path, err)
+		return "", fmt.Errorf("读取 %s 失败:%w", p.Path, err)
 	}
 
 	start, end, note, ferr := findUniqueMatch(content, p.OldString)
 	switch {
 	case errors.Is(ferr, errEditNoMatch):
-		return "", fmt.Errorf("old_string not found in %s", p.Path)
+		return "", fmt.Errorf("在 %s 中找不到 old_string——先用 read_file 查看文件当前内容,逐字复制要替换的原文(行尾空白/缩进差异已自动容错,仍未命中说明内容确实不同)", p.Path)
 	case errors.Is(ferr, errEditNotUnique):
-		return "", fmt.Errorf("old_string is not unique in %s; add more surrounding context", p.Path)
+		return "", fmt.Errorf("old_string 在 %s 中出现多次,无法确定改哪一处——请在 old_string 中多带几行上下文使其唯一", p.Path)
 	case ferr != nil:
 		return "", ferr
 	}
 
 	updated := content[:start] + p.NewString + content[end:]
 	if err := writeFileEncoded(p.Path, updated, enc); err != nil {
-		return "", fmt.Errorf("write %s: %w", p.Path, err)
+		return "", fmt.Errorf("写入 %s 失败:%w", p.Path, err)
 	}
 	if note != "" {
 		return fmt.Sprintf("edited %s (%s)", p.Path, note), nil
