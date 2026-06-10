@@ -118,10 +118,14 @@ func (g grepTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 			dec := fileenc.Decoder(enc)
 			if dec != nil {
 				pr, pw := io.Pipe()
+				// 任何提前返回(命中 200 上限 io.EOF、或扫描中遇 NUL return nil)都关读端,
+				// 让写端 goroutine 阻塞中的 pw.Write/io.Copy 拿到 ErrClosedPipe 退出——否则
+				// io.Pipe 无缓冲,写端永久阻塞 → 每次泄漏一个 goroutine + pipe(C3)。
+				defer pr.Close()
 				go func() {
-					pw.Write(peek)
-					io.Copy(pw, f) //nolint:errcheck
-					pw.Close()
+					pw.Write(peek)         //nolint:errcheck
+					io.Copy(pw, f)         //nolint:errcheck
+					pw.Close()             //nolint:errcheck
 				}()
 				src = transform.NewReader(pr, dec)
 			} else {

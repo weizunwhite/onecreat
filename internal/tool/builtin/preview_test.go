@@ -69,6 +69,28 @@ func TestPreviewMatchesExecute(t *testing.T) {
 				}}
 			},
 		},
+		{
+			// C1:old_string 带行尾空格,文件里没有 → 精确匹配失败,findUniqueMatch
+			// 降级「忽略行尾空白」命中。Preview 必须与 Execute 都成功且 diff 逐字一致
+			// (否则 checkpoint 不快照、Execute 却改了文件 → rewind 还原不掉)。
+			name: "edit_file fuzzy trailing whitespace",
+			tool: editFile{},
+			seed: "alpha\nfoo bar\nbeta\n",
+			args: func(p string) map[string]any {
+				return map[string]any{"path": p, "old_string": "foo bar   ", "new_string": "FOO BAR"}
+			},
+		},
+		{
+			// C1:old_string 缩进与文件不同 → 降级「忽略缩进」命中,Preview/Execute 一致。
+			name: "multi_edit fuzzy indentation",
+			tool: multiEdit{},
+			seed: "func f() {\n\t\treturn 1\n}\n",
+			args: func(p string) map[string]any {
+				return map[string]any{"path": p, "edits": []map[string]any{
+					{"old_string": "return 1", "new_string": "return 2"},
+				}}
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -157,5 +179,31 @@ func TestPreviewMirrorsErrors(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nope.txt")
 	if _, err := (editFile{}).Preview(argsJSON(t, map[string]any{"path": missing, "old_string": "a", "new_string": "b"})); err == nil {
 		t.Error("expected read error for missing file")
+	}
+}
+
+// TestPreviewFuzzyNotUniqueMatchesExecute 锁住 C1 的「重叠/不唯一」一侧:当 old_string
+// 在模糊匹配下出现多次时,Preview 与 Execute 必须都失败(早先 Preview 用 strings.Count、
+// Execute 用 findUniqueMatch 会在这里反向分叉)。
+func TestPreviewFuzzyNotUniqueMatchesExecute(t *testing.T) {
+	seed := "  foo\n    foo\n" // 两行 foo,缩进不同
+	pf := filepath.Join(t.TempDir(), "f.txt")
+	os.WriteFile(pf, []byte(seed), 0o644)
+	args := map[string]any{"path": pf, "old_string": "foo", "new_string": "bar"}
+
+	_, perr := (editFile{}).Preview(argsJSON(t, args))
+	ef := filepath.Join(t.TempDir(), "f.txt")
+	os.WriteFile(ef, []byte(seed), 0o644)
+	_, eerr := (editFile{}).Execute(context.Background(), argsJSON(t, map[string]any{"path": ef, "old_string": "foo", "new_string": "bar"}))
+
+	if (perr == nil) != (eerr == nil) {
+		t.Fatalf("Preview/Execute disagree on not-unique: preview err=%v execute err=%v", perr, eerr)
+	}
+	if perr == nil {
+		t.Fatal("expected not-unique error from both Preview and Execute")
+	}
+	// 文件未被改动。
+	if b, _ := os.ReadFile(ef); string(b) != seed {
+		t.Fatalf("Execute mutated the file on a not-unique match: %q", b)
 	}
 }

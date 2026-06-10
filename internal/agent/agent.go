@@ -920,24 +920,36 @@ func truncateToolOutput(s string, limit int) (string, string) {
 		return s, ""
 	}
 	keep := limit / 2
-	head := snapToRuneBoundary(s, 0, keep)
-	tail := snapToRuneBoundary(s, len(s)-keep, len(s))
-	omitted := len(s) - len(head) - len(tail)
+	headEnd := runeStartAtOrAfter(s, keep)
+	tailStart := runeStartAtOrBefore(s, len(s)-keep)
+	// 短输出(len(s) 略超 limit)+ 边界落在多字节字符中间时,head 尾外推、tail 头外推
+	// 可能重叠(headEnd >= tailStart):那样中段会重复、omitted 变负、提示显示「-N bytes」。
+	// 重叠就不截断,直接返回原文(C5)。
+	if headEnd >= tailStart {
+		return s, ""
+	}
+	head := s[:headEnd]
+	tail := s[tailStart:]
+	omitted := len(s) - len(head) - len(tail) // headEnd < tailStart 保证 > 0
 	notice := fmt.Sprintf("tool output truncated: %d of %d bytes elided", omitted, len(s))
 	body := head + fmt.Sprintf("\n\n…[truncated %d of %d bytes — rerun with narrower args to see the middle]…\n\n", omitted, len(s)) + tail
 	return body, notice
 }
 
-// snapToRuneBoundary returns s[lo:hi] with the bounds nudged outward until
-// both land on rune-start positions.
-func snapToRuneBoundary(s string, lo, hi int) string {
-	for lo > 0 && !utf8.RuneStart(s[lo]) {
-		lo--
+// runeStartAtOrAfter 把下标 i 向后(增大)挪到最近的 rune 起始位置(用于 head 的右界)。
+func runeStartAtOrAfter(s string, i int) int {
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
 	}
-	for hi < len(s) && !utf8.RuneStart(s[hi]) {
-		hi++
+	return i
+}
+
+// runeStartAtOrBefore 把下标 i 向前(减小)挪到最近的 rune 起始位置(用于 tail 的左界)。
+func runeStartAtOrBefore(s string, i int) int {
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
 	}
-	return s[lo:hi]
+	return i
 }
 
 // finishReasonMessage maps an abnormal finish_reason to a one-line warning,

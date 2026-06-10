@@ -42,6 +42,11 @@ func (g globTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	if p.Pattern == "" {
 		return "", fmt.Errorf("pattern is required")
 	}
+	// 在 resolveIn 把相对 pattern 变绝对路径之前,先判断「原始 pattern 是否为裸文件名」
+	// (不含路径分隔符)。resolveIn 后的绝对路径必含 "/",用它判断会让回退条件永远 false,
+	// 文档承诺的「只知文件名时全树搜索」在所有 Workspace 绑定实例(桌面/ACP)都失效(C4)。
+	bareName := !strings.ContainsAny(p.Pattern, "/\\")
+
 	p.Pattern = resolveIn(g.workDir, p.Pattern)
 	p.Pattern = filepath.FromSlash(p.Pattern) // models emit "/" (see Description); WalkDir/Match compare OS-native paths
 
@@ -51,16 +56,18 @@ func (g globTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	}
 
 	// For patterns without **, try filepath.Glob first. If no matches are
-	// found and the pattern is a simple filename (no path separator), retry
-	// with a recursive walk (equivalent to "**/<pattern>") so the tool finds
-	// files anywhere in the tree — the common case where the model only knows
-	// a filename but not its exact location.
+	// found and the original pattern was a simple filename (no path separator),
+	// retry with a recursive walk under its base directory (equivalent to
+	// "<dir>/**/<name>") so the tool finds files anywhere in the tree — the
+	// common case where the model only knows a filename but not its location.
 	matches, err := filepath.Glob(p.Pattern)
 	if err != nil {
 		return "", fmt.Errorf("glob %q: %w", p.Pattern, err)
 	}
-	if len(matches) == 0 && !strings.ContainsAny(p.Pattern, "/\\") {
-		return globRecursive(ctx, filepath.Join("**", p.Pattern))
+	if len(matches) == 0 && bareName {
+		root := filepath.Dir(p.Pattern) // workDir 为空时是 "."(cwd),否则是工作区根
+		base := filepath.Base(p.Pattern)
+		return globRecursive(ctx, filepath.Join(root, "**", base))
 	}
 	if len(matches) == 0 {
 		return "(no matches)", nil

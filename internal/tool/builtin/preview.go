@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -71,16 +72,20 @@ func (e editFile) Preview(args json.RawMessage) (diff.Change, error) {
 		return diff.Change{}, fmt.Errorf("read %s: %w", p.Path, err)
 	}
 
-	switch strings.Count(content, p.OldString) {
-	case 0:
+	// 复用 Execute 同一个 findUniqueMatch(精确失败后降级忽略行尾空白/缩进),否则
+	// Preview 用精确匹配、Execute 用模糊匹配会分叉:模型带空白差异的 old_string 时
+	// Preview 报 not found(checkpoint 不快照),Execute 却真改了文件 → rewind 还原不掉(C1)。
+	start, end, _, ferr := findUniqueMatch(content, p.OldString)
+	switch {
+	case errors.Is(ferr, errEditNoMatch):
 		return diff.Change{}, fmt.Errorf("old_string not found in %s", p.Path)
-	case 1:
-		// ok
-	default:
+	case errors.Is(ferr, errEditNotUnique):
 		return diff.Change{}, fmt.Errorf("old_string is not unique in %s; add more surrounding context", p.Path)
+	case ferr != nil:
+		return diff.Change{}, ferr
 	}
 
-	updated := strings.Replace(content, p.OldString, p.NewString, 1)
+	updated := content[:start] + p.NewString + content[end:]
 	return diff.Build(p.Path, content, updated, diff.Modify), nil
 }
 
@@ -110,6 +115,7 @@ func (m multiEdit) Preview(args json.RawMessage) (diff.Change, error) {
 	}
 	original := content
 
+	// 与 Execute 逐字一致:ReplaceAll 走精确全替换,其余走 findUniqueMatch(C1)。
 	for i, step := range p.Edits {
 		if step.OldString == "" {
 			return diff.Change{}, fmt.Errorf("edit %d: old_string is required", i+1)
@@ -121,14 +127,16 @@ func (m multiEdit) Preview(args json.RawMessage) (diff.Change, error) {
 			content = strings.ReplaceAll(content, step.OldString, step.NewString)
 			continue
 		}
-		switch strings.Count(content, step.OldString) {
-		case 0:
+		start, end, _, ferr := findUniqueMatch(content, step.OldString)
+		switch {
+		case errors.Is(ferr, errEditNoMatch):
 			return diff.Change{}, fmt.Errorf("edit %d: old_string not found", i+1)
-		case 1:
-			content = strings.Replace(content, step.OldString, step.NewString, 1)
-		default:
+		case errors.Is(ferr, errEditNotUnique):
 			return diff.Change{}, fmt.Errorf("edit %d: old_string is not unique; add more surrounding context or set replace_all", i+1)
+		case ferr != nil:
+			return diff.Change{}, fmt.Errorf("edit %d: %w", i+1, ferr)
 		}
+		content = content[:start] + step.NewString + content[end:]
 	}
 	return diff.Build(p.Path, original, content, diff.Modify), nil
 }

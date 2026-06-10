@@ -118,6 +118,39 @@ func TestDeleteRangeCRLF(t *testing.T) {
 	}
 }
 
+// C2:行内的裸 \r(字符串字面量、旧 Mac 片段)不能被删除,被删区间外每行字节不变。
+func TestDeleteRangePreservesInlineCR(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "inline_cr.txt")
+	// 第二行含一个行内裸 \r(模拟字符串字面量 "a\rb")。
+	body := "keep1\nfoo := \"a\rb\"\nDELETE_ME\nkeep2\n"
+	os.WriteFile(f, []byte(body), 0o644)
+
+	runTool(t, deleteRange{}, map[string]any{
+		"path": f, "start_anchor": "DELETE_ME", "end_anchor": "DELETE_ME",
+	})
+	got, _ := os.ReadFile(f)
+	want := "keep1\nfoo := \"a\rb\"\nkeep2\n"
+	if string(got) != want {
+		t.Errorf("inline \\r got %q, want %q (in-line CR must be preserved)", got, want)
+	}
+}
+
+// C2:混合行尾文件,被删区间外的行不能被统一行尾。
+func TestDeleteRangePreservesMixedLineEndings(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "mixed.txt")
+	body := "line1\r\nline2\nDELETE\nline4\r\n"
+	os.WriteFile(f, []byte(body), 0o644)
+
+	runTool(t, deleteRange{}, map[string]any{
+		"path": f, "start_anchor": "DELETE", "end_anchor": "DELETE",
+	})
+	got, _ := os.ReadFile(f)
+	want := "line1\r\nline2\nline4\r\n" // 各行原始行尾保持不变
+	if string(got) != want {
+		t.Errorf("mixed endings got %q, want %q (endings outside range must not be normalized)", got, want)
+	}
+}
+
 func TestDeleteRangeWholeNewlineTerminatedFile(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "whole.txt")
 	os.WriteFile(f, []byte("line1\n"), 0o644)

@@ -61,6 +61,38 @@ func TestTruncateToolOutputRuneBoundaries(t *testing.T) {
 	}
 }
 
+// C5 回归:len(s) 略超 limit 且边界落在多字节字符中间时,head/tail 外推不能重叠——否则
+// 中段重复、omitted 变负、提示显示「truncated -N of M bytes」。
+func TestTruncateToolOutputNoOverlapNoNegative(t *testing.T) {
+	// "ab世界12345" = 13 bytes;'界'(5..7)同时横跨 keep(6) 与 len-keep(7) 两个边界,
+	// 旧实现会让 head 尾外推到 8、tail 头外推到 5 → 重叠 3 字节、omitted=-3。
+	s := "ab世界12345"
+	body, notice := truncateToolOutput(s, 12)
+	if body != s {
+		t.Fatalf("overlapping snap must return original unchanged; got body=%q notice=%q", body, notice)
+	}
+	if notice != "" {
+		t.Fatalf("no truncation should mean no notice; got %q", notice)
+	}
+
+	// 扫一遍 (limit, limit+6] 的中文输出:绝不出现重复中段,提示数字非负。
+	for extra := 1; extra <= 6; extra++ {
+		limit := 30
+		runes := (limit + extra + 2) / 3
+		in := strings.Repeat("数", runes) // 3 bytes/char
+		if len(in) <= limit {
+			continue
+		}
+		out, n := truncateToolOutput(in, limit)
+		if !utf8.ValidString(out) {
+			t.Fatalf("extra=%d: output not valid UTF-8", extra)
+		}
+		if strings.Contains(n, "-") {
+			t.Fatalf("extra=%d: notice has a negative byte count: %q", extra, n)
+		}
+	}
+}
+
 // TestRunSkillOutputLimitFitsLargeSkills 钉死「大技能不被砍」:教案/竞赛论文这类
 // 技能正文 70KB+(实测 76KB 被 32KB 通用上限拦腰截断过),run_skill 的专属上限
 // 必须完整放过它们;普通工具仍维持 32KB 防爆窗。
