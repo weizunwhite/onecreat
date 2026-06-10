@@ -4100,6 +4100,14 @@ button.session-file-summary:hover {
   color: var(--accent);
   letter-spacing: 0.6px;
 }
+/* 协作模式常驻标记(非默认时):带学位帽图标,提醒当前 persona */
+.statusbar__coach {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  margin-right: 8px;
+}
 /* model switcher (bottom-of-window popover) */
 .modelsw {
   position: relative;

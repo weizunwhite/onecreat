@@ -1536,6 +1536,7 @@ export default function App() {
 	      jobs={state.jobs}
               running={state.running}
               mode={mode}
+              coachLabel={coachKey ? t(COACH_MODES.find((m) => m.key === coachKey)?.labelKey ?? "coach.default") : undefined}
               turnStartAt={state.turnStartAt}
 	      turnTokens={state.turnTokens}
 	      onSwitchModel={switchModel}

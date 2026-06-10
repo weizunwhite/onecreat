@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Cpu, Wallet } from "lucide-react";
+import { Cpu, GraduationCap, Wallet } from "lucide-react";
 import { EffortSwitcher } from "./EffortSwitcher";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
@@ -89,6 +89,7 @@ export function StatusBar({
   jobs,
   running,
   mode,
+  coachLabel,
   turnStartAt,
   turnTokens,
   onSwitchModel,
@@ -102,6 +103,8 @@ export function StatusBar({
   jobs?: JobView[];
   running: boolean;
   mode: Mode;
+  // 当前协作模式 label(非默认时);常驻底部,对话滚动时仍能确认 persona。
+  coachLabel?: string;
   turnStartAt: number;
   turnTokens: number;
   onSwitchModel: (name: string) => void;
@@ -175,6 +178,12 @@ export function StatusBar({
         </>
       )}
       <span className="statusbar__spacer" />
+      {coachLabel && (
+        <span className="statusbar__coach" title={t("coach.title")}>
+          <GraduationCap size={11} />
+          {coachLabel}
+        </span>
+      )}
       {mode === "plan" && <span className="statusbar__plan">{t("status.plan")}</span>}
     </div>
   );

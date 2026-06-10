@@ -82,12 +82,18 @@
   不顺手膨胀。注意 raw string 内不能放字面反引号,示例用文字"(backticks)"表达。
 - **验证**:root 40 包 + desktop 全绿(无测试 hard-code prompt 内容);纯文案。
 
-### 5. 底部状态条增强(/status 思想)
+### 5. 底部状态条增强(/status 思想)✅ 已完成
 
-**参考**:`tui/src/status.rs`——一行常显:模型/目录/token/成本。
+**参考**:`tui/src/status.rs`——一行常显关键状态。
 
-**设计**(轻):onecreat 底部已有模型/effort/上下文%/费用 chips;补齐缺的(如当前工作目录短名、会话用时),并保证字段点击有 tooltip 解释。不做新面板。
-- **验证**:前端渲染正常,tsc 干净。
+**核实结论**:onecreat 状态条已经很丰富(模型·effort·上下文%·now/avg 缓存·jobs·
+余额·plan 标记),强加"目录短名/会话用时"是为凑数(顶部已有项目名)。
+
+**实际改动**(聚焦、不冗余):状态栏右侧加**协作模式常驻标记**(仅非默认时,
+GraduationCap 图标)。理由同 plan 标记——composer chip 在输入区,对话滚动时不在
+视线,状态栏常驻底部让学生/老师随时确认当前 persona。App 传 coachLabel,
+StatusBar 渲染。**验证**:Claude Preview 实点协作 chip 选「学生引导」,截图确认
+composer chip 与状态栏标记同步显示;tsc + desktop build 全绿。
 
 ---
 
