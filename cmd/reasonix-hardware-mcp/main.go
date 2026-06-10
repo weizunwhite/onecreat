@@ -407,6 +407,7 @@ var tools = []toolDef{
 			"user":            map[string]any{"type": "string", "description": "SSH user. Defaults to root."},
 			"ssh_port":        map[string]any{"type": "number", "description": "SSH port. Defaults to 22."},
 			"identity_file":   map[string]any{"type": "string", "description": "Optional SSH private key path."},
+			"password":        map[string]any{"type": "string", "description": "SSH password for password-auth devices (runs via sshpass; Unihiker default is root/dfrobot). Omit when key auth is configured."},
 			"local_path":      map[string]any{"type": "string", "description": "Local file or directory to copy."},
 			"remote_path":     map[string]any{"type": "string", "description": "Remote destination path."},
 			"recursive":       map[string]any{"type": "boolean", "description": "Use scp -r for directories."},
@@ -1743,7 +1744,7 @@ func realDevicePlanSteps(platform, projectDir, board string, resolved map[string
 		}
 	case "unihiker_python", "maixcam_python", "raspberry_pi_python":
 		return []deviceVerifyPlanStep{
-			{Stage: "deploy", Tool: "ssh_deploy_run", Arguments: map[string]any{"host": placeholderIfEmpty(resolved["host"], "DEVICE_HOST"), "user": placeholderIfEmpty(resolved["user"], "root"), "local_path": filepath.Join(projectDir, "src"), "remote_path": "/root/reasonix/" + filepath.Base(projectDir), "recursive": true, "command": "python3 /root/reasonix/" + filepath.Base(projectDir) + "/main.py"}, Notes: "第一次运行前确认 SSH 地址、用户名和远端 Python 环境。"},
+			{Stage: "deploy", Tool: "ssh_deploy_run", Arguments: map[string]any{"host": placeholderIfEmpty(resolved["host"], "DEVICE_HOST"), "user": placeholderIfEmpty(resolved["user"], "root"), "local_path": filepath.Join(projectDir, "src"), "remote_path": "/root/reasonix/" + filepath.Base(projectDir), "recursive": true, "command": "python3 /root/reasonix/" + filepath.Base(projectDir) + "/main.py"}, Notes: "第一次运行前确认 SSH 地址、用户名和远端 Python 环境。密码登录设备（行空板默认 root/dfrobot）记得传 password 参数。"},
 		}
 	default:
 		return nil
@@ -3004,7 +3005,22 @@ func runSSHDeploy(args map[string]any) (string, error) {
 	sshPort := intArg(args, "ssh_port", 22)
 	identityFile := strArg(args, "identity_file", "")
 	connectTimeout := intArg(args, "connect_timeout", 8)
-	commonArgs := sshCommonArgs(connectTimeout, identityFile)
+	// 密码认证经 sshpass 完成(行空板默认 root/dfrobot 这类设备没有预配密钥);
+	// 传了 password 就不能开 BatchMode,否则 ssh 直接拒绝密码交互。
+	password := strArg(args, "password", "")
+	if password != "" {
+		if _, lookErr := exec.LookPath("sshpass"); lookErr != nil {
+			return "", errors.New("提供了 password 但本机没有 sshpass(密码登录需要它)。安装:`brew install esolitos/ipa/sshpass`;或先 `ssh-copy-id " + user + "@" + host + "` 配免密后去掉 password 重试。")
+		}
+	}
+	run := func(name string, cmdArgs []string, timeout time.Duration) (string, error) {
+		if password != "" {
+			cmdArgs = append([]string{"-p", password, name}, cmdArgs...)
+			name = "sshpass"
+		}
+		return runCommandText(name, cmdArgs, "", timeout)
+	}
+	commonArgs := sshCommonArgs(connectTimeout, identityFile, password == "")
 	scpArgs := append([]string{}, commonArgs...)
 	if sshPort > 0 {
 		scpArgs = append(scpArgs, "-P", strconv.Itoa(sshPort))
@@ -3014,9 +3030,9 @@ func runSSHDeploy(args map[string]any) (string, error) {
 	}
 	scpArgs = append(scpArgs, localAbs, to)
 	timeout := timeoutArg(args, "timeout_seconds", defaultTimeout)
-	out, err := runCommandText("scp", scpArgs, "", timeout)
+	out, err := run("scp", scpArgs, timeout)
 	if err != nil {
-		return out, err
+		return out, sshAuthGuidance(out, err)
 	}
 	remoteCmd := strArg(args, "command", "")
 	if remoteCmd == "" {
@@ -3027,7 +3043,10 @@ func runSSHDeploy(args map[string]any) (string, error) {
 		sshArgs = append(sshArgs, "-p", strconv.Itoa(sshPort))
 	}
 	sshArgs = append(sshArgs, user+"@"+host, remoteCmd)
-	sshOut, err := runCommandText("ssh", sshArgs, "", timeout)
+	sshOut, err := run("ssh", sshArgs, timeout)
+	if err != nil {
+		err = sshAuthGuidance(sshOut, err)
+	}
 	combined := out + "\n--- remote command ---\n" + sshOut
 	if err == nil && boolArg(args, "require_output", true) && !commandOutputHasBody(sshOut) {
 		return combined, errors.New("ssh remote command produced no runtime output; add print/log output, verify the process is running, or set require_output=false for deploy-only commands")
@@ -3035,21 +3054,45 @@ func runSSHDeploy(args map[string]any) (string, error) {
 	return combined, err
 }
 
-func sshCommonArgs(connectTimeout int, identityFile string) []string {
+// sshCommonArgs 组装 ssh/scp 公共参数。batch=false 表示走密码认证(sshpass),
+// 此时不能加 BatchMode=yes(它会直接禁掉密码交互)。
+// known_hosts 固定写到系统临时目录:行空板实测中,写 ~/.ssh/known_hosts 会被
+// 桌面端 bash 沙箱拒绝(mkstemp: Operation not permitted),每次连接都污染输出
+// 甚至造成挂起;教学场景设备都在内网,临时 known_hosts 足够。
+func sshCommonArgs(connectTimeout int, identityFile string, batch bool) []string {
 	if connectTimeout <= 0 {
 		connectTimeout = 8
 	}
-	args := []string{
-		"-o", "BatchMode=yes",
+	args := []string{}
+	if batch {
+		args = append(args, "-o", "BatchMode=yes")
+	}
+	args = append(args,
 		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "ConnectTimeout=" + strconv.Itoa(connectTimeout),
+		"-o", "UserKnownHostsFile="+filepath.Join(os.TempDir(), "onecreat_ssh_known_hosts"),
+		"-o", "ConnectTimeout="+strconv.Itoa(connectTimeout),
 		"-o", "ServerAliveInterval=5",
 		"-o", "ServerAliveCountMax=1",
-	}
+	)
 	if identityFile != "" {
 		args = append(args, "-i", identityFile)
 	}
 	return args
+}
+
+// sshAuthGuidance 在认证失败时给模型明确的下一步,防止它用 bash 反复裸试 ssh
+// (行空板实测:模型撞 Permission denied 后 bash 试了十几次,纯靠运气发现 sshpass)。
+func sshAuthGuidance(out string, err error) error {
+	if err == nil {
+		return nil
+	}
+	text := out + " " + err.Error()
+	if !strings.Contains(text, "Permission denied") && !strings.Contains(text, "permission denied") {
+		return err
+	}
+	return fmt.Errorf("%w\nSSH 认证失败——这类设备多为密码登录:重新调用 ssh_deploy_run 并传 password 参数"+
+		"(行空板默认 root/dfrobot);或先 ssh-copy-id 配好免密再重试。"+
+		"不要用 bash 反复裸试 ssh,交互式密码提示在这里无法工作。", err)
 }
 
 // --- prompts/resources ---
@@ -4897,8 +4940,8 @@ func builtInBoardProfiles() []boardProfile {
 			},
 			Toolchains:     []string{"python3", "ssh", "scp"},
 			ValidationFlow: []string{"hardware_project_validate", "hardware_device_verify_plan", "ssh_deploy_run", "hardware_evidence_record"},
-			CommonFailures: []string{"SSH host 未确认", "Python 依赖未安装", "串口方向 TX/RX 接反", "客户网络隔离导致无法连接"},
-			TeachingNotes:  []string{"Unihiker 适合做 UI 和协调逻辑，不要把所有底层电机控制都塞到 Python 主循环里。"},
+			CommonFailures: []string{"SSH 密码认证未配置：行空板出厂默认 root/dfrobot，给 ssh_deploy_run 传 password=\"dfrobot\"（内部走 sshpass），不要用 bash 裸试 ssh", "SSH host 未确认", "Python 依赖未安装", "串口方向 TX/RX 接反", "客户网络隔离导致无法连接"},
+			TeachingNotes:  []string{"行空板 SSH 默认凭据 root/dfrobot（出厂热点模式地址 10.1.2.3）；部署运行统一用 ssh_deploy_run 并传 password，比手写 ssh 命令稳定。", "Unihiker 适合做 UI 和协调逻辑，不要把所有底层电机控制都塞到 Python 主循环里。"},
 			Aliases:        []string{"unihiker", "行空板"},
 		},
 		{

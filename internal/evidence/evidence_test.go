@@ -317,3 +317,42 @@ func TestLedgerNoBaselineDoesNotConstrainCompletedTodos(t *testing.T) {
 		t.Fatalf("no baseline should not report missing completions, got %+v", missing)
 	}
 }
+
+// 行空板会话实测的两类 miss:引用相对路径 vs 收据绝对路径;复述命令改引号/空白。
+// 宽容匹配要认这些,但凭空声称仍必须拒。
+func TestLedgerTolerantPathAndCommandMatching(t *testing.T) {
+	ledger := NewLedger()
+	ledger.Record(Receipt{ToolName: "write_file", Success: true, Write: true,
+		Paths: []string{"/Users/x/hardware/esp32_snake_web/unihiker_kaleidoscope/src/main.py"}})
+	ledger.Record(Receipt{ToolName: "bash", Success: true,
+		Command: `python3 -c 'py_compile.compile("src/main.py", doraise=True)'`})
+
+	// 相对路径(段边界后缀)应命中
+	if !ledger.HasSuccessfulWrite([]string{"unihiker_kaleidoscope/src/main.py"}) {
+		t.Fatal("相对路径引用应匹配绝对路径收据")
+	}
+	if !ledger.HasSuccessfulWrite([]string{"src/main.py"}) {
+		t.Fatal("更短的段后缀也应匹配")
+	}
+	// 非段边界的碰瓷不能命中(ain.py 不是路径段)
+	if ledger.HasSuccessfulWrite([]string{"ain.py"}) {
+		t.Fatal("非路径段后缀不应匹配")
+	}
+	// 完全无关的路径必拒
+	if ledger.HasSuccessfulWrite([]string{"other_project/app.py"}) {
+		t.Fatal("凭空声称的路径不应匹配")
+	}
+
+	// 命令:引号差异(单↔双)+ 空白压缩应命中
+	if !ledger.HasSuccessfulCommand(`python3  -c "py_compile.compile('src/main.py', doraise=True)"`) {
+		t.Fatal("引号/空白差异的复述应匹配")
+	}
+	// 截短复述(归一化后是真实命令的子串,且超过长度护栏)应命中
+	if !ledger.HasSuccessfulCommand("py_compile.compile(src/main.py, doraise=True)") {
+		t.Fatal("截短复述应匹配")
+	}
+	// 凭空编造的命令必拒
+	if ledger.HasSuccessfulCommand("pytest tests/ -v") {
+		t.Fatal("没运行过的命令不应匹配")
+	}
+}

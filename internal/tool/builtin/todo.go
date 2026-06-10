@@ -103,9 +103,9 @@ func verifyTodoCompletionTransitions(ctx context.Context, todos []todoItem) erro
 	}
 	if len(missing) == 1 {
 		m := missing[0]
-		return fmt.Errorf("todo %d %q is newly completed but has no matching successful complete_step receipt in this turn", m.Index, m.Content)
+		return fmt.Errorf("todo 第 %d 项 %q 被直接标成 completed,但本轮没有对应的 complete_step 签收——正确顺序:先调用 complete_step(带证据)签收这一步,再用 todo_write 把它标为 completed", m.Index, m.Content)
 	}
-	return fmt.Errorf("%d todos are newly completed but have no matching successful complete_step receipts in this turn", len(missing))
+	return fmt.Errorf("%d 个 todo 被直接标成 completed,但都没有 complete_step 签收——不要批量标完:每完成一步,先 complete_step(带证据)签收,再 todo_write 更新该项状态", len(missing))
 }
 
 func toEvidenceTodos(todos []todoItem) []evidence.TodoItem {

@@ -98,8 +98,8 @@ func (l *Ledger) HasSuccessfulCommand(command string) bool {
 		if !r.Success {
 			continue
 		}
-		// 精确的 bash 收据(原行为)。
-		if r.ToolName == "bash" && r.Command == command {
+		// bash 收据:精确相等之外,容忍空白/引号差异与截短复述(commandsEquivalent)。
+		if r.ToolName == "bash" && commandsEquivalent(command, r.Command) {
 			return true
 		}
 		// 工具型验证:硬件/技能流程的验证多走 MCP 工具(hardware_project_validate、
@@ -110,6 +110,36 @@ func (l *Ledger) HasSuccessfulCommand(command string) bool {
 		if core := toolCoreName(r.ToolName); core != "bash" && len(core) >= 4 && strings.Contains(command, core) {
 			return true
 		}
+	}
+	return false
+}
+
+// commandsEquivalent 判断模型引用的 verification command 与真实运行过的 bash 命令
+// 是否语义等价。实测(行空板会话)flash 复述命令时会改引号(双引号↔单引号)、
+// 压缩空白或截短,全文精确匹配必然 miss。归一化(压空白、去引号/反斜杠)后:
+// 相等即认;一方包含另一方(带最短长度护栏,防 "ls" 这类碰瓷)也认——被包含
+// 仍意味着引用的内容真实运行过,凭空编造的命令依然对不上任何收据。
+func commandsEquivalent(cited, actual string) bool {
+	if cited == actual {
+		return true
+	}
+	norm := func(s string) string {
+		s = strings.Join(strings.Fields(s), " ")
+		return strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(s)
+	}
+	nc, na := norm(cited), norm(actual)
+	if nc == "" || na == "" {
+		return false
+	}
+	if nc == na {
+		return true
+	}
+	const minLen = 12
+	if len(nc) >= minLen && strings.Contains(na, nc) {
+		return true
+	}
+	if len(na) >= minLen && strings.Contains(nc, na) {
+		return true
 	}
 	return false
 }
@@ -204,7 +234,7 @@ func (l *Ledger) UnverifiedCompletedTodos(current []TodoItem) (missing []TodoSte
 }
 
 func (l *Ledger) hasSuccessfulPaths(paths []string, accept func(Receipt) bool) bool {
-	wanted := pathSet(normalizePaths(paths))
+	wanted := normalizePaths(paths)
 	if l == nil || len(wanted) == 0 {
 		return false
 	}
@@ -217,12 +247,27 @@ func (l *Ledger) hasSuccessfulPaths(paths []string, accept func(Receipt) bool) b
 			continue
 		}
 		for _, p := range r.Paths {
-			if _, ok := wanted[p]; ok {
-				found[p] = true
+			for _, w := range wanted {
+				if pathRefersTo(w, p) {
+					found[w] = true
+				}
 			}
 		}
 	}
 	return len(found) == len(wanted)
+}
+
+// pathRefersTo 判断模型引用的路径与收据路径是否指向同一文件。
+// 实测(行空板会话)模型引用相对路径(unihiker_kaleidoscope/main.py)而收据存的是
+// 工作区绝对路径,精确相等匹配全部 miss → complete_step 反复撞墙。
+// 放宽为"按路径段为边界的后缀匹配":相对/绝对、嵌套前缀差异都能对上,
+// 但仍必须指向本轮真实出现过的文件,不能凭空声称。
+func pathRefersTo(cited, actual string) bool {
+	if cited == actual {
+		return true
+	}
+	sep := string(filepath.Separator)
+	return strings.HasSuffix(actual, sep+cited) || strings.HasSuffix(cited, sep+actual)
 }
 
 type contextKey struct{}
@@ -430,16 +475,6 @@ func sameStepText(a, b string) bool {
 	a = strings.TrimSpace(a)
 	b = strings.TrimSpace(b)
 	return a != "" && b != "" && strings.EqualFold(a, b)
-}
-
-func pathSet(paths []string) map[string]bool {
-	out := map[string]bool{}
-	for _, p := range paths {
-		if p != "" {
-			out[p] = true
-		}
-	}
-	return out
 }
 
 func normalizePaths(paths []string) []string {

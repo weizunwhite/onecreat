@@ -1259,10 +1259,11 @@ func TestToolCommandsUseExpectedCLIForms(t *testing.T) {
 }
 
 func TestSSHCommonArgsDefaultsAreNonInteractive(t *testing.T) {
-	got := strings.Join(sshCommonArgs(0, ""), " ")
+	got := strings.Join(sshCommonArgs(0, "", true), " ")
 	for _, want := range []string{
 		"-o BatchMode=yes",
 		"-o StrictHostKeyChecking=accept-new",
+		"-o UserKnownHostsFile=", // 不写 ~/.ssh(沙箱会拒),固定走临时目录
 		"-o ConnectTimeout=8",
 		"-o ServerAliveInterval=5",
 		"-o ServerAliveCountMax=1",
@@ -1270,6 +1271,11 @@ func TestSSHCommonArgsDefaultsAreNonInteractive(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("sshCommonArgs missing %q: %s", want, got)
 		}
+	}
+	// 密码认证模式(batch=false)绝不能带 BatchMode,否则 sshpass 也救不了
+	pw := strings.Join(sshCommonArgs(0, "", false), " ")
+	if strings.Contains(pw, "BatchMode") {
+		t.Fatalf("password mode must not set BatchMode: %s", pw)
 	}
 }
 

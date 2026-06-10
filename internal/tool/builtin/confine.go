@@ -64,8 +64,13 @@ func confine(roots []string, target string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("path %q is outside the workspace (writes are confined to %s); "+
-		"write inside it, or widen [sandbox] workspace_root / allow_write in reasonix.toml",
+	// 行空板实测:模型想在工作区外建新项目,被拒后 bash 反复试 mkdir 甚至 sudo,
+	// 最后把新项目嵌进旧项目目录。这里必须把"唯一正确的两条路"讲清楚,
+	// 并明确劝阻 bash 绕行。
+	return fmt.Errorf("路径 %q 在工作区之外(本会话只允许写入:%s)。"+
+		"两个选择:① 改在当前工作区内创建;② 如果用户确实要一个新的独立项目目录,"+
+		"停下来告诉用户「请在侧栏切换/新建工作区后重试」,让用户操作。"+
+		"不要用 bash 的 mkdir/sudo 绕过这个限制——沙箱同样会拒绝,只会浪费轮次",
 		target, strings.Join(roots, ", "))
 }
 
