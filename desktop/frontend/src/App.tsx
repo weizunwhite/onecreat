@@ -64,7 +64,7 @@ import { HardwarePanel } from "./components/HardwarePanel";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
-import { app } from "./lib/bridge";
+import { app, onEvent } from "./lib/bridge";
 import { parseTodos } from "./lib/tools";
 import { sessionActivityTime } from "./lib/session";
 import type { MemoryView, Mode, SessionMeta, TabMeta } from "./lib/types";
@@ -366,6 +366,39 @@ export default function App() {
   useEffect(() => {
     setCoach(COACH_MODES.find((m) => m.key === coachKey)?.preamble ?? "");
   }, [coachKey, activeTabId, setCoach]);
+  // A8:切回标签后把底部 pill 同步到「该标签 controller 的真实门控」(Meta 的
+  // planMode/bypass),而不是凭全局 UI 态猜测——否则会出现「pill 显示只读、实际可写」的
+  // 安全错觉。只在切标签后第一次 meta 到达时同步,不覆盖用户随后的手动 Shift+Tab 切换。
+  const pendingModeSyncRef = useRef(false);
+  useEffect(() => {
+    pendingModeSyncRef.current = true;
+  }, [activeTabId]);
+  useEffect(() => {
+    if (!pendingModeSyncRef.current || !state.meta) return;
+    pendingModeSyncRef.current = false;
+    setMode(state.meta.planMode ? "plan" : state.meta.bypass ? "yolo" : "normal");
+  }, [state.meta]);
+  // A2:每个「非活动」标签挂一个轻量订阅,只为在标签栏上提示「该标签有待审批」。活动标签
+  // 的弹窗由 useController 处理(并在切回时由 PendingPrompts 补显),这里跳过它避免重复。
+  const [pendingTabs, setPendingTabs] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const offs = tabs
+      .filter((tab) => tab.id !== activeTabId)
+      .map((tab) =>
+        onEvent(tab.id, (e) => {
+          if (e.kind === "approval_request" || e.kind === "ask_request") {
+            setPendingTabs((p) => (p[tab.id] ? p : { ...p, [tab.id]: true }));
+          } else if (e.kind === "turn_done") {
+            setPendingTabs((p) => (p[tab.id] ? { ...p, [tab.id]: false } : p));
+          }
+        }),
+      );
+    return () => offs.forEach((off) => off());
+  }, [tabs, activeTabId]);
+  // 切到某标签即清掉它的待审批角标(用户已在看它,弹窗会补显)。
+  useEffect(() => {
+    setPendingTabs((p) => (p[activeTabId] ? { ...p, [activeTabId]: false } : p));
+  }, [activeTabId]);
   const [memView, setMemView] = useState<MemoryView | null>(null);
   const [histView, setHistView] = useState<SessionMeta[] | null>(null);
   const [sidebarSessions, setSidebarSessions] = useState<SessionMeta[]>([]);
@@ -666,11 +699,17 @@ export default function App() {
     async (kind: "chat" | "hardware") => {
       const meta = await app.CreateTab(kind).catch(() => null);
       if (!meta) return;
+      // 新标签继承当前门控 + persona:即使 controller 还在异步装配,后端也会记录 want
+      // 状态并在装配完成时施加,保证 pill 不撒谎、plan 只读门确实生效(A8)。
+      if (mode === "plan") app.SetPlanMode(meta.id, true).catch(() => {});
+      else if (mode === "yolo") app.SetBypass(meta.id, true).catch(() => {});
+      const preamble = COACH_MODES.find((m) => m.key === coachKey)?.preamble ?? "";
+      if (preamble) app.SetCoachMode(meta.id, preamble).catch(() => {});
       setActiveTabId(meta.id);
       setMainView(kind === "hardware" ? "hardware" : "chat");
       await refreshTabs();
     },
-    [refreshTabs],
+    [refreshTabs, mode, coachKey],
   );
 
   // 关闭任务标签:后端快照并关掉它的 controller;若关的是当前活动标签,切到剩下的。
@@ -1207,6 +1246,10 @@ export default function App() {
                           {(tab.kind === "hardware" ? t("tabs.hardware") : t("tabs.chat")) + " " + (idx + 1)}
                         </span>
                         {!tab.ready && <span className="sidebar-task__spin" aria-hidden />}
+                        {/* A2:后台标签有待审批时显示小红点,提示用户切过去处理。 */}
+                        {pendingTabs[tab.id] && tab.id !== activeTabId && (
+                          <span className="sidebar-task__pending" title="该标签有待审批" aria-label="待审批" />
+                        )}
                       </button>
                       {tabs.length > 1 && (
                         <button

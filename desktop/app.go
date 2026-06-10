@@ -90,6 +90,15 @@ type tabRuntime struct {
 	model      string
 	ready      bool
 	startupErr string
+	// closed 在 CloseTab 时置位:buildTab 完成时若发现已关闭,就 Close 掉刚建好的
+	// controller 并不发 ready,避免「关标签时 build 未完成 → controller 泄漏」(A6)。
+	closed bool
+	// 期望的运行时门控状态(plan/YOLO/coach persona)。这些是 per-controller 运行时
+	// 状态,但门控开关是全局 UI 态;存到标签上,使其在 controller 异步装配完成、或切回
+	// 标签时都能被重新施加,而不是打到 nil controller 被静默吞(A8)。
+	wantPlan   bool
+	wantBypass bool
+	coachWant  string
 }
 
 // TabMeta 是给前端的标签快照。
@@ -194,6 +203,10 @@ func (a *App) buildTab(rt *tabRuntime) {
 	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink})
 	if err != nil {
 		a.mu.Lock()
+		if rt.closed { // 标签已在 build 期间被关闭:什么都不写、不发 ready(A6)
+			a.mu.Unlock()
+			return
+		}
 		rt.startupErr = err.Error()
 		rt.ready = true
 		if a.activeTab == rt.id {
@@ -206,10 +219,20 @@ func (a *App) buildTab(rt *tabRuntime) {
 	}
 
 	a.mu.Lock()
+	if rt.closed {
+		// 标签在 build 期间被关闭:关掉刚建好的 controller(含 MCP 子进程 / session /
+		// goroutine),不发 ready —— 否则这个 controller 永远没人 Close(A6)。
+		a.mu.Unlock()
+		ctrl.Close()
+		return
+	}
 	rt.ctrl = ctrl
 	rt.model = model
 	rt.label = ctrl.Label()
 	rt.ready = true
+	wantPlan := rt.wantPlan
+	wantBypass := rt.wantBypass
+	coachWant := rt.coachWant
 	if a.activeTab == rt.id {
 		a.ctrl = ctrl
 		a.sink = rt.sink
@@ -223,6 +246,19 @@ func (a *App) buildTab(rt *tabRuntime) {
 	// Desktop is interactive: route "ask" gate decisions to the frontend as
 	// approval_request events, answered via Approve.
 	ctrl.EnableInteractiveApproval()
+
+	// 施加标签期望的运行时门控:新标签异步装配完成后,把「切标签 / 新建标签时已记录」的
+	// plan/YOLO/coach 状态真正作用到 controller,保证底部 pill 与实际门控一致——避免
+	// 「显示 plan(只读),实际 normal(会改文件)」的安全错觉(A8)。
+	if wantPlan {
+		ctrl.SetPlanMode(true)
+	}
+	if wantBypass {
+		ctrl.SetBypass(true)
+	}
+	if coachWant != "" {
+		ctrl.SetCoachMode(coachWant)
+	}
 
 	// Land auto-save in a fresh session file (same as a fresh chat/serve start).
 	if dir := ctrl.SessionDir(); dir != "" {
@@ -290,6 +326,9 @@ func (a *App) CloseTab(id string) {
 		a.mu.Unlock()
 		return
 	}
+	// 标记关闭:若此刻 buildTab 还在跑(rt.ctrl==nil),它完成时会看到 closed=true,
+	// 自行 Close 掉刚建好的 controller 并不发 ready,避免 controller 泄漏(A6)。
+	rt.closed = true
 	delete(a.tabs, id)
 	for i, x := range a.tabOrder {
 		if x == id {
@@ -331,11 +370,18 @@ func (a *App) ListTabs() []TabMeta {
 }
 
 // shutdown snapshots the conversation and stops plugin subprocesses on close.
+// 遍历所有标签(不只活动镜像):多标签并行时,后台标签进行中的最后一轮也要落盘,
+// 它们的 MCP stdio 子进程也要关闭,否则退出/自更新会丢数据 + 留孤儿子进程(A7)。
 func (a *App) shutdown(context.Context) {
 	a.mu.RLock()
-	ctrl := a.ctrl
+	ctrls := make([]*control.Controller, 0, len(a.tabs))
+	for _, rt := range a.tabs {
+		if rt != nil && rt.ctrl != nil {
+			ctrls = append(ctrls, rt.ctrl)
+		}
+	}
 	a.mu.RUnlock()
-	if ctrl != nil {
+	for _, ctrl := range ctrls {
 		_ = ctrl.Snapshot()
 		ctrl.Close()
 	}
@@ -344,6 +390,20 @@ func (a *App) shutdown(context.Context) {
 // --- bound command surface (frontend → controller) ---
 // Each method guards on a nil controller so a pre-startup or failed-build call is
 // a no-op, never a panic.
+
+// ctrlForTab 按标签 id 取该标签的 controller(加锁)。空 id 回退到活动镜像,兼容尚未
+// 带 tabID 的旧路径。用于审批/问答/门控等「必须打到事件来源标签」的方法(A2/A8)。
+func (a *App) ctrlForTab(tabID string) *control.Controller {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if tabID == "" {
+		return a.ctrl
+	}
+	if rt := a.tabs[tabID]; rt != nil {
+		return rt.ctrl
+	}
+	return nil
+}
 
 // Submit runs raw user input as a turn; slash commands and @-references are
 // resolved by the controller. Output arrives asynchronously on eventChannel.
@@ -364,18 +424,23 @@ func (a *App) Submit(input string) {
 // SubmitDisplay runs input as a turn while recording a shorter UI-only display
 // string for the saved desktop transcript. The model still receives input.
 func (a *App) SubmitDisplay(display, input string) {
-	if a.ctrl == nil {
+	// 取一次 ctrl 局部变量后全程用它,消除「检查与 Submit 之间 controller 被换/Close」
+	// 的 TOCTOU 数据竞争(A9)。SubmitDisplay 是知识库增强与硬件面板提交的主路径,频繁调用。
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
 		return
 	}
 	dir := config.SessionDir()
-	sessionPath := a.ctrl.SessionPath()
+	sessionPath := ctrl.SessionPath()
 	_ = recordSessionDisplay(dir, sessionPath, input, display)
 	// 记录该 session 创建时所在的 workspace,用于侧栏按文件夹分组。
 	// 只在首次有效消息时落,后续 workspace 切换不影响归属。
 	if cwd, err := os.Getwd(); err == nil {
 		_ = rememberSessionCwd(dir, sessionPath, cwd)
 	}
-	a.ctrl.Submit(input)
+	ctrl.Submit(input)
 }
 
 // Cancel aborts the in-flight turn.
@@ -389,32 +454,50 @@ func (a *App) Cancel() {
 }
 
 // Approve answers a pending approval_request by ID: allow runs the call, session
-// also remembers the grant for the rest of the session.
-func (a *App) Approve(id string, allow, session bool) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl != nil {
+// also remembers the grant for the rest of the session. tabID 指定事件来源标签——
+// 后台标签的审批必须打到它自己的 controller,而不是当前活动标签(A2)。
+func (a *App) Approve(tabID, id string, allow, session bool) {
+	if ctrl := a.ctrlForTab(tabID); ctrl != nil {
 		ctrl.Approve(id, allow, session)
 	}
 }
 
-// SetPlanMode toggles read-only plan mode.
-func (a *App) SetPlanMode(on bool) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+// tabRTLocked 解析目标标签运行时(空 tabID=活动标签);调用方须持有 a.mu。
+func (a *App) tabRTLocked(tabID string) *tabRuntime {
+	if tabID == "" {
+		tabID = a.activeTab
+	}
+	return a.tabs[tabID]
+}
+
+// SetPlanMode toggles read-only plan mode for one tab. 记录到标签的 want 状态(即使
+// controller 还在异步装配也不丢),并施加到已就绪的 controller——避免「pill 显示只读、
+// 实际可写」的安全错觉(A8)。
+func (a *App) SetPlanMode(tabID string, on bool) {
+	a.mu.Lock()
+	rt := a.tabRTLocked(tabID)
+	var ctrl *control.Controller
+	if rt != nil {
+		rt.wantPlan = on
+		ctrl = rt.ctrl
+	}
+	a.mu.Unlock()
 	if ctrl != nil {
 		ctrl.SetPlanMode(on)
 	}
 }
 
-// SetCoachMode 设置当前会话的「协作模式」persona(空串=默认无 persona)。
-// preamble 是前端选定的口径文案,作用于活动标签,随每个 turn 注入(见 Compose)。
-func (a *App) SetCoachMode(preamble string) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+// SetCoachMode 设置某标签的「协作模式」persona(空串=默认无 persona)。preamble 随每个
+// turn 注入(见 Compose),按 tabID 路由并记录 want 状态(A8)。
+func (a *App) SetCoachMode(tabID, preamble string) {
+	a.mu.Lock()
+	rt := a.tabRTLocked(tabID)
+	var ctrl *control.Controller
+	if rt != nil {
+		rt.coachWant = strings.TrimSpace(preamble)
+		ctrl = rt.ctrl
+	}
+	a.mu.Unlock()
 	if ctrl != nil {
 		ctrl.SetCoachMode(preamble)
 	}
@@ -427,11 +510,9 @@ type QuestionAnswer struct {
 }
 
 // AnswerQuestion resolves a pending ask_request (the `ask` tool) by ID with the
-// user's selections per question.
-func (a *App) AnswerQuestion(id string, answers []QuestionAnswer) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+// user's selections per question. tabID 指定事件来源标签(A2)。
+func (a *App) AnswerQuestion(tabID, id string, answers []QuestionAnswer) {
+	ctrl := a.ctrlForTab(tabID)
 	if ctrl == nil {
 		return
 	}
@@ -440,6 +521,29 @@ func (a *App) AnswerQuestion(id string, answers []QuestionAnswer) {
 		out[i] = event.AskAnswer{QuestionID: an.QuestionID, Selected: an.Selected}
 	}
 	ctrl.AnswerQuestion(id, out)
+}
+
+// PendingPrompts 返回某标签当前「已发出、尚未应答」的审批 / ask(promptMu 保证同一时刻
+// 至多一个)。切回标签时前端据此补显审批弹窗——后台标签的审批事件在它无人订阅时发出,
+// 重订阅不会重放,只能靠这个查询补回来(A2)。
+type PendingPrompts struct {
+	Approvals []wireApproval `json:"approvals"`
+	Asks      []wireAsk      `json:"asks"`
+}
+
+func (a *App) PendingPrompts(tabID string) PendingPrompts {
+	out := PendingPrompts{Approvals: []wireApproval{}, Asks: []wireAsk{}}
+	ctrl := a.ctrlForTab(tabID)
+	if ctrl == nil {
+		return out
+	}
+	for _, ap := range ctrl.PendingApprovals() {
+		out.Approvals = append(out.Approvals, wireApproval{ID: ap.ID, Tool: ap.Tool, Subject: ap.Subject})
+	}
+	for _, ak := range ctrl.PendingAsks() {
+		out.Asks = append(out.Asks, *toWireAsk(ak))
+	}
+	return out
 }
 
 // Compact runs one compaction pass on demand.
@@ -601,15 +705,44 @@ func (a *App) ListSessions() []SessionMeta {
 	return out
 }
 
-// DeleteSession removes a saved session (and its title). It refuses the active
-// session — that's the conversation on screen, and auto-save would recreate the
-// file on the next turn; start a new session first to retire it.
+// sessionPathsInUse 返回所有标签 controller 当前正在写的 session 路径 → 标签 id 映射;
+// exclude 跳过指定标签(空串=不跳过)。先在锁内取出 controller 列表再调 SessionPath(),
+// 避免持 a.mu 时回调进 controller 锁。用于跨标签防双写同一 session 文件(A4)。
+func (a *App) sessionPathsInUse(exclude string) map[string]string {
+	type pair struct {
+		id   string
+		ctrl *control.Controller
+	}
+	a.mu.RLock()
+	pairs := make([]pair, 0, len(a.tabs))
+	for id, rt := range a.tabs {
+		if id == exclude || rt == nil || rt.ctrl == nil {
+			continue
+		}
+		pairs = append(pairs, pair{id, rt.ctrl})
+	}
+	a.mu.RUnlock()
+	out := map[string]string{}
+	for _, p := range pairs {
+		if sp := p.ctrl.SessionPath(); sp != "" {
+			out[sp] = p.id
+		}
+	}
+	return out
+}
+
+// DeleteSession removes a saved session (and its title). It refuses any session a
+// tab is currently writing to — the active one (auto-save would recreate it) and
+// any background tab's session too, so a background task can't be deleted mid-run (A4).
 func (a *App) DeleteSession(path string) error {
 	a.mu.RLock()
-	ctrl := a.ctrl
+	active := a.activeTab
 	a.mu.RUnlock()
-	if ctrl != nil && ctrl.SessionPath() == path {
-		return errActiveSession
+	if tab := a.sessionPathsInUse("")[path]; tab != "" {
+		if tab == active {
+			return errActiveSession
+		}
+		return fmt.Errorf("该会话正在另一个任务标签中使用,无法删除;请先在那个标签里新建会话")
 	}
 	return deleteSessionFile(config.SessionDir(), path)
 }
@@ -627,9 +760,15 @@ func (a *App) RenameSession(path, title string) error {
 func (a *App) ResumeSession(path string) ([]HistoryMessage, error) {
 	a.mu.RLock()
 	ctrl := a.ctrl
+	active := a.activeTab
 	a.mu.RUnlock()
 	if ctrl == nil {
 		return []HistoryMessage{}, nil
+	}
+	// 目标 session 若正被「其它标签」写入,拒绝 resume——两个 controller 各自整文件快照
+	// 同一个 .jsonl 会后写覆盖先写、互丢对话轮次(A4)。
+	if tab := a.sessionPathsInUse(active)[path]; tab != "" {
+		return nil, fmt.Errorf("该会话已在另一个任务标签中打开;请切到那个标签继续,而不是在此重复打开")
 	}
 	loaded, err := agent.LoadSession(path)
 	if err != nil {
@@ -912,12 +1051,15 @@ type Meta struct {
 	StartupErr   string `json:"startupErr,omitempty"`
 	EventChannel string `json:"eventChannel"`
 	Cwd          string `json:"cwd"`
-	Bypass       bool   `json:"bypass"` // YOLO mode on (auto-approve every tool call)
+	Bypass       bool   `json:"bypass"`   // YOLO mode on (auto-approve every tool call)
+	PlanMode     bool   `json:"planMode"` // 该标签 controller 的真实 plan(只读)门控状态
+	Running      bool   `json:"running"`  // 该标签是否有 turn 正在跑(切回正在跑的标签时恢复真值)
 }
 
 // Meta reports the model label, readiness, any startup error, the working
 // directory (for the status line), and the runtime event channel the frontend
-// subscribes to.
+// subscribes to. Bypass/PlanMode/Running 读自活动标签 controller 的真实状态——切回
+// 标签时前端据此恢复 pill 与 spinner,而不是凭全局 UI 态猜测(A3/A8)。
 func (a *App) Meta() Meta {
 	a.mu.RLock()
 	label := a.label
@@ -933,16 +1075,23 @@ func (a *App) Meta() Meta {
 		EventChannel: eventChannel,
 		Cwd:          cwd,
 		Bypass:       ctrl != nil && ctrl.Bypass(),
+		PlanMode:     ctrl != nil && ctrl.PlanMode(),
+		Running:      ctrl != nil && ctrl.Running(),
 	}
 }
 
 // SetBypass toggles YOLO mode for the session: auto-approve every tool call
 // (writers and bash run without asking). Deny rules still apply. Runtime-only —
 // not written to config, so it resets on relaunch.
-func (a *App) SetBypass(on bool) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+func (a *App) SetBypass(tabID string, on bool) {
+	a.mu.Lock()
+	rt := a.tabRTLocked(tabID)
+	var ctrl *control.Controller
+	if rt != nil {
+		rt.wantBypass = on
+		ctrl = rt.ctrl
+	}
+	a.mu.Unlock()
 	if ctrl != nil {
 		ctrl.SetBypass(on)
 	}
@@ -1409,10 +1558,13 @@ type HardwareDeviceView struct {
 // AddMCPServer connects a server live and persists it to config (Customize → MCP →
 // Add). Returns the number of tools it exposed.
 func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
-	if a.ctrl == nil {
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
 		return 0, fmt.Errorf("no active session")
 	}
-	return a.ctrl.AddMCPServer(config.PluginEntry{
+	return ctrl.AddMCPServer(config.PluginEntry{
 		Name:    in.Name,
 		Type:    in.Transport,
 		Command: in.Command,
@@ -2172,10 +2324,13 @@ func (a *App) AddHardwareMCPServer() (int, error) {
 
 // RemoveMCPServer disconnects a live server and drops it from config (the row's ✕).
 func (a *App) RemoveMCPServer(name string) error {
-	if a.ctrl == nil {
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
-	_, err := a.ctrl.RemoveMCPServer(name)
+	_, err := ctrl.RemoveMCPServer(name)
 	if err == nil {
 		a.mu.Lock()
 		delete(a.disabledMCP, name)
@@ -2188,10 +2343,13 @@ func (a *App) RemoveMCPServer(name string) error {
 // RetryMCPServer reconnects a configured server that failed or was disconnected,
 // without touching config (the failed row's retry button).
 func (a *App) RetryMCPServer(name string) error {
-	if a.ctrl == nil {
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
-	_, err := a.ctrl.ConnectConfiguredMCPServer(name)
+	_, err := ctrl.ConnectConfiguredMCPServer(name)
 	return err
 }
 
@@ -2199,11 +2357,14 @@ func (a *App) RetryMCPServer(name string) error {
 // for this session, off disconnects it (config untouched either way — like Claude
 // Code's per-conversation enable/disable, it resets on the next session start).
 func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
-	if a.ctrl == nil {
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
 	if enabled {
-		_, err := a.ctrl.ConnectConfiguredMCPServer(name)
+		_, err := ctrl.ConnectConfiguredMCPServer(name)
 		if err == nil {
 			a.mu.Lock()
 			delete(a.disabledMCP, name)
@@ -2211,7 +2372,7 @@ func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
 		}
 		return err
 	}
-	if s, ok := findMCPServerView(a.ctrl, name); ok {
+	if s, ok := findMCPServerView(ctrl, name); ok {
 		s.Status = "disabled"
 		s.Error = ""
 		a.mu.Lock()
@@ -2222,7 +2383,7 @@ func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
 		a.mcpOrder = mergeServerOrder(a.mcpOrder, []ServerView{s})
 		a.mu.Unlock()
 	}
-	a.ctrl.DisconnectMCPServer(name)
+	ctrl.DisconnectMCPServer(name)
 	return nil
 }
 
@@ -2492,9 +2653,17 @@ func (a *App) SetModel(name string) error {
 	if a.ctx == nil || name == "" {
 		return nil
 	}
+	// 固定「发起切换时的活动标签」+ 它自己的 sink:boot.Build 是秒级操作,期间用户可能
+	// 切走 activeTab。build 完成后只回写这个标签,并用它的 sink 绑定新 controller,避免
+	// 新 controller 装进错误标签、事件串到别的标签通道(A5)。
 	a.mu.RLock()
 	curModel := a.model
 	ctrl := a.ctrl
+	targetTab := a.activeTab
+	targetSink := a.sink
+	if rt := a.tabs[targetTab]; rt != nil && rt.sink != nil {
+		targetSink = rt.sink
+	}
 	a.mu.RUnlock()
 	if name == curModel {
 		return nil
@@ -2507,19 +2676,22 @@ func (a *App) SetModel(name string) error {
 		ctrl.Close()
 	}
 
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: a.sink})
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink})
 	if err != nil {
 		return err
 	}
 	a.mu.Lock()
-	a.ctrl = newCtrl
-	a.model = name
-	a.label = newCtrl.Label()
-	// 同步活动 tab 的运行时(SetModel 只作用于当前活动 tab)。
-	if rt := a.tabs[a.activeTab]; rt != nil {
+	// 同步发起标签的运行时(SetModel 只作用于发起切换的那个 tab)。
+	if rt := a.tabs[targetTab]; rt != nil {
 		rt.ctrl = newCtrl
 		rt.model = name
 		rt.label = newCtrl.Label()
+	}
+	// 仅当发起标签仍是当前活动标签时,才更新活动镜像;否则用户已切走,别覆盖现活动镜像。
+	if a.activeTab == targetTab {
+		a.ctrl = newCtrl
+		a.model = name
+		a.label = newCtrl.Label()
 	}
 	a.mu.Unlock()
 	newCtrl.EnableInteractiveApproval()

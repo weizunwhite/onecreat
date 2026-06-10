@@ -103,6 +103,9 @@ func (a *App) Settings() SettingsView {
 	if bash == "" {
 		bash = "enforce"
 	}
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
 	v := SettingsView{
 		DefaultModel: cfg.DefaultModel,
 		PlannerModel: cfg.Agent.PlannerModel,
@@ -132,7 +135,7 @@ func (a *App) Settings() SettingsView {
 		Agent:         AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, SystemPrompt: cfg.Agent.SystemPrompt},
 		ConfigPath:    config.SourcePath(),
 		ProviderKinds: provider.Kinds(),
-		Bypass:        a.ctrl != nil && a.ctrl.Bypass(),
+		Bypass:        ctrl != nil && ctrl.Bypass(),
 	}
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
@@ -178,18 +181,32 @@ func (a *App) applyConfigChange(mutate func(*config.Config) error) error {
 
 // rebuild tears down the controller and rebuilds it from the (just-changed)
 // config, carrying the conversation forward. It keeps the active model if it
-// still resolves; otherwise it falls back to the new default. Mirrors SetModel.
+// still resolves; otherwise it falls back to the new default. Mirrors SetModel:
+// 在锁内取旧 controller 与发起标签,锁外做秒级 boot.Build,再回锁写回「发起标签」的
+// tabRuntime + (若它仍是活动标签)活动镜像 —— 否则改设置后存的是已关闭的旧 controller,
+// 后续落盘/切回会打到死 controller(A1)。
 func (a *App) rebuild() error {
 	if a.ctx == nil {
 		return nil
 	}
-	var carried []provider.Message
-	if a.ctrl != nil {
-		_ = a.ctrl.Snapshot()
-		carried = a.ctrl.History()
-		a.ctrl.Close()
-	}
+	// 固定「发起设置变更时的活动标签」,并取它自己的 sink;build 完成后即使用户已切走,
+	// 也只回写这个标签,不会把新 controller 误装进别的标签(对照 SetModel 的 A5 修复)。
+	a.mu.RLock()
+	old := a.ctrl
 	model := a.model
+	targetTab := a.activeTab
+	targetSink := a.sink
+	if rt := a.tabs[targetTab]; rt != nil && rt.sink != nil {
+		targetSink = rt.sink
+	}
+	a.mu.RUnlock()
+
+	var carried []provider.Message
+	if old != nil {
+		_ = old.Snapshot()
+		carried = old.History()
+		old.Close()
+	}
 	if cfg, err := config.Load(); err == nil {
 		if _, ok := cfg.ResolveModel(model); !ok {
 			model = cfg.DefaultModel
@@ -198,16 +215,34 @@ func (a *App) rebuild() error {
 			}
 		}
 	}
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: a.sink})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink})
 	if err != nil {
-		a.ctrl = nil
-		a.startupErr = err.Error()
+		a.mu.Lock()
+		if rt := a.tabs[targetTab]; rt != nil {
+			rt.ctrl = nil
+			rt.startupErr = err.Error()
+		}
+		if a.activeTab == targetTab {
+			a.ctrl = nil
+			a.startupErr = err.Error()
+		}
+		a.mu.Unlock()
 		return err
 	}
-	a.ctrl = ctrl
-	a.model = model
-	a.label = ctrl.Label()
-	a.startupErr = ""
+	a.mu.Lock()
+	if rt := a.tabs[targetTab]; rt != nil {
+		rt.ctrl = ctrl
+		rt.model = model
+		rt.label = ctrl.Label()
+		rt.startupErr = ""
+	}
+	if a.activeTab == targetTab {
+		a.ctrl = ctrl
+		a.model = model
+		a.label = ctrl.Label()
+		a.startupErr = ""
+	}
+	a.mu.Unlock()
 	ctrl.EnableInteractiveApproval()
 	path := ""
 	if dir := ctrl.SessionDir(); dir != "" {
@@ -252,8 +287,10 @@ func withFreshSystemPrompt(messages []provider.Message, system string) []provide
 
 // SetDefaultModel sets the config default and switches the live model to it.
 func (a *App) SetDefaultModel(ref string) error {
+	a.mu.Lock()
 	prev := a.model
 	a.model = ref
+	a.mu.Unlock()
 	if err := a.applyConfigChange(func(c *config.Config) error {
 		if _, ok := c.ResolveModel(ref); !ok {
 			return fmt.Errorf("unknown model %q", ref)
@@ -261,7 +298,9 @@ func (a *App) SetDefaultModel(ref string) error {
 		c.DefaultModel = ref
 		return nil
 	}); err != nil {
+		a.mu.Lock()
 		a.model = prev
+		a.mu.Unlock()
 		return err
 	}
 	return nil

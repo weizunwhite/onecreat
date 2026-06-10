@@ -123,6 +123,7 @@ type Action =
   | { type: "effort"; effort: EffortInfo }
   | { type: "jobs"; jobs: JobView[] }
   | { type: "history"; messages: HistoryMessage[] }
+  | { type: "restoreRunning"; running: boolean }
   | { type: "local_notice"; level: "info" | "warn"; text: string }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
@@ -399,7 +400,15 @@ function reducer(s: State, a: Action): State {
       return { ...s, effort: a.effort };
     case "jobs":
       return { ...s, jobs: a.jobs };
+    case "restoreRunning":
+      // 只「向上」恢复 running(切回正在跑的标签),不从这里强制清 running——避免与
+      // 切标签后已流入的 turn_started/turn_done live 事件打架(A3)。
+      return a.running ? { ...s, running: true, turnActive: true } : s;
     case "history": {
+      // 切回一个正在跑的标签时,reset 后订阅已先流入 live 事件(items 非空):此时
+      // 用异步返回的 History() 整体替换会清掉这些已到达的工具卡片/文本段。只在 items
+      // 为空(idle 标签首次加载)时整体填充,非空则保留 live 内容(A3)。
+      if (s.items.length > 0) return s;
       // Only user/assistant turns with visible text or assistant reasoning — never
       // the system prompt or tool-result messages.
       const visible = a.messages.filter(
@@ -452,16 +461,28 @@ export function useController(tabId: string) {
   // and again when agent:ready fires (boot.Build completed in the background).
   const loadSessionData = useCallback(async () => {
     try {
-      dispatch({ type: "meta", meta: await app.Meta() });
+      const meta = await app.Meta();
+      dispatch({ type: "meta", meta });
+      // 切回一个仍在跑的标签:从后端真值恢复 running,否则 reset 后 running=false 会让
+      // UI 误显示空闲(无 spinner、Composer 可再次提交、按钮守卫失效)(A3)。
+      dispatch({ type: "restoreRunning", running: !!meta.running });
       dispatch({ type: "context", context: await app.ContextUsage() });
       dispatch({ type: "effort", effort: await app.Effort() });
       const history = await app.History();
       if (history && history.length) dispatch({ type: "history", messages: history });
+      // 切回标签:后台审批/ask 事件在该标签无人订阅时已发出,重订阅不会重放——主动补查
+      // 当前未应答的提示并补显弹窗(promptMu 保证至多一个未应答)(A2)。
+      const pending = await app.PendingPrompts(tabId);
+      if (pending.approvals?.length) {
+        dispatch({ type: "event", e: { kind: "approval_request", approval: pending.approvals[0] } as WireEvent });
+      } else if (pending.asks?.length) {
+        dispatch({ type: "event", e: { kind: "ask_request", ask: pending.asks[0] } as WireEvent });
+      }
     } catch {
       // Bound methods unavailable (pre-startup / build error) — ignore; Meta's
       // startupErr surfaces the reason once it's reachable.
     }
-  }, []);
+  }, [tabId]);
 
   useEffect(() => {
     // 切到这个标签时,先清掉上一个标签的 transcript,再订阅本标签通道并加载它的会话。
@@ -565,30 +586,32 @@ export function useController(tabId: string) {
     return undefined;
   }, []);
 
+  // 审批/问答/门控都按 tabId 路由到「事件来源标签」的 controller——后台标签的审批必须
+  // 答到它自己的 controller,而不是当前活动标签(A2/A8)。
   const approve = useCallback((id: string, allow: boolean, session: boolean) => {
     dispatch({ type: "clearApproval" });
-    app.Approve(id, allow, session).catch(() => {});
-  }, []);
+    app.Approve(tabId, id, allow, session).catch(() => {});
+  }, [tabId]);
 
   // answerQuestion resolves an ask_request with the user's per-question picks.
   const answerQuestion = useCallback((id: string, answers: QuestionAnswer[]) => {
     dispatch({ type: "clearAsk" });
-    app.AnswerQuestion(id, answers).catch(() => {});
-  }, []);
+    app.AnswerQuestion(tabId, id, answers).catch(() => {});
+  }, [tabId]);
 
   const setPlan = useCallback((on: boolean) => {
-    app.SetPlanMode(on).catch(() => {});
-  }, []);
+    app.SetPlanMode(tabId, on).catch(() => {});
+  }, [tabId]);
 
   // setCoach 设置会话级协作模式 persona(空串=默认)。
   const setCoach = useCallback((preamble: string) => {
-    app.SetCoachMode(preamble).catch(() => {});
-  }, []);
+    app.SetCoachMode(tabId, preamble).catch(() => {});
+  }, [tabId]);
 
   // setBypass toggles YOLO mode (auto-approve every tool call this session).
   const setBypass = useCallback((on: boolean) => {
-    app.SetBypass(on).catch(() => {});
-  }, []);
+    app.SetBypass(tabId, on).catch(() => {});
+  }, [tabId]);
 
   const newSession = useCallback(async () => {
     await app.NewSession().catch(() => {});

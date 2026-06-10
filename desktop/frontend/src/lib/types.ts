@@ -140,6 +140,14 @@ export interface Meta {
   eventChannel: string;
   cwd: string;
   bypass?: boolean; // YOLO mode on (auto-approve every tool call)
+  planMode?: boolean; // 该标签 controller 的真实 plan(只读)门控状态(A8)
+  running?: boolean; // 该标签是否有 turn 正在跑(切回时恢复 spinner/守卫)(A3)
+}
+
+// PendingPrompts 是某标签当前未应答的审批 / ask(切回标签时补显弹窗用)(A2)。
+export interface PendingPrompts {
+  approvals: WireApproval[];
+  asks: WireAsk[];
 }
 
 // TabMeta 是一个任务标签的快照(对应 desktop/app.go 的 TabMeta)。每个标签是一个独立

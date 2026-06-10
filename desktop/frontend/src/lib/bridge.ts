@@ -33,6 +33,7 @@ import type {
   Meta,
   ModelInfo,
   NetworkView,
+  PendingPrompts,
   ProviderView,
   QuestionAnswer,
   ServerView,
@@ -54,11 +55,14 @@ export interface AppBindings {
   Submit(input: string): Promise<void>;
   SubmitDisplay(display: string, input: string): Promise<void>;
   Cancel(): Promise<void>;
-  Approve(id: string, allow: boolean, session: boolean): Promise<void>;
-  AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
-  SetPlanMode(on: boolean): Promise<void>;
-  // 设置当前会话的「协作模式」persona(空串=默认):随每个 turn 注入,不进缓存系统前缀。
-  SetCoachMode(preamble: string): Promise<void>;
+  // 审批/问答/门控带 tabId:后台标签的审批必须答到事件来源标签的 controller(A2/A8)。
+  Approve(tabId: string, id: string, allow: boolean, session: boolean): Promise<void>;
+  AnswerQuestion(tabId: string, id: string, answers: QuestionAnswer[]): Promise<void>;
+  // PendingPrompts 返回某标签当前未应答的审批 / ask;切回标签时补显弹窗(A2)。
+  PendingPrompts(tabId: string): Promise<PendingPrompts>;
+  SetPlanMode(tabId: string, on: boolean): Promise<void>;
+  // 设置某标签的「协作模式」persona(空串=默认):随每个 turn 注入,不进缓存系统前缀。
+  SetCoachMode(tabId: string, preamble: string): Promise<void>;
   Compact(): Promise<void>;
   NewSession(): Promise<void>;
   // 多标签多任务(像 Codex / Claude Code):每个标签一个独立 controller + session,
@@ -167,8 +171,8 @@ export interface AppBindings {
   SetNetwork(n: NetworkView): Promise<void>;
   SetAgentParams(temperature: number, maxSteps: number, systemPrompt: string): Promise<void>;
   // SetBypass toggles YOLO mode (auto-approve every tool call this session; deny
-  // rules still apply). Runtime-only — not written to config.
-  SetBypass(on: boolean): Promise<void>;
+  // rules still apply). Runtime-only — not written to config. 按 tabId 路由(A8)。
+  SetBypass(tabId: string, on: boolean): Promise<void>;
   // Auto-updater (desktop/updater_app.go): the injected build version, a manifest
   // check, applying an update (win/linux self-update; macOS opens the download
   // page), and opening that page directly. Progress streams on "updater:progress".
@@ -535,6 +539,9 @@ function makeMockApp(): AppBindings {
     },
     async Approve() {},
     async AnswerQuestion() {},
+    async PendingPrompts() {
+      return { approvals: [], asks: [] };
+    },
     async SetPlanMode() {},
     async SetCoachMode() {},
     async Compact() {},
@@ -1073,7 +1080,7 @@ function makeMockApp(): AppBindings {
     async SetAgentParams(temperature: number, maxSteps: number, systemPrompt: string) {
       settings.agent = { temperature, maxSteps, systemPrompt };
     },
-    async SetBypass(on: boolean) {
+    async SetBypass(_tabId: string, on: boolean) {
       settings.bypass = on;
     },
     async Version() {

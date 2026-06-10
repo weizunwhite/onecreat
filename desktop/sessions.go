@@ -8,12 +8,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"reasonix/internal/fileutil"
 )
 
 // errActiveSession is returned when a delete targets the session in use.
 var errActiveSession = errors.New("can't delete the session you're in — start a new one first")
+
+// sidecarMu 串行化三个侧车文件(.titles/.display/.cwds)的「读全量→改→原子写回」。
+// 原子 rename 只保证文件不损坏,不防丢更新:多标签几乎同时 SubmitDisplay 时,后写会覆盖
+// 先写、丢一条 display/cwd 映射。每个读改写整段持锁即可(纯读函数不持锁,靠原子读)(A10)。
+var sidecarMu sync.Mutex
 
 // sessions.go holds the desktop-only session-management state that the shared
 // kernel doesn't model: custom display titles. A session on disk is just a JSONL
@@ -72,6 +78,8 @@ func rememberSessionCwd(dir, sessionPath, cwd string) error {
 	if strings.TrimSpace(sessionPath) == "" || strings.TrimSpace(cwd) == "" {
 		return nil
 	}
+	sidecarMu.Lock()
+	defer sidecarMu.Unlock()
 	m := loadSessionCwds(dir)
 	key := filepath.Base(sessionPath)
 	if _, ok := m[key]; ok {
@@ -120,6 +128,8 @@ func saveSessionTitles(dir string, m map[string]string) error {
 
 // setSessionTitle sets (or, with an empty title, clears) a session's custom name.
 func setSessionTitle(dir, sessionPath, title string) error {
+	sidecarMu.Lock()
+	defer sidecarMu.Unlock()
 	m := loadSessionTitles(dir)
 	key := filepath.Base(sessionPath)
 	if strings.TrimSpace(title) == "" {
@@ -135,6 +145,8 @@ func deleteSessionFile(dir, sessionPath string) error {
 	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	sidecarMu.Lock()
+	defer sidecarMu.Unlock()
 	m := loadSessionTitles(dir)
 	if _, ok := m[filepath.Base(sessionPath)]; ok {
 		delete(m, filepath.Base(sessionPath))
@@ -203,6 +215,8 @@ func recordSessionDisplay(dir, sessionPath, content, display string) error {
 	if strings.TrimSpace(sessionPath) == "" || content == display || strings.TrimSpace(display) == "" {
 		return nil
 	}
+	sidecarMu.Lock()
+	defer sidecarMu.Unlock()
 	m := loadSessionDisplays(dir)
 	key := filepath.Base(sessionPath)
 	if m[key] == nil {

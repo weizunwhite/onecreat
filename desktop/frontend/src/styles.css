@@ -848,6 +848,15 @@ body {
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
+/* A2:后台标签待审批的红点提示 */
+.sidebar-task__pending {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger, #e5484d);
+  box-shadow: 0 0 0 2px var(--bg, transparent);
+}
 .sidebar-task__close {
   flex: 0 0 auto;
   display: none;

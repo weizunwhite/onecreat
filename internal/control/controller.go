@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,7 +115,11 @@ type Controller struct {
 	sessionPath   string
 	approvals   map[string]chan approvalReply
 	asks        map[string]chan []event.AskAnswer
-	granted     map[string]bool
+	// pendingApprovals/pendingAsks 保存「已发出、尚未应答」的提示原始载荷,供切回标签时
+	// 重放(桌面多标签:后台标签的审批事件在它无人订阅时发出,切回来需要补发)(A2)。
+	pendingApprovals map[string]event.Approval
+	pendingAsks      map[string]event.Ask
+	granted          map[string]bool
 	nextID      int
 	// turn counts model turns this session, passed to hooks in their payload.
 	turn int
@@ -219,9 +224,11 @@ func New(opts Options) *Controller {
 		reg:           opts.Registry,
 		pluginCtx:     pluginCtx,
 		cpRoot:        opts.WorkspaceRoot,
-		approvals:     map[string]chan approvalReply{},
-		asks:          map[string]chan []event.AskAnswer{},
-		granted:       map[string]bool{},
+		approvals:        map[string]chan approvalReply{},
+		asks:             map[string]chan []event.AskAnswer{},
+		pendingApprovals: map[string]event.Approval{},
+		pendingAsks:      map[string]event.Ask{},
+		granted:          map[string]bool{},
 	}
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.rebindCheckpoints(opts.SessionPath)
@@ -588,10 +595,45 @@ func (c *Controller) Approve(id string, allow, session bool) {
 	c.mu.Lock()
 	reply := c.approvals[id]
 	delete(c.approvals, id)
+	delete(c.pendingApprovals, id)
 	c.mu.Unlock()
 	if reply != nil {
 		reply <- approvalReply{allow: allow, session: session} // buffered, never blocks
 	}
+}
+
+// PendingApprovals 返回当前已发出、尚未应答的审批请求(用于切回标签时重放),按 id 升序。
+func (c *Controller) PendingApprovals() []event.Approval {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]event.Approval, 0, len(c.pendingApprovals))
+	for _, a := range c.pendingApprovals {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return idLess(out[i].ID, out[j].ID) })
+	return out
+}
+
+// PendingAsks 返回当前已发出、尚未应答的 ask 请求(用于切回标签时重放),按 id 升序。
+func (c *Controller) PendingAsks() []event.Ask {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]event.Ask, 0, len(c.pendingAsks))
+	for _, a := range c.pendingAsks {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return idLess(out[i].ID, out[j].ID) })
+	return out
+}
+
+// idLess 按数值比较审批/ask 的字符串 id(它们是自增计数的十进制串),回退到字典序。
+func idLess(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	if aerr == nil && berr == nil {
+		return ai < bi
+	}
+	return a < b
 }
 
 // EnableInteractiveApproval swaps the executor's gate for one that routes "ask"
@@ -618,9 +660,11 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 	id := strconv.Itoa(c.nextID)
 	reply := make(chan []event.AskAnswer, 1)
 	c.asks[id] = reply
+	ask := event.Ask{ID: id, Questions: questions}
+	c.pendingAsks[id] = ask // 记录未应答的 ask,供切回标签时重放(A2)
 	c.mu.Unlock()
 
-	c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: id, Questions: questions}})
+	c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: ask})
 
 	select {
 	case ans := <-reply:
@@ -628,6 +672,7 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 	case <-ctx.Done():
 		c.mu.Lock()
 		delete(c.asks, id)
+		delete(c.pendingAsks, id)
 		c.mu.Unlock()
 		return nil, ctx.Err()
 	}
@@ -639,6 +684,7 @@ func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
 	c.mu.Lock()
 	reply := c.asks[id]
 	delete(c.asks, id)
+	delete(c.pendingAsks, id)
 	c.mu.Unlock()
 	if reply != nil {
 		reply <- answers // buffered, never blocks
@@ -1699,9 +1745,11 @@ func (c *Controller) requestApproval(ctx context.Context, tool, subject string) 
 	id := strconv.Itoa(c.nextID)
 	reply := make(chan approvalReply, 1)
 	c.approvals[id] = reply
+	approval := event.Approval{ID: id, Tool: tool, Subject: subject}
+	c.pendingApprovals[id] = approval // 记录未应答的审批,供切回标签时重放(A2)
 	c.mu.Unlock()
 
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject}})
+	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: approval})
 	// The agent now needs the user's attention; a Notification hook can ping an
 	// external channel (desktop notice, phone) while the run blocks on the reply.
 	if subject != "" {
@@ -1724,6 +1772,7 @@ func (c *Controller) requestApproval(ctx context.Context, tool, subject string) 
 	case <-ctx.Done():
 		c.mu.Lock()
 		delete(c.approvals, id)
+		delete(c.pendingApprovals, id)
 		c.mu.Unlock()
 		return false, false, ctx.Err()
 	}
