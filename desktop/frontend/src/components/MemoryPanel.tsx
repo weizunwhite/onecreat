@@ -123,7 +123,7 @@ function MemorySectionFile({
 }
 
 // MemoryPanel is the desktop memory manager: a right-side drawer over the loaded
-// REASONIX.md hierarchy and saved auto-memories. Unlike Claude Code's /memory
+// ONECREAT.md hierarchy and saved auto-memories. Unlike Claude Code's /memory
 // (which shells out to $EDITOR) it edits docs in place, and unlike Codex (no UI
 // at all) it shows the saved facts. Docs are editable; facts are read-only
 // (the model owns them via the `remember` tool). Quick-add mirrors the "#"
@@ -514,7 +514,7 @@ export function MemoryPanel({
 
             {/* Doc files — editable in place. */}
             <section className="mem-section">
-              <MemorySectionFile name="REASONIX.md" remark={t("memory.instructionsRemark")} count={view.docs.length} />
+              <MemorySectionFile name="ONECREAT.md" remark={t("memory.instructionsRemark")} count={view.docs.length} />
               <div className="mem-section__title">{t("memory.instructionFiles")}</div>
               {view.docs.length === 0 && (
                 <div className="mem-empty">{t("memory.noDocs")}</div>

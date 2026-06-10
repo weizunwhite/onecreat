@@ -32,14 +32,30 @@ func TestSymlinkedAgentAndClaudeDocsComposeOnce(t *testing.T) {
 	}
 }
 
-func TestDocPathDefaultsToAgents(t *testing.T) {
+func TestDocPathDefaultsToOnecreat(t *testing.T) {
 	proj := t.TempDir()
 	set := Load(Options{CWD: proj})
-	if got := set.DocPath(ScopeProject); filepath.Base(got) != "AGENTS.md" {
-		t.Errorf("fresh project should default to AGENTS.md, got %s", got)
+	// 产品对外只有 OneCreat:新项目的记忆文件默认建成 ONECREAT.md。
+	if got := set.DocPath(ScopeProject); filepath.Base(got) != "ONECREAT.md" {
+		t.Errorf("fresh project should default to ONECREAT.md, got %s", got)
 	}
-	if got := set.DocPath(ScopeLocal); filepath.Base(got) != "AGENTS.local.md" {
-		t.Errorf("fresh local should default to AGENTS.local.md, got %s", got)
+	if got := set.DocPath(ScopeLocal); filepath.Base(got) != "ONECREAT.local.md" {
+		t.Errorf("fresh local should default to ONECREAT.local.md, got %s", got)
+	}
+}
+
+// ONECREAT.md 会被发现且作为既有写入目标;旧名 REASONIX.md 仍兼容(另有用例)。
+func TestOnecreatMdDiscoveredAndPreferred(t *testing.T) {
+	proj := t.TempDir()
+	mustMkdir(t, filepath.Join(proj, ".git"))
+	mustWrite(t, filepath.Join(proj, "ONECREAT.md"), "Rule from ONECREAT.md")
+
+	set := Load(Options{CWD: proj})
+	if !strings.Contains(set.Block(), "Rule from ONECREAT.md") {
+		t.Fatalf("ONECREAT.md should be discovered:\n%s", set.Block())
+	}
+	if got := set.DocPath(ScopeProject); filepath.Base(got) != "ONECREAT.md" {
+		t.Errorf("existing ONECREAT.md should be the write target, got %s", got)
 	}
 }
 

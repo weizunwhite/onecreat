@@ -314,7 +314,7 @@ export const en = {
   "memory.instructionFile": "Instruction file",
   "memory.scopeTarget": "Write target",
   "memory.storeLocation": "Memory store",
-  "memory.noDocs": "No REASONIX.md found. Quick-add one above.",
+  "memory.noDocs": "No ONECREAT.md found. Quick-add one above.",
   "memory.savedMemories": "Saved memories",
   "memory.fallibleNote": "Background memory. Verify file, function, and flag references before relying on them.",
   "memory.searchPlaceholder": "Search title, slug, description, or body…",

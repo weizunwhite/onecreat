@@ -1,7 +1,7 @@
-// Package memory implements Reasonix's persistent memory. It mirrors Claude
-// Code's two-layer model while honoring Reasonix's cache-first architecture:
+// Package memory implements OneCreat's persistent memory. It mirrors Claude
+// Code's two-layer model while honoring the cache-first architecture:
 //
-//   - Hierarchical doc memory: REASONIX.md / AGENTS.md files discovered from the
+//   - Hierarchical doc memory: ONECREAT.md / AGENTS.md files discovered from the
 //     user config dir and up the project tree, with "@path" imports. This is the
 //     analog of CLAUDE.md.
 //   - Auto-memory store: per-project fact files with frontmatter plus a MEMORY.md
@@ -27,29 +27,27 @@ import (
 type Scope string
 
 const (
-	ScopeUser     Scope = "user"     // ~/.config/reasonix/REASONIX.md
-	ScopeAncestor Scope = "ancestor" // a REASONIX.md above the project root
-	ScopeProject  Scope = "project"  // ./REASONIX.md (committed, shared)
-	ScopeLocal    Scope = "local"    // ./REASONIX.local.md (personal, git-ignored)
+	ScopeUser     Scope = "user"     // 用户配置目录下的 ONECREAT.md
+	ScopeAncestor Scope = "ancestor" // 项目根之上的某级 ONECREAT.md
+	ScopeProject  Scope = "project"  // ./ONECREAT.md(入库共享)
+	ScopeLocal    Scope = "local"    // ./ONECREAT.local.md(个人,git 忽略)
 )
 
 // docNames are the recognized memory filenames at each level, in load order.
-// REASONIX.md is ours; AGENTS.md and CLAUDE.md are the cross-tool conventions.
-// When several distinct files exist in one directory, all load (each labeled with
-// its source path), so a repo already carrying an AGENTS.md / CLAUDE.md is picked
-// up without renaming. New docs are created as AGENTS.md (the universal
-// convention) — see defaultDocName / Set.DocPath.
-var docNames = []string{"REASONIX.md", "AGENTS.md", "CLAUDE.md"}
+// 产品对外只有 OneCreat:ONECREAT.md 是第一公民;REASONIX.md 是旧版兼容
+// (老项目不用改名);AGENTS.md / CLAUDE.md 是跨工具生态约定(Codex / Claude
+// Code 的项目照常被读)。同目录多个并存时全部加载、各自标注来源。
+var docNames = []string{"ONECREAT.md", "REASONIX.md", "AGENTS.md", "CLAUDE.md"}
 
 // localNames are the personal, git-ignored overrides, highest precedence.
-var localNames = []string{"REASONIX.local.md", "AGENTS.local.md", "CLAUDE.local.md"}
+var localNames = []string{"ONECREAT.local.md", "REASONIX.local.md", "AGENTS.local.md", "CLAUDE.local.md"}
 
 // defaultDocName / defaultLocalName are the filenames a fresh doc is created as
-// when a directory has none yet: AGENTS.md is the widely-shared convention, so a
-// new project's memory is portable to other agent tools out of the box.
+// when a directory has none yet. 新建用产品名 ONECREAT.md(品牌一致);需要跨
+// 工具共享的项目可手动用 AGENTS.md,读取侧四个名字都认。
 const (
-	defaultDocName   = "AGENTS.md"
-	defaultLocalName = "AGENTS.local.md"
+	defaultDocName   = "ONECREAT.md"
+	defaultLocalName = "ONECREAT.local.md"
 )
 
 // maxImportDepth bounds "@path" import recursion (matches Claude Code's limit).

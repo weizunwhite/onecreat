@@ -315,7 +315,7 @@ export const zh: Record<DictKey, string> = {
   "memory.instructionFile": "指令文件",
   "memory.scopeTarget": "写入文件",
   "memory.storeLocation": "记忆存储目录",
-  "memory.noDocs": "未找到 REASONIX.md。可在上方快速添加一条。",
+  "memory.noDocs": "未找到 ONECREAT.md。可在上方快速添加一条。",
   "memory.savedMemories": "已保存的记忆",
   "memory.fallibleNote": "这些是背景记忆。引用文件、函数或配置项前仍需验证。",
   "memory.searchPlaceholder": "搜索标题、slug、描述或正文…",

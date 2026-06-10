@@ -48,9 +48,9 @@ func Load(opts Options) *Set {
 
 // DocPath returns the doc-memory file a given scope writes to. To avoid splitting
 // a project's memory across conventions, it prefers a file that already exists
-// (REASONIX.md / AGENTS.md / CLAUDE.md, in that order); when none exists it
-// creates the universal default (AGENTS.md / AGENTS.local.md). ScopeUser →
-// <userDir>, ScopeLocal → <cwd> with the *.local.md names, anything else → <cwd>.
+// (ONECREAT.md / REASONIX.md / AGENTS.md / CLAUDE.md, in that order); when none
+// exists it creates the product default (ONECREAT.md / ONECREAT.local.md).
+// ScopeUser → <userDir>, ScopeLocal → <cwd> with the *.local.md names, anything else → <cwd>.
 // Returns "" for ScopeUser when no user dir is configured.
 func (s *Set) DocPath(scope Scope) string {
 	dir := s.CWD

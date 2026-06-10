@@ -125,16 +125,16 @@ Don't: install/update dependencies without asking; skip/delete/disable failing t
 
 Lead each turn with a one-line status (e.g. "▸ running go test ./… ", "▸ 2 failures in foo_test.go — first is …") so the user always knows where you are.`
 
-const builtinInitBody = `This skill is INLINED — you run in the parent loop. The user invoked /init: bootstrap (or refresh) this project's AGENTS.md — the durable memory file folded into every future session. Analyze the codebase, then write a concise, high-signal AGENTS.md.
+const builtinInitBody = `This skill is INLINED — you run in the parent loop. The user invoked /init: bootstrap (or refresh) this project's ONECREAT.md — the durable memory file folded into every future session. Analyze the codebase, then write a concise, high-signal ONECREAT.md.
 
 How to operate:
-1. Check for an existing memory doc first: list the project root and look for AGENTS.md / REASONIX.md / CLAUDE.md. If one exists, read it and IMPROVE it in place (fix stale facts, fill gaps) — write back to that same filename, don't clobber it wholesale or create a second file.
+1. Check for an existing memory doc first: list the project root and look for ONECREAT.md / AGENTS.md / REASONIX.md / CLAUDE.md. If one exists, read it and IMPROVE it in place (fix stale facts, fill gaps) — write back to that same filename, don't clobber it wholesale or create a second file.
 2. Explore enough to be accurate, not exhaustive:
    - Project shape: ls / directory listing, the manifest (go.mod, package.json, pyproject.toml, Cargo.toml, …), the README.
    - Build / test / run commands: derive them from the manifest + scripts and verify the exact names — don't guess.
    - Architecture: the main packages/modules and how they fit; the entry point(s).
    - Conventions: formatting, naming, error handling, testing patterns — infer from real code (read a few representative files), not assumptions.
-3. Write AGENTS.md with write_file (default filename AGENTS.md, unless an existing doc uses another name), each section terse:
+3. Write ONECREAT.md with write_file (default filename ONECREAT.md, unless an existing doc uses another name), each section terse:
    - Title + one-line description of the project.
    - ## Project — what it is, the stack, where the entry point lives.
    - ## Commands — the exact build / test / run / lint commands.

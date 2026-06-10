@@ -143,8 +143,8 @@ export interface AppBindings {
   SetModel(name: string): Promise<void>;
   Effort(): Promise<EffortInfo>;
   SetEffort(level: string): Promise<void>;
-  // Memory panel: read the loaded REASONIX.md hierarchy + saved auto-memories,
-  // quick-add a note to a scope's REASONIX.md (≡ "#<note>"), and overwrite a doc
+  // Memory panel: read the loaded ONECREAT.md hierarchy + saved auto-memories,
+  // quick-add a note to a scope's ONECREAT.md (≡ "#<note>"), and overwrite a doc
   // from the in-place editor.
   Memory(): Promise<MemoryView>;
   Remember(scope: string, note: string): Promise<string>;
@@ -324,7 +324,7 @@ function makeMockApp(): AppBindings {
   const capSkills: SkillView[] = [
     { name: "explore", description: "Investigate the codebase in an isolated subagent", scope: "builtin", runAs: "subagent" },
     { name: "review", description: "Review the staged diff", scope: "project", runAs: "inline" },
-    { name: "init", description: "Scaffold a REASONIX.md for this repo", scope: "builtin", runAs: "inline" },
+    { name: "init", description: "Scaffold a ONECREAT.md for this repo", scope: "builtin", runAs: "inline" },
   ];
   let capSkillRoots: SkillRootView[] = [
     { dir: "~/projects/reasonix/.reasonix/skills", scope: "project", priority: 1, status: "missing", configured: false, skills: 0 },
@@ -992,12 +992,12 @@ function makeMockApp(): AppBindings {
         storeDir: "~/.config/reasonix/projects/-mock/memory",
         docs: [
           {
-            path: "REASONIX.md",
+            path: "ONECREAT.md",
             scope: "project",
             body: "# onecreat project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
           },
           {
-            path: "~/.config/reasonix/REASONIX.md",
+            path: "~/.config/reasonix/ONECREAT.md",
             scope: "user",
             body: "# User memory\n\nAlways respond in 中文.",
           },
@@ -1011,15 +1011,15 @@ function makeMockApp(): AppBindings {
           },
         ],
         scopes: [
-          { scope: "user", path: "~/.config/reasonix/REASONIX.md" },
-          { scope: "project", path: "REASONIX.md" },
-          { scope: "local", path: "REASONIX.local.md" },
+          { scope: "user", path: "~/.config/reasonix/ONECREAT.md" },
+          { scope: "project", path: "ONECREAT.md" },
+          { scope: "local", path: "ONECREAT.local.md" },
         ],
       };
     },
     async Remember(scope: string, note: string) {
       emit({ kind: "notice", level: "info", text: `remembered → ${scope}` });
-      return `${scope} REASONIX.md (mock): ${note}`;
+      return `${scope} ONECREAT.md (mock): ${note}`;
     },
     async Forget(name: string) {
       emit({ kind: "notice", level: "info", text: `forgot → ${name}` });

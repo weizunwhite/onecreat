@@ -32,14 +32,21 @@
 - `multi_edit`(multiedit.go)如复用同类匹配逻辑,共用该 helper。
 - **测试**(write_tool_test.go 或新文件):精确路径回归;行尾空格差异命中;tab/空格缩进差异命中;模糊级多处命中报错;完全不匹配报错;替换写回的是原始窗口。
 
-### 2. AGENTS.md 兼容 + 向上多级合并
+### 2. 指令文件:ONECREAT.md 第一公民 + 生态兼容 ✅ 已完成
 
-**参考**:Codex `codex-rs/core/src/agents_md.rs`——从项目根(以 .git 为标记)到 cwd 逐级收集 AGENTS.md,按"根→cwd"顺序拼接,分隔符注明来源目录,总量上限 32KB,不越项目根向上。
+**盘点结论(动手前核实)**:internal/memory 已经具备 Codex agents_md.rs 的全部能力且更强——
+多文件名发现、用户全局 + 祖先链(以 .git 为根、不越界)+ 项目 + local 覆盖、@path 导入、
+同目录多文件全加载并按物理文件去重(防 symlink 双注入)。**无需新写发现逻辑。**
 
-**设计**:
-- 找到 onecreat 读 REASONIX.md 的位置(internal/ 内 memory/boot 相关,grep `REASONIX.md`),在同一注入点增加 AGENTS.md 读取:同目录下若同时存在 REASONIX.md 与 AGENTS.md,**REASONIX.md 优先、AGENTS.md 跳过**(避免双重注入);只有 AGENTS.md 时读它。
-- 实现逐级向上收集(止于 .git 所在根),按根→cwd 顺序拼接,带 `--- AGENTS.md ({dir}) ---` 分隔,总预算 32KB 截断。
-- **测试**:仅 AGENTS.md 时被注入;两者并存时只注入 REASONIX.md;嵌套目录合并顺序;32KB 截断。
+**实际改动**(产品对外只有 OneCreat):
+- `docNames` → `{ONECREAT.md, REASONIX.md, AGENTS.md, CLAUDE.md}`(读取四名全认:
+  旧项目 REASONIX.md 不用改名,Codex/CC 项目的 AGENTS.md/CLAUDE.md 照常被读);
+- 新建默认 `ONECREAT.md` / `ONECREAT.local.md`(原为 AGENTS.md;品牌一致优先,
+  需要跨工具共享的项目可手动用 AGENTS.md);写入仍优先既有文件、不分裂;
+- /init 技能、记忆面板、i18n 提示、mock 全部改为 ONECREAT.md 口径;
+- fileRemarks 给 ONECREAT.md/.local.md 加注记,REASONIX.md 标"旧名"。
+- **测试**:TestDocPathDefaultsToOnecreat、TestOnecreatMdDiscoveredAndPreferred;
+  旧名兼容由既有 TestDocPathPrefersExisting(REASONIX.md/CLAUDE.md)继续钉死。
 
 ### 3. 协作模式预设(干净版的"模式",非 auto-plan 回潮)
 
@@ -87,6 +94,19 @@
 - **进程级沙箱(seatbelt/landlock/bwrap)**:用户场景是老师在自己电脑跑自己项目,规则级把关足够;Go 移植与维护成本远超收益。
 - **app-server 协议层拆分**:仅在做 IDE 插件/多前端时才值;现 Wails 单体够用。
 - **审批 5 档 / profiles 档位矩阵**:与零配置哲学冲突;「协作模式预设」(第 3 项)已覆盖其实用部分。
+
+## 品牌统一第二批(深层标识,单独一刀)
+
+产品对外已统一为 OneCreat(指令文件/UI/文档口径,见第 2 项)。以下**代码内部标识**
+仍为 reasonix,刻意留到单独批次——它们牵涉用户数据迁移,不能顺手改:
+
+| 标识 | 现状 | 改名要点 |
+|---|---|---|
+| 用户配置/会话目录 | `~/Library/Application Support/reasonix/`(config.toml、sessions、memory) | 改名必须带**启动时自动迁移**(旧目录存在且新目录不存在→整体搬迁),否则用户配置/历史全部"丢失" |
+| Go module 路径 | `module reasonix`(全仓库 import) | 纯机械替换+全量测试,但 diff 巨大,单独提交 |
+| 环境变量 | `REASONIX_LANG` / `REASONIX_CONFIG_DIR` / `REASONIX_HARDWARE_MCP` | 新名优先、旧名兜底读一段时间 |
+| 二进制名 | `reasonix-hardware-mcp`、`reasonix-desktop` | 牵动打包脚本/NSIS/release workflow/resolveHardwareMCP 查找名 |
+| 旧版内核文档 | docs/SPEC.md、MIGRATING.md、CHECKPOINTS.md 等 | 描述的就是 reasonix 内核,随深层改名一起更新 |
 
 ## 执行顺序与提交
 

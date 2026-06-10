@@ -140,7 +140,7 @@ var English = Messages{
 	ListMcpHeader:       "mcp servers",
 	ListMcpNone:         "mcp: no servers connected — add one in reasonix.toml ([[plugins]]) or a project .mcp.json",
 
-	MemoryNone:             "memory: none — add with “#<note>” or create REASONIX.md in the project root",
+	MemoryNone:             "memory: none — add with “#<note>” or create ONECREAT.md in the project root",
 	MemoryLoaded:           "memory loaded:",
 	MemorySavedHeader:      "  saved memories (delete with “/forget <name>”):",
 	MemoryStoredUnderFmt:   "  stored under %s",
