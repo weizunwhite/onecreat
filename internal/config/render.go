@@ -155,7 +155,7 @@ func RenderTOML(c *Config) string {
 
 	b.WriteString("[tools]\n")
 	if len(c.Tools.Enabled) == 0 {
-		b.WriteString("enabled = []   # empty = all built-in tools\n\n")
+		b.WriteString("enabled = []   # empty = all built-in tools\n")
 	} else {
 		b.WriteString("enabled = [")
 		for i, t := range c.Tools.Enabled {
@@ -164,8 +164,21 @@ func RenderTOML(c *Config) string {
 			}
 			fmt.Fprintf(&b, "%q", t)
 		}
-		b.WriteString("]\n\n")
+		b.WriteString("]\n")
 	}
+	// [tools.search] 过去不被渲染,导致保存后 engine/rg_path 丢失(D1)。
+	b.WriteString("\n[tools.search]\n")
+	if c.Tools.Search.Engine != "" {
+		fmt.Fprintf(&b, "engine  = %q   # auto|native|rg\n", c.Tools.Search.Engine)
+	} else {
+		b.WriteString("# engine  = \"auto\"   # auto|native|rg; empty = auto\n")
+	}
+	if c.Tools.Search.RgPath != "" {
+		fmt.Fprintf(&b, "rg_path = %q\n", c.Tools.Search.RgPath)
+	} else {
+		b.WriteString("# rg_path = \"/usr/local/bin/rg\"   # pin a specific ripgrep binary\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("[skills]\n")
 	if len(c.Skills.Paths) > 0 {
@@ -217,9 +230,21 @@ func RenderTOML(c *Config) string {
 	}
 	b.WriteString("\n")
 
+	renderCodegraph(&b, c)
+	renderLSP(&b, c)
+
 	b.WriteString("# External MCP servers. type: \"stdio\" (default, a subprocess) | \"http\" | \"sse\".\n")
 	b.WriteString("# ${VAR} / ${VAR:-default} are expanded from the environment in command/args/env/url/headers.\n")
-	if len(c.Plugins) == 0 {
+	// 只渲染来自 reasonix.toml 的插件;来自 .mcp.json 的(Source=="mcp.json")跳过——
+	// 否则一次 Save 会把它们永久复制进 reasonix.toml,并在名字冲突时反过来遮蔽 .mcp.json(D2)。
+	tomlPlugins := make([]PluginEntry, 0, len(c.Plugins))
+	for _, pl := range c.Plugins {
+		if pl.fromMCPJSON() {
+			continue
+		}
+		tomlPlugins = append(tomlPlugins, pl)
+	}
+	if len(tomlPlugins) == 0 {
 		b.WriteString("# [[plugins]]\n")
 		b.WriteString("# name    = \"example\"\n")
 		b.WriteString("# command = \"reasonix-plugin-example\"\n")
@@ -229,7 +254,7 @@ func RenderTOML(c *Config) string {
 		b.WriteString("# url     = \"https://mcp.stripe.com\"\n")
 		b.WriteString("# headers = { Authorization = \"Bearer ${STRIPE_KEY}\" }\n")
 	} else {
-		for _, pl := range c.Plugins {
+		for _, pl := range tomlPlugins {
 			b.WriteString("\n[[plugins]]\n")
 			fmt.Fprintf(&b, "name    = %q\n", pl.Name)
 			if pl.Type != "" {
@@ -253,10 +278,67 @@ func RenderTOML(c *Config) string {
 			if pl.AutoStart != nil {
 				fmt.Fprintf(&b, "auto_start = %v\n", *pl.AutoStart)
 			}
+			// tier 仅当非默认("lazy")时写出,避免每个插件都多一行噪音;但非默认值必须
+			// 持久化,否则 eager 插件保存后降级 lazy(D1)。
+			if t := pl.ResolvedTier(); t != "lazy" {
+				fmt.Fprintf(&b, "tier    = %q   # eager|lazy|background\n", t)
+			}
 		}
 	}
 
 	return b.String()
+}
+
+// renderCodegraph 写出 [codegraph] 段(enabled/auto_install/path)。这些字段过去不被
+// RenderTOML 渲染,导致任一次保存都把 codegraph.enabled=false 丢失、下次启动又默认开启
+// 并触发自动下载(D1)。
+func renderCodegraph(b *strings.Builder, c *Config) {
+	b.WriteString("[codegraph]\n")
+	b.WriteString("# Built-in CodeGraph code intelligence (codegraph_* tools). enabled=false drops them.\n")
+	fmt.Fprintf(b, "enabled      = %v\n", c.Codegraph.Enabled)
+	fmt.Fprintf(b, "auto_install = %v   # fetch the runtime into the cache on first use\n", c.Codegraph.AutoInstall)
+	if c.Codegraph.Path != "" {
+		fmt.Fprintf(b, "path         = %q\n", c.Codegraph.Path)
+	} else {
+		b.WriteString("# path       = \"/usr/local/bin/codegraph\"   # override binary resolution\n")
+	}
+	b.WriteString("\n")
+}
+
+// renderLSP 写出 [lsp] 段(enabled + [lsp.servers.<lang>] 覆盖)。过去不被渲染,导致
+// 保存后 lsp 的 enabled/servers 丢失(D1)。
+func renderLSP(b *strings.Builder, c *Config) {
+	b.WriteString("[lsp]\n")
+	b.WriteString("# Optional Language Server Protocol tools (dormant until a server is on PATH).\n")
+	fmt.Fprintf(b, "enabled = %v\n", c.LSP.Enabled)
+	langs := make([]string, 0, len(c.LSP.Servers))
+	for lang := range c.LSP.Servers {
+		langs = append(langs, lang)
+	}
+	sort.Strings(langs)
+	for _, lang := range langs {
+		s := c.LSP.Servers[lang]
+		fmt.Fprintf(b, "\n[lsp.servers.%s]\n", lang)
+		if s.Command != "" {
+			fmt.Fprintf(b, "command      = %q\n", s.Command)
+		}
+		if len(s.Args) > 0 {
+			fmt.Fprintf(b, "args         = %s\n", renderStringArray(s.Args))
+		}
+		if len(s.Env) > 0 {
+			fmt.Fprintf(b, "env          = %s\n", renderStringMap(s.Env))
+		}
+		if s.LanguageID != "" {
+			fmt.Fprintf(b, "language_id  = %q\n", s.LanguageID)
+		}
+		if len(s.Extensions) > 0 {
+			fmt.Fprintf(b, "extensions   = %s\n", renderStringArray(s.Extensions))
+		}
+		if s.InstallHint != "" {
+			fmt.Fprintf(b, "install_hint = %q\n", s.InstallHint)
+		}
+	}
+	b.WriteString("\n")
 }
 
 // renderStringArray renders a []string as a TOML inline array.

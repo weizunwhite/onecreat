@@ -60,6 +60,7 @@ func loadMCPJSON(path string) ([]PluginEntry, error) {
 			URL:       s.URL,
 			Headers:   s.Headers,
 			AutoStart: s.AutoStart,
+			Source:    pluginSourceMCPJSON, // 标记来源:RenderTOML/Save 不把它写进 reasonix.toml(D2)
 		})
 	}
 	return entries, nil

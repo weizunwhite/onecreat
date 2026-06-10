@@ -34,8 +34,14 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 		},
 	}
 	orig.Skills.Paths = []string{"~/my-skills", "../shared/skills"}
+	// D1:这些 section/字段过去不被 RenderTOML 渲染,任一次保存都会丢失。设为非默认值。
+	orig.Codegraph = CodegraphConfig{Enabled: false, AutoInstall: false, Path: "/opt/codegraph"}
+	orig.LSP = LSPConfig{Enabled: false, Servers: map[string]LSPServer{
+		"elixir": {Command: "elixir-ls", LanguageID: "elixir", Extensions: []string{".ex", ".exs"}, InstallHint: "mix do local.hex"},
+	}}
+	orig.Tools.Search = SearchConfig{Engine: "rg", RgPath: "/usr/local/bin/rg"}
 	orig.Plugins = []PluginEntry{
-		{Name: "example", Command: "reasonix-plugin-example"},
+		{Name: "example", Command: "reasonix-plugin-example", Tier: "eager"}, // D1:tier 必须持久化
 		{Name: "stripe", Type: "http", URL: "https://mcp.stripe.com", Headers: map[string]string{"Authorization": "Bearer x"}, AutoStart: boolPtr(false)},
 	}
 	mm, _ := orig.Provider("mimo-pro")
@@ -119,6 +125,54 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if stripe.AutoStart == nil || *stripe.AutoStart {
 		t.Errorf("auto_start should render and parse as false, got %+v", stripe.AutoStart)
+	}
+	// D1:tier 必须 round-trip(eager 插件保存后不能降级 lazy)。
+	if got.Plugins[0].ResolvedTier() != "eager" {
+		t.Errorf("plugin tier = %q, want eager", got.Plugins[0].ResolvedTier())
+	}
+	// D1:[codegraph] / [lsp] / [tools.search] 必须 round-trip。
+	if got.Codegraph.Enabled || got.Codegraph.AutoInstall || got.Codegraph.Path != "/opt/codegraph" {
+		t.Errorf("codegraph not preserved: %+v", got.Codegraph)
+	}
+	if got.LSP.Enabled {
+		t.Errorf("lsp.enabled should be false")
+	}
+	el, ok := got.LSP.Servers["elixir"]
+	if !ok || el.Command != "elixir-ls" || el.LanguageID != "elixir" || len(el.Extensions) != 2 || el.InstallHint != "mix do local.hex" {
+		t.Errorf("lsp.servers.elixir not preserved: %+v (ok=%v)", el, ok)
+	}
+	if got.Tools.Search.Engine != "rg" || got.Tools.Search.RgPath != "/usr/local/bin/rg" {
+		t.Errorf("tools.search not preserved: %+v", got.Tools.Search)
+	}
+}
+
+// TestRenderTOMLSkipsMCPJSONPlugins 钉死 D2:来自 .mcp.json 的插件(Source=="mcp.json")
+// 不能被写进 reasonix.toml,否则一次 Save 就把它永久复制进来并遮蔽用户的 .mcp.json。
+func TestRenderTOMLSkipsMCPJSONPlugins(t *testing.T) {
+	c := Default()
+	c.Plugins = []PluginEntry{
+		{Name: "from_toml", Command: "x"},
+		{Name: "from_mcpjson", Command: "y", Source: pluginSourceMCPJSON},
+	}
+	rendered := RenderTOML(c)
+
+	var got Config
+	if _, err := toml.Decode(rendered, &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v", err)
+	}
+	for _, p := range got.Plugins {
+		if p.Name == "from_mcpjson" {
+			t.Fatalf(".mcp.json plugin was copied into reasonix.toml: %+v", p)
+		}
+	}
+	found := false
+	for _, p := range got.Plugins {
+		if p.Name == "from_toml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("reasonix.toml plugin should still be rendered")
 	}
 }
 

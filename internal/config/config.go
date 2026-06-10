@@ -368,7 +368,20 @@ type PluginEntry struct {
 	//                  swap happens once the spawn finishes.
 	// Empty defaults to "lazy" so adding a plugin never slows the next launch.
 	Tier string `toml:"tier"`
+
+	// Source marks where this entry came from at load time: "" / "toml" for
+	// reasonix.toml's [[plugins]], "mcp.json" for a project-root .mcp.json. It is
+	// runtime-only (never (de)serialized) — RenderTOML/Save skip "mcp.json" entries
+	// so a `cfg.Save()` triggered by /mcp add doesn't permanently copy .mcp.json
+	// servers into reasonix.toml and then shadow the user's .mcp.json edits (D2).
+	Source string `toml:"-" json:"-"`
 }
+
+// fromMCPJSON reports whether this entry was loaded from a project-root .mcp.json
+// (not editable by us) rather than reasonix.toml.
+func (e PluginEntry) fromMCPJSON() bool { return e.Source == pluginSourceMCPJSON }
+
+const pluginSourceMCPJSON = "mcp.json"
 
 func (e PluginEntry) ShouldAutoStart() bool {
 	return e.AutoStart == nil || *e.AutoStart
