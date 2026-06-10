@@ -27,7 +27,28 @@ import {
 } from "lucide-react";
 import logo from "./assets/onecreat-logo.png";
 import { useT, t as i18nT } from "./lib/i18n";
+import type { DictKey } from "./locales/en";
 import { useController } from "./lib/useController";
+
+// 协作模式 persona:label/desc 走 i18n;preamble 是发给模型的中文指令(同首页卡片
+// prompt 的决策——产品中文优先,不入 i18n)。空 preamble = 默认无角色。
+const COACH_MODES: { key: string; labelKey: DictKey; descKey: DictKey; preamble: string }[] = [
+  { key: "", labelKey: "coach.default", descKey: "coach.defaultDesc", preamble: "" },
+  {
+    key: "student",
+    labelKey: "coach.student",
+    descKey: "coach.studentDesc",
+    preamble:
+      "你正在辅导一名 1-9 年级的学生做科技创新项目。用引导式教学:多用提问启发他自己思考,不要直接给出完整代码或现成答案;每讲一步都让学生理解并能复述这一步在做什么、为什么这么做;鼓励为主、允许试错。牢记:学生必须能在答辩时逐行解释自己的项目,AI 只是辅助的手,不能替他完成思考和采集数据。",
+  },
+  {
+    key: "teacher",
+    labelKey: "coach.teacher",
+    descKey: "coach.teacherDesc",
+    preamble:
+      "你正在帮一线科技教育老师备课、准备项目材料。可以直接产出完整、可用的内容,但每个关键技术点都要附一句「为什么这么做」的教学解释,方便老师讲给学生;用词通俗,默认面向 1-9 年级。",
+  },
+];
 import { Transcript } from "./components/Transcript";
 import { SessionArtifacts } from "./components/SessionArtifacts";
 import { Composer } from "./components/Composer";
@@ -319,6 +340,7 @@ export default function App() {
     approve,
     answerQuestion,
     setPlan,
+    setCoach,
     setBypass,
     listSessions,
     resumeSession,
@@ -338,6 +360,12 @@ export default function App() {
   } = useController(activeTabId);
   const t = useT();
   const [mode, setMode] = useState<Mode>("normal");
+  // 协作模式 persona key(""=默认)。setCoach 作用于「活动 tab」的 controller,
+  // 所以换模式或切 tab 时都重新注入,让新 tab 也续上当前 persona。
+  const [coachKey, setCoachKey] = useState<string>("");
+  useEffect(() => {
+    setCoach(COACH_MODES.find((m) => m.key === coachKey)?.preamble ?? "");
+  }, [coachKey, activeTabId, setCoach]);
   const [memView, setMemView] = useState<MemoryView | null>(null);
   const [histView, setHistView] = useState<SessionMeta[] | null>(null);
   const [sidebarSessions, setSidebarSessions] = useState<SessionMeta[]>([]);
@@ -1492,6 +1520,11 @@ export default function App() {
               }}
               skills={skills}
               onManageSkills={() => setCapsOpen(true)}
+              coach={{
+                key: coachKey,
+                setKey: setCoachKey,
+                modes: COACH_MODES.map((m) => ({ key: m.key, label: t(m.labelKey), desc: t(m.descKey) })),
+              }}
               disabled={state.meta?.ready === false || state.approval != null}
             />
             <StatusBar

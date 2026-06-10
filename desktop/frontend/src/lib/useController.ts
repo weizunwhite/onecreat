@@ -580,6 +580,11 @@ export function useController(tabId: string) {
     app.SetPlanMode(on).catch(() => {});
   }, []);
 
+  // setCoach 设置会话级协作模式 persona(空串=默认)。
+  const setCoach = useCallback((preamble: string) => {
+    app.SetCoachMode(preamble).catch(() => {});
+  }, []);
+
   // setBypass toggles YOLO mode (auto-approve every tool call this session).
   const setBypass = useCallback((on: boolean) => {
     app.SetBypass(on).catch(() => {});
@@ -737,6 +742,7 @@ export function useController(tabId: string) {
     approve,
     answerQuestion,
     setPlan,
+    setCoach,
     setBypass,
     newSession,
     listSessions,

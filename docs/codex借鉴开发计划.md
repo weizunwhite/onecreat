@@ -48,14 +48,24 @@
 - **测试**:TestDocPathDefaultsToOnecreat、TestOnecreatMdDiscoveredAndPreferred;
   旧名兼容由既有 TestDocPathPrefersExisting(REASONIX.md/CLAUDE.md)继续钉死。
 
-### 3. 协作模式预设(干净版的"模式",非 auto-plan 回潮)
+### 3. 协作模式预设(干净版的"模式",非 auto-plan 回潮)✅ 已完成
 
-**参考**:Codex `tui/collaboration_modes.rs`——开局可选模式,每个模式 = 一套参数化开场指令;**用户显式选**,不做关键词猜测。
+**参考**:Codex `tui/collaboration_modes.rs`——用户显式选,不做关键词猜测。
 
-**设计**(轻):
-- 在首页启动台或 composer 模式选择处,增加 2~3 个教培模式:「学生自学」(多引导提问、不直接给完整答案、每步让学生复述)、「作业助手」(直接干活)、「老师备课」(产出教学材料口径)。本质 = 不同的开场 system 注入文案,复用现有 onPrompt/手段,不动内核。
-- 默认 = 现状(无模式),不强迫选择,符合零配置。
-- **验证**:选模式后首条 prompt 带上对应指令;不选则与现状完全一致。
+**实际实现**(会话级 persona,正交于 计划/YOLO 审批维度):
+- 复用 Compose 的会话级注入机制(同 plan marker / memory-update):controller 加
+  `coachPreamble` 字段 + `SetCoachMode(preamble)`;Compose 把 persona 以
+  `<coaching-style>…</coaching-style>` 放在用户文本**之后**注入——既像 system
+  reminder,又让首条消息开头仍是用户问题、预览天然干净;previewSession 再剥一道
+  防短问题露出元指令。**不动系统提示缓存**(prefix 不变,切模式即时生效)。
+- 3 个模式(文案在前端常量、中文;label/desc 走 i18n):默认 / 学生引导(引导式、
+  不直接给答案、每步让学生复述、落实"学生必须能逐行解释")/ 老师助手(产出完整
+  材料 + 每个技术点附「为什么」教学解释)。默认空 persona = 现状,不强迫选。
+- UI:composer 底部 GraduationCap chip + 下拉,和 知识库/技能/审批模式 并排。
+- setCoach 作用于活动 tab 的 controller;App 用 effect 在「换模式或切 tab」时重注入,
+  新 tab 自动续上当前 persona。
+- **测试**:TestComposeCoachMode(默认原样 / 注入在尾部 / 每轮持续 / 清空复位);
+  既有 previewSession 测试 + 新剥离逻辑覆盖预览干净。root 40 包 + desktop + tsc 全绿。
 
 ### 4. 系统提示措辞借鉴(纯文案)
 

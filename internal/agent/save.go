@@ -176,6 +176,11 @@ func previewSession(path string) (string, int) {
 						s = strings.TrimSpace(s[i+1:])
 					}
 				}
+				// 协作模式 persona 以 <coaching-style>…</coaching-style> 注入在尾部,
+				// 同样从预览里剥掉,避免短问题时预览露出元指令。
+				if i := strings.Index(s, "<coaching-style>"); i >= 0 {
+					s = strings.TrimSpace(s[:i])
+				}
 				if r := []rune(s); len(r) > 80 {
 					s = string(r[:77]) + "…"
 				}

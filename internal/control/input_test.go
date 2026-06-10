@@ -59,6 +59,32 @@ func TestComposePlanModeMarker(t *testing.T) {
 	}
 }
 
+func TestComposeCoachMode(t *testing.T) {
+	c := New(Options{})
+
+	if got := c.Compose("写个呼吸灯"); got != "写个呼吸灯" {
+		t.Errorf("默认无 persona 应原样返回,得到 %q", got)
+	}
+
+	c.SetCoachMode("你在辅导一名学生,多用提问引导,不要直接给完整答案。")
+	got := c.Compose("写个呼吸灯")
+	// 用户问题在最前(预览天然干净),persona 以 XML 块在尾部、每轮注入。
+	if !strings.HasPrefix(got, "写个呼吸灯") {
+		t.Errorf("用户文本应在最前: %q", got)
+	}
+	if !strings.Contains(got, "<coaching-style>") || !strings.Contains(got, "多用提问引导") {
+		t.Errorf("应注入协作模式 persona: %q", got)
+	}
+	if got2 := c.Compose("再来一个"); !strings.Contains(got2, "<coaching-style>") {
+		t.Errorf("persona 是会话级、应持续每轮注入,得到 %q", got2)
+	}
+
+	c.SetCoachMode("") // 切回默认
+	if got3 := c.Compose("第三个"); got3 != "第三个" {
+		t.Errorf("清空 persona 后应原样返回,得到 %q", got3)
+	}
+}
+
 func TestComposeDrainsQueuedMemory(t *testing.T) {
 	c := New(Options{}) // no executor/memory — QueueMemory still queues a turn-tail note
 

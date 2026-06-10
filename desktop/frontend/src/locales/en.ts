@@ -82,6 +82,16 @@ export const en = {
   "artifacts.title": "Outputs",
   "artifacts.tooltip": "Files created or modified in this session",
 
+  // Coaching mode (how the assistant responds — orthogonal to plan/yolo)
+  "coach.label": "Coaching",
+  "coach.title": "Coaching mode — how the assistant responds (independent of the approval mode)",
+  "coach.default": "Default",
+  "coach.defaultDesc": "Just get the work done, no persona",
+  "coach.student": "Guide the student",
+  "coach.studentDesc": "Socratic — ask, don't hand over answers",
+  "coach.teacher": "Teacher's aide",
+  "coach.teacherDesc": "Full output plus teaching notes",
+
   // Welcome vertical launch cards
   "welcome.v.hardware.title": "Hardware project",
   "welcome.v.hardware.desc": "Pick board, compile, flash, serial — open the hardware workbench",

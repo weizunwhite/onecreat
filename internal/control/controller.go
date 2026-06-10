@@ -106,7 +106,12 @@ type Controller struct {
 	cancel      context.CancelFunc
 	running     bool
 	planMode    bool
-	sessionPath string
+	// coachPreamble 是会话级「协作模式」persona(如学生引导 / 老师助手):一段
+	// 由前端选定的口径文案,Compose 把它作为 <coaching-style> 块随每个 turn 注入
+	// (发给模型、不进缓存系统前缀),空串=默认无 persona。XML 包裹使其在侧栏
+	// 预览里被自动剥掉,不污染会话标题。
+	coachPreamble string
+	sessionPath   string
 	approvals   map[string]chan approvalReply
 	asks        map[string]chan []event.AskAnswer
 	granted     map[string]bool
@@ -658,6 +663,16 @@ func (c *Controller) PlanMode() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.planMode
+}
+
+// SetCoachMode sets the session-level coaching persona (an empty string clears
+// it). Compose injects the preamble as a <coaching-style> block on each turn —
+// session-scoped, never the cached system prefix — so switching takes effect
+// immediately without busting the prompt cache.
+func (c *Controller) SetCoachMode(preamble string) {
+	c.mu.Lock()
+	c.coachPreamble = strings.TrimSpace(preamble)
+	c.mu.Unlock()
 }
 
 // Compact runs one compaction pass on the executor's session on demand.

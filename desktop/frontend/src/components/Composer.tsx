@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, BookOpen, Check, ChevronDown, Eye, FileText, FolderGit2, FolderPlus, Loader2, Paperclip, Search, Sparkles, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, BookOpen, Check, ChevronDown, Eye, FileText, FolderGit2, FolderPlus, GraduationCap, Loader2, Paperclip, Search, Sparkles, Square, Trash2, X } from "lucide-react";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
@@ -64,6 +64,7 @@ export function Composer({
   knowledge,
   skills,
   onManageSkills,
+  coach,
   disabled,
 }: {
   running: boolean;
@@ -75,6 +76,12 @@ export function Composer({
   onCancel: () => string | undefined;
   onCycleMode: () => void;
   onPickFolder: (path?: string) => Promise<string>;
+  // 协作模式 persona 选择器(默认/学生引导/老师助手):与 计划/YOLO 审批维度正交。
+  coach?: {
+    key: string;
+    setKey: (key: string) => void;
+    modes: { key: string; label: string; desc: string }[];
+  };
   // 知识库内联选择器:默认「自动」(检索全部);可勾选指定库、关闭、或打开面板管理。
   knowledge?: {
     bases: { id: string; name: string }[];
@@ -95,6 +102,8 @@ export function Composer({
   // 绝对定位向上弹会被裁),坐标按按钮位置算,向上弹出。
   const [kbMenuOpen, setKbMenuOpen] = useState(false);
   const [kbMenuPos, setKbMenuPos] = useState<{ left: number; bottom: number } | null>(null);
+  const [coachMenuOpen, setCoachMenuOpen] = useState(false);
+  const [coachMenuPos, setCoachMenuPos] = useState<{ left: number; bottom: number } | null>(null);
   const kbWrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!kbMenuOpen) return;
@@ -953,6 +962,45 @@ export function Composer({
                     </button>
                   )}
                 </div>
+              )}
+            </div>
+          )}
+          {coach && (
+            <div className="composer__kb">
+              <button
+                type="button"
+                className={`composer__kb-toggle${coach.key ? " composer__kb-toggle--on" : ""}`}
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setCoachMenuPos({ left: r.left, bottom: window.innerHeight - r.top + 6 });
+                  setCoachMenuOpen((v) => !v);
+                }}
+                title={t("coach.title")}
+              >
+                <GraduationCap size={13} />
+                <span>{coach.modes.find((m) => m.key === coach.key)?.label ?? t("coach.default")}</span>
+                <ChevronDown size={12} />
+              </button>
+              {coachMenuOpen && coachMenuPos && (
+                <>
+                  <div className="composer__kb-backdrop" onClick={() => setCoachMenuOpen(false)} />
+                  <div className="composer__kb-menu" style={{ left: coachMenuPos.left, bottom: coachMenuPos.bottom }}>
+                    {coach.modes.map((m) => (
+                      <button
+                        type="button"
+                        key={m.key || "default"}
+                        className={`composer__kb-item${coach.key === m.key ? " composer__kb-item--on" : ""}`}
+                        onClick={() => {
+                          coach.setKey(m.key);
+                          setCoachMenuOpen(false);
+                        }}
+                      >
+                        <span className="composer__skill-name">{m.label}</span>
+                        <span className="composer__skill-desc">{m.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
           )}

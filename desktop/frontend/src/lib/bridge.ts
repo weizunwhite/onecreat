@@ -57,6 +57,8 @@ export interface AppBindings {
   Approve(id: string, allow: boolean, session: boolean): Promise<void>;
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   SetPlanMode(on: boolean): Promise<void>;
+  // 设置当前会话的「协作模式」persona(空串=默认):随每个 turn 注入,不进缓存系统前缀。
+  SetCoachMode(preamble: string): Promise<void>;
   Compact(): Promise<void>;
   NewSession(): Promise<void>;
   // 多标签多任务(像 Codex / Claude Code):每个标签一个独立 controller + session,
@@ -534,6 +536,7 @@ function makeMockApp(): AppBindings {
     async Approve() {},
     async AnswerQuestion() {},
     async SetPlanMode() {},
+    async SetCoachMode() {},
     async Compact() {},
     async NewSession() {},
     async CreateTab(kind: string) {

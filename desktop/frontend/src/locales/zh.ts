@@ -83,6 +83,16 @@ export const zh: Record<DictKey, string> = {
   "artifacts.title": "本次产出",
   "artifacts.tooltip": "本次会话生成/修改过的文件",
 
+  // 协作模式(怎么回应——与 计划/YOLO 审批维度正交)
+  "coach.label": "协作模式",
+  "coach.title": "协作模式 — 决定助手怎么回应(与审批模式相互独立)",
+  "coach.default": "默认",
+  "coach.defaultDesc": "直接干活,不附加角色",
+  "coach.student": "学生引导",
+  "coach.studentDesc": "引导式,不直接给答案",
+  "coach.teacher": "老师助手",
+  "coach.teacherDesc": "产出材料 + 教学解释",
+
   // 首页垂直启动卡
   "welcome.v.hardware.title": "硬件项目",
   "welcome.v.hardware.desc": "选板卡、编译、烧录、看串口 — 打开硬件工作台",

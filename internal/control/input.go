@@ -18,6 +18,7 @@ const PlanModeMarker = "[Plan mode — read-only. Explore the codebase first (re
 func (c *Controller) Compose(text string) string {
 	c.mu.Lock()
 	plan := c.planMode
+	coach := c.coachPreamble
 	notes := c.pendingMemory
 	c.pendingMemory = nil
 	c.mu.Unlock()
@@ -47,6 +48,13 @@ func (c *Controller) Compose(text string) string {
 		if note := c.jobs.DrainCompletedNote(); note != "" {
 			text = "<background-jobs>\n" + note + "\n</background-jobs>\n\n" + text
 		}
+	}
+
+	// 协作模式 persona 放在用户文本「之后」:既像一条 system reminder 提醒模型本轮
+	// 如何回应,又让首条用户消息的开头仍是用户真实问题,侧栏预览天然干净。
+	// XML 包裹,前端 cleanSessionPreview 也会剥它(双保险)。
+	if coach != "" {
+		text = text + "\n\n<coaching-style>\n" + coach + "\n</coaching-style>"
 	}
 	return text
 }

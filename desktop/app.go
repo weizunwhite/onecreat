@@ -409,6 +409,17 @@ func (a *App) SetPlanMode(on bool) {
 	}
 }
 
+// SetCoachMode 设置当前会话的「协作模式」persona(空串=默认无 persona)。
+// preamble 是前端选定的口径文案,作用于活动标签,随每个 turn 注入(见 Compose)。
+func (a *App) SetCoachMode(preamble string) {
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl != nil {
+		ctrl.SetCoachMode(preamble)
+	}
+}
+
 // QuestionAnswer is the frontend's reply to one question in an ask_request.
 type QuestionAnswer struct {
 	QuestionID string   `json:"questionId"`
