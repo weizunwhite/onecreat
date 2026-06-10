@@ -42,6 +42,21 @@ func (s *Session) Replace(msgs []provider.Message) {
 	s.Messages = msgs
 }
 
+// Truncate cuts the message log back to boundary (keeping msgs[:boundary]) under
+// the lock, so a rewind from a serve/HTTP request goroutine doesn't race History
+// reads. It returns false WITHOUT modifying anything when boundary is out of range
+// (e.g. a stale checkpoint boundary after a compaction) — the caller then reports a
+// failed rewind instead of silently cutting at the wrong place.
+func (s *Session) Truncate(boundary int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if boundary < 0 || boundary > len(s.Messages) {
+		return false
+	}
+	s.Messages = s.Messages[:boundary]
+	return true
+}
+
 // Snapshot returns a copy of the messages, safe to read from another goroutine
 // while a turn appends. Frontends (History, Save) use it instead of touching the
 // live slice.

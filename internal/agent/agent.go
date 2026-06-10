@@ -163,6 +163,13 @@ type Agent struct {
 	// Set via SetPreEditHook.
 	onPreEdit func(diff.Change)
 
+	// onCompact, when non-nil, fires after compact() rewrites the message log
+	// in place (auto-compaction or manual /compact). The controller uses it to
+	// invalidate its checkpoint boundaries (cpBound), since a Replace() shifts
+	// message indices and stale boundaries would make rewind/fork cut at the
+	// wrong place. Set via SetOnCompact.
+	onCompact func()
+
 	// jobs, when non-nil, is the session's background-job manager. executeOne
 	// stamps it onto each tool call's context so the background tools (bash
 	// run_in_background, task run_in_background, bash_output/kill_shell/wait) can
@@ -231,6 +238,10 @@ func (a *Agent) SetMemoryQueue(q memory.Queue) { a.memQueue = q }
 // SetPreEditHook installs the pre-edit snapshot hook (see onPreEdit). The
 // controller wires it to its per-session checkpoint store; nil disables capture.
 func (a *Agent) SetPreEditHook(fn func(diff.Change)) { a.onPreEdit = fn }
+
+// SetOnCompact installs the post-compaction callback (see onCompact). Set once at
+// construction; not safe to change concurrently with a running turn.
+func (a *Agent) SetOnCompact(fn func()) { a.onCompact = fn }
 
 // Session returns the agent's current conversation, useful for persistence
 // hooks that need to read the message log between turns. sessMu serialises this
@@ -360,6 +371,11 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 	a.sink.Emit(event.Event{Kind: event.TurnStarted})
 	a.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
 
+	// todoReminded latches after the one turn-end todo reconcile reminder this
+	// run is allowed: if the model still ends with unfinished items after being
+	// nudged once, accept its answer instead of nagging in a loop.
+	todoReminded := false
+
 	for step := 0; a.maxSteps <= 0 || step < a.maxSteps; step++ {
 		text, reasoning, signature, calls, usage, err := a.stream(ctx, step+1)
 		if err != nil {
@@ -386,6 +402,20 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 		})
 
 		if len(calls) == 0 {
+			// Turn-end todo reconcile: if this turn updated the todo list and is
+			// now ending with items still pending/in_progress, the UI would freeze
+			// on a stale snapshot (the panel renders the last todo_write call, with
+			// no independent state). Inject one reminder and give the model another
+			// round to either finish the work or true-up the list. Must happen
+			// inside this loop — a fresh Run() resets the evidence ledger, which
+			// would strip the complete_step receipts the true-up needs.
+			if reminder, ok := a.todoReconcileReminder(todoReminded); ok {
+				todoReminded = true
+				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+					Text: "待办清单还有未完成项 — 已提醒模型对账后再收尾"})
+				a.session.Add(provider.Message{Role: provider.RoleUser, Content: reminder})
+				continue
+			}
 			return nil // model gave a final answer
 		}
 
@@ -407,6 +437,49 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
 	return fmt.Errorf("paused after %d tool-call rounds (agent.max_steps) — the work so far is saved; send another message to continue, or set max_steps higher or to 0 for no limit", a.maxSteps)
+}
+
+// todoReconcileReminder decides whether the run may end, given the todo list's
+// state. It returns (reminder, true) when this turn's latest successful
+// todo_write still has pending/in_progress items and no reminder was sent yet;
+// the caller injects the reminder as a user message and runs one more round.
+// Scoped to this turn's ledger on purpose: a turn that never touched the todo
+// list made no progress claim, so ending it with an old list on screen is the
+// user's call to follow up on, not the harness's to nag about.
+func (a *Agent) todoReconcileReminder(alreadyReminded bool) (string, bool) {
+	if alreadyReminded || a.evidence == nil {
+		return "", false
+	}
+	todos, ok := a.evidence.LatestTodos()
+	if !ok {
+		return "", false
+	}
+	var unfinished []string
+	for i, t := range todos {
+		if t.Status == "completed" {
+			continue
+		}
+		unfinished = append(unfinished, fmt.Sprintf("  %d. [%s] %s", i+1, nonEmptyStatus(t.Status), t.Content))
+	}
+	if len(unfinished) == 0 {
+		return "", false
+	}
+	return fmt.Sprintf(`[系统对账提醒] 你准备结束回合,但 todo 清单还有 %d 项未标记完成:
+%s
+
+逐项核对实际进度,然后再收尾:
+- 已经真正做完的项:先用 complete_step 签收(引用本轮真实运行过的验证命令或改动过的文件作为证据),再用 todo_write 把该项标为 completed。
+- 还没做的项:现在继续完成它;如果本轮确实无法完成或已无必要,保持 pending,并在最终回复里向用户说明原因。
+不要在没有证据的情况下批量标记 completed。对完账后给出最终回复。`,
+		len(unfinished), strings.Join(unfinished, "\n")), true
+}
+
+// nonEmptyStatus maps the schema's "empty means pending" onto a display word.
+func nonEmptyStatus(s string) string {
+	if s == "" {
+		return "pending"
+	}
+	return s
 }
 
 // stream runs one completion, emitting reasoning and text deltas as typed

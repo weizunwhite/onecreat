@@ -102,7 +102,9 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 // Started event is emitted before the (network) summarize so the UI can show a
 // "compacting…" placeholder, and a Done event (carrying the summary) replaces it.
 func (a *Agent) compact(ctx context.Context, trigger, instructions string) error {
-	msgs := a.session.Messages
+	// 持锁取快照再操作:/compact 可能从 run loop 之外的 goroutine 进来,与正在跑的 turn
+	// 的 Session.Add 并发,无锁读 Messages 会数据竞争(B2)。
+	msgs := a.session.Snapshot()
 	head, start, ok := a.planCompaction(msgs)
 	if !ok {
 		return nil // recent tail already covers everything worth keeping
@@ -146,6 +148,11 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string) error
 	})
 	compacted = append(compacted, msgs[start:]...)
 	a.session.Replace(compacted)
+	// 日志被原地重写、消息下标已变:通知 controller 失效旧的 checkpoint 边界,否则
+	// 压缩后 rewind/fork 会用陈旧下标切到错误位置(B1)。
+	if a.onCompact != nil {
+		a.onCompact()
+	}
 
 	a.sink.Emit(event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{
 		Trigger: trigger, Messages: len(region), Summary: summary, Archive: archived,
@@ -166,7 +173,7 @@ func (a *Agent) emitCompactionAborted(trigger string) {
 // boundary (a user message), so the split never severs a tool_call/result pair —
 // those live within one turn. A no-op when the region is empty.
 func (a *Agent) SummarizeFrom(ctx context.Context, fromIdx int) error {
-	msgs := a.session.Messages
+	msgs := a.session.Snapshot()
 	if fromIdx < 0 || fromIdx >= len(msgs) {
 		return nil
 	}
@@ -194,7 +201,7 @@ func (a *Agent) SummarizeFrom(ctx context.Context, fromIdx int) error {
 // a single summary, keeping toIdx onward verbatim ("summarize up to here"). toIdx
 // is a turn boundary, so no tool pair is split. A no-op when the region is empty.
 func (a *Agent) SummarizeUpTo(ctx context.Context, toIdx int) error {
-	msgs := a.session.Messages
+	msgs := a.session.Snapshot()
 	head := 0
 	if len(msgs) > 0 && msgs[0].Role == provider.RoleSystem {
 		head = 1

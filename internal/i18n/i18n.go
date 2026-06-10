@@ -202,6 +202,7 @@ type Messages struct {
 	RewindRestoreTitleFmt  string
 	RewindApplyHint        string
 	RewindEmpty            string
+	RewindSummarizing      string // 摘要异步执行期间的进度提示
 
 	// init wizard
 	SelectProvidersLabel  string // multi-select label

@@ -255,6 +255,11 @@ const maxEventDrain = 512
 // snapshots on success.
 type compactDoneMsg struct{ err error }
 
+// summarizeDoneMsg reports that an async rewind-panel summarize (summ-from /
+// summ-upto) returned. The controller already emitted its own success/failure
+// notice (and snapshotted on success), so this only nudges a redraw (B5).
+type summarizeDoneMsg struct{ err error }
+
 // elapsedTickMsg fires once a second while a turn runs, driving the "thinking
 // Ns" counter in the status line.
 type elapsedTickMsg struct{}
@@ -916,6 +921,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			_ = m.ctrl.Snapshot()
 		}
+
+	case summarizeDoneMsg:
+		// 控制器已在事件流里发了成功/失败 notice 并在成功时 snapshot;这里仅触发重绘。
 
 	case modelSwitchMsg:
 		m.modelSwitchPending = false

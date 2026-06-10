@@ -167,6 +167,7 @@ var English = Messages{
 	RewindRestoreTitleFmt:  "⟲ Restore to turn %d ",
 	RewindApplyHint:        "↑/↓ · Enter apply · Esc back",
 	RewindEmpty:            "(empty)",
+	RewindSummarizing:      "summarizing…",
 
 	SelectProvidersLabel:  "Select providers to enable",
 	EnterAPIKeysHeader:    "Enter API keys (Enter to skip and set later in .env):",

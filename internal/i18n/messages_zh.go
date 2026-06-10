@@ -168,6 +168,7 @@ var Chinese = Messages{
 	RewindRestoreTitleFmt:  "⟲ 恢复到第 %d 轮 ",
 	RewindApplyHint:        "↑/↓ · Enter 应用 · Esc 返回",
 	RewindEmpty:            "(空)",
+	RewindSummarizing:      "正在摘要…",
 
 	SelectProvidersLabel:  "选择要启用的 provider",
 	EnterAPIKeysHeader:    "输入 API key（回车跳过、稍后写入 .env）：",

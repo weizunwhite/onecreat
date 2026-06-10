@@ -239,8 +239,19 @@ func New(opts Options) *Controller {
 			}
 		})
 		c.executor.SetMemoryQueue(c)
+		// 压缩(自动或手动)会原地重写日志、改变消息下标 → 失效 checkpoint 边界(B1)。
+		c.executor.SetOnCompact(c.InvalidateCheckpoints)
 	}
 	return c
+}
+
+// InvalidateCheckpoints 清空 turn→消息下标的映射(cpBound)。任何压缩 / 摘要重写了日志
+// 后调用它,使「仅对话」rewind 与 fork 退化为「不可用」而不是用陈旧下标静默切错;新的
+// turn 会重建边界。cpTurn 保持单调,避免与磁盘上的 checkpoint 编号冲突(B1)。
+func (c *Controller) InvalidateCheckpoints() {
+	c.mu.Lock()
+	c.cpBound = map[int]int{}
+	c.mu.Unlock()
 }
 
 // ckptDir derives a session's checkpoint directory from its file path
@@ -727,7 +738,22 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	if c.executor == nil {
 		return nil
 	}
+	// turn 进行中拒绝:compact() 会无锁读+整体 Replace 会话,与正在跑的 turn 的 Add
+	// 并发会丢消息 + 数据竞争(B2)。
+	c.mu.Lock()
+	running := c.running
+	c.mu.Unlock()
+	if running {
+		return c.busyNotice("正在运行中,请等当前轮结束再压缩")
+	}
 	return c.executor.CompactNow(ctx, instructions)
+}
+
+// busyNotice 在有 turn 运行时拒绝「会重写整个会话」的操作:发一条 Warn Notice(前端
+// 即便吞掉返回的 error 也能看到原因),并返回该错误(B2)。
+func (c *Controller) busyNotice(msg string) error {
+	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
+	return fmt.Errorf("%s", msg)
 }
 
 // maybeSessionStart fires the SessionStart hook exactly once per session, lazily
@@ -750,6 +776,13 @@ func (c *Controller) maybeSessionStart(ctx context.Context) {
 func (c *Controller) NewSession() error {
 	if c.executor == nil {
 		return nil
+	}
+	// turn 进行中拒绝:SetSession 会换掉会话指针,turn 运行中写入会落到混合状态(B2)。
+	c.mu.Lock()
+	running := c.running
+	c.mu.Unlock()
+	if running {
+		return c.busyNotice("正在运行中,请等当前轮结束再新建会话")
 	}
 	if err := c.Snapshot(); err != nil {
 		return err
@@ -824,20 +857,21 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 		if !hasBound {
 			return c.rewindFail(fmt.Errorf("conversation rewind unavailable for turn %d (resumed session)", turn))
 		}
-		s := c.executor.Session()
-		if boundary <= len(s.Messages) {
-			s.Messages = s.Messages[:boundary]
-			c.mu.Lock()
-			c.cpTurn = turn // renumber future turns from here; later turns are gone
-			for k := range c.cpBound {
-				if k >= turn {
-					delete(c.cpBound, k)
-				}
+		// 持锁截断;boundary 越界(如压缩后边界已失效)时 Truncate 返回 false——此时
+		// 必须报失败而不是假装成功,否则用户以为回退了、上下文却原封不动(B3/B4)。
+		if !c.executor.Session().Truncate(boundary) {
+			return c.rewindFail(fmt.Errorf("无法回退到 turn %d:会话已被压缩或边界失效", turn))
+		}
+		c.mu.Lock()
+		c.cpTurn = turn // renumber future turns from here; later turns are gone
+		for k := range c.cpBound {
+			if k >= turn {
+				delete(c.cpBound, k)
 			}
-			c.mu.Unlock()
-			if err := c.Snapshot(); err != nil {
-				slog.Warn("controller: snapshot after rewind", "err", err)
-			}
+		}
+		c.mu.Unlock()
+		if err := c.Snapshot(); err != nil {
+			slog.Warn("controller: snapshot after rewind", "err", err)
 		}
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: fmt.Sprintf("rewound conversation to turn %d", turn)})

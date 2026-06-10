@@ -126,11 +126,15 @@ func (m chatTUI) applyRewind() (tea.Model, tea.Cmd) {
 		}
 		return m, nil // the branch is a new session
 	case "summ-from":
-		_ = m.ctrl.SummarizeFrom(context.Background(), meta.Turn)
-		return m, nil
+		// 摘要是一次完整的 summarizer 网络调用;放进 tea.Cmd 异步跑,别在 Update 里同步
+		// 阻塞整个 TUI(无 spinner、无法取消)——和 /compact 一样的范式(B5)。
+		m.notice(i18n.M.RewindSummarizing)
+		turn := meta.Turn
+		return m, func() tea.Msg { return summarizeDoneMsg{err: m.ctrl.SummarizeFrom(context.Background(), turn)} }
 	case "summ-upto":
-		_ = m.ctrl.SummarizeUpTo(context.Background(), meta.Turn)
-		return m, nil
+		m.notice(i18n.M.RewindSummarizing)
+		turn := meta.Turn
+		return m, func() tea.Msg { return summarizeDoneMsg{err: m.ctrl.SummarizeUpTo(context.Background(), turn)} }
 	}
 	if err := m.ctrl.Rewind(meta.Turn, act.scope); err != nil {
 		return m, nil
