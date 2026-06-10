@@ -2825,6 +2825,11 @@ func runArduinoMonitor(args map[string]any) (string, error) {
 	}
 	baud := intArg(args, "baud", 115200)
 	seconds := intArg(args, "seconds", defaultLogSeconds)
+	// seconds<=0(模型显式传 0)会让 time.Duration 算出 0,落进 runCommandText 的 90s
+	// 兜底超时;而 arduino-cli monitor 不自退 → 白卡满 90s。回退到默认采样秒数(F3)。
+	if seconds <= 0 {
+		seconds = defaultLogSeconds
+	}
 	cmdArgs := []string{"monitor", "-p", port, "--config", fmt.Sprintf("baudrate=%d", baud), "--timestamp"}
 	if fqbn := strArg(args, "fqbn", ""); fqbn != "" {
 		cmdArgs = append(cmdArgs, "-b", fqbn)
@@ -3244,6 +3249,7 @@ func runCommandText(name string, args []string, dir string, timeout time.Duratio
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
+	setKillGroup(cmd) // 超时杀整个进程组,monitor 不留占串口的孤儿子进程(F2)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -3273,6 +3279,7 @@ func runESPIDFCommandText(args []string, dir string, timeout time.Duration) (str
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, path, args...)
+		setKillGroup(cmd) // idf.py monitor fork 出 esp_idf_monitor,超时要杀整组(F2)
 		if dir != "" {
 			cmd.Dir = dir
 		}
@@ -3305,6 +3312,7 @@ func runLocalESPIDFCommand(local espIDFEnv, args []string, dir string, timeout t
 	defer cancel()
 	script := local.ESPIDFShellScript(args, dir)
 	cmd := exec.CommandContext(ctx, "bash", "-lc", script)
+	setKillGroup(cmd) // bash -lc … exec idf.py monitor 同样 fork 孙进程,超时杀整组(F2)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -3345,6 +3353,9 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 
 func (l *limitedBuffer) String() string { return l.b.String() }
 
+// shellJoin 仅用于「展示」(report 里的建议命令、输出 header):用 strconv.Quote 生成
+// 可读的双引号形式。绝不能用它拼真正喂给 `bash -lc` 的命令行——双引号内 bash 仍会展开
+// $()/反引号,会命令注入。真执行的拼接用 shellJoinArgs(单引号转义)(F1)。
 func shellJoin(parts []string) string {
 	quoted := make([]string, len(parts))
 	for i, p := range parts {
@@ -3618,7 +3629,10 @@ func (env espIDFEnv) ESPIDFShellScript(args []string, dir string) string {
 		commands = append(commands, "cd "+shellQuote(dir))
 	}
 	cmdParts := append([]string{env.Python, filepath.Join(env.IDFPath, "tools", "idf.py")}, args...)
-	commands = append(commands, "exec "+shellJoin(cmdParts))
+	// 这一行是真正喂给 `bash -lc` 执行的:必须用 POSIX 单引号转义(shellArg),不能用
+	// shellJoin 的 strconv.Quote——双引号内 bash 仍会展开 $()/反引号/$VAR,target/port
+	// 来自模型/工具输入(无 enum 约束)时 `esp32$(touch /tmp/PWNED)` 会变任意命令执行(F1)。
+	commands = append(commands, "exec "+shellJoinArgs(cmdParts))
 	return strings.Join(commands, " && ")
 }
 
