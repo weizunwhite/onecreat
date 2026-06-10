@@ -342,6 +342,12 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			// (possibly large) arguments finish streaming.
 			if !started[tc.Index] && cur.Name != "" {
 				started[tc.Index] = true
+				// 兼容网关按 index 流式、不带 id:在 start 处就合成稳定 id(call_<index>),
+				// 让 start 卡片与最终 ToolCall 用同一 id,前端能正确 merge、不悬挂 partial
+				// 卡片;多并行 call 时空 id 也不再互不可分(E10)。DeepSeek 官方带 id,不触发。
+				if cur.ID == "" {
+					cur.ID = fmt.Sprintf("call_%d", tc.Index)
+				}
 				out <- provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}}
 			}
 		}

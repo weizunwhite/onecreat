@@ -274,7 +274,7 @@ func (s *Server) history(w http.ResponseWriter, _ *http.Request) {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	}
-	var out []msg
+	out := []msg{} // 非 nil:空会话也编码成 [] 而非 null,否则 JS 客户端 for...of 抛 TypeError(E9)
 	for _, m := range s.ctrl.History() {
 		out = append(out, msg{Role: string(m.Role), Content: m.Content})
 	}

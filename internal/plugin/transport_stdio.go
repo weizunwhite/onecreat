@@ -309,11 +309,17 @@ func (t *stdioTransport) readLoop() {
 			continue
 		}
 		var probe struct {
-			Method string `json:"method"`
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
 		}
 		_ = json.Unmarshal(line, &probe)
 		if probe.Method != "" {
-			continue // server notification/request, not a response to one of our calls
+			// server→client 消息:带 id 的是「请求」,必须应答(尤其 ping——不答的话部分
+			// server 判定 client 死亡而自退,表现为 plugin 莫名断开);无 id 的是通知,忽略(E3)。
+			if len(probe.ID) > 0 && string(probe.ID) != "null" {
+				t.respondToServerRequest(probe.Method, probe.ID)
+			}
+			continue
 		}
 		var resp rpcResponse
 		if err := json.Unmarshal(line, &resp); err != nil {
@@ -387,6 +393,26 @@ func (t *stdioTransport) notify(_ context.Context, method string, params any) er
 	return t.write(rpcRequest{JSONRPC: "2.0", Method: method, Params: params})
 }
 
+// rpcServerResponse 回复 server 主动发来的请求;ID 用 RawMessage 原样回显(server 的
+// id 可能是数字或字符串)。
+type rpcServerResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
+}
+
+// respondToServerRequest 应答 server 主动发来的请求(JSON-RPC 要求每个请求都有响应)。
+// ping 回空结果;其余不支持的请求(roots/sampling 等本端不实现)回 method-not-found,
+// 而不是静默吞——让 server 知道结果,不会一直等(E3)。写的是小消息,单次 pipe 写原子。
+func (t *stdioTransport) respondToServerRequest(method string, id json.RawMessage) {
+	if method == "ping" {
+		_ = t.write(rpcServerResponse{JSONRPC: "2.0", ID: id, Result: json.RawMessage("{}")})
+		return
+	}
+	_ = t.write(rpcServerResponse{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32601, Message: "method not found: " + method}})
+}
+
 func (t *stdioTransport) write(v any) error {
 	b, err := json.Marshal(v) // marshaled JSON never contains a literal newline
 	if err != nil {
@@ -410,12 +436,29 @@ func (t *stdioTransport) withStderr(err error) error {
 	return fmt.Errorf("%w: stderr: %s", err, msg)
 }
 
+// waitTimeout 限制 wait() 等子进程退出的时长。MCP 子进程可能关掉自己的 stdio(write
+// 得 EPIPE / readLoop 得 EOF)却不退出,此时 cmd.Wait() 会永久阻塞;而 withStderr→wait
+// 常在 call 持有 callMu 时被调用 → 整个 plugin 后续调用全挂死,ESC 取消回合也救不回(E2)。
+const waitTimeout = 3 * time.Second
+
 // wait reaps the child exactly once; cmd.Wait blocks until the stderr-copy
 // goroutine completes, so the tail buffer is settled before anyone reads it.
+// 超时未退则强杀进程,确保任何失败路径都不会无限期持 callMu(E2)。
 func (t *stdioTransport) wait() {
 	t.waitOnce.Do(func() {
-		if t.cmd != nil && t.cmd.Process != nil {
+		if t.cmd == nil || t.cmd.Process == nil {
+			return
+		}
+		done := make(chan struct{})
+		go func() {
 			_ = t.cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(waitTimeout):
+			_ = t.cmd.Process.Kill() // 关了 stdio 却不退出:强杀,Kill 后 Wait 很快返回
+			<-done
 		}
 	})
 }

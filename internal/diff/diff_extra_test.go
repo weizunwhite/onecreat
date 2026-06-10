@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+// E5:唯一差异是末尾换行符时,Build 必须标注变化,而不是渲染成「无变化」(空 Diff)。
+func TestBuildTrailingNewlineOnlyShowsChange(t *testing.T) {
+	c := Build("f.txt", "a\nb\n", "a\nb", Modify)
+	if c.Diff == "" {
+		t.Fatalf("trailing-newline removal rendered as no change (empty diff)")
+	}
+	c2 := Build("f.txt", "a\nb", "a\nb\n", Modify)
+	if c2.Diff == "" {
+		t.Fatalf("trailing-newline addition rendered as no change (empty diff)")
+	}
+}
+
 // --- splitLines ---
 
 func TestSplitLinesEmpty(t *testing.T) {

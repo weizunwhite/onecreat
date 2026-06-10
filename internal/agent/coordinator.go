@@ -68,10 +68,14 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 // plan streams a plan from the planner (no tools) and appends it to the planner
 // session, so that session grows prepend-only and stays cache-friendly.
 func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
-	c.plannerSess.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	// 不先污染 planner session:用「现有消息 + 本轮 user」组请求,成功拿到 assistant 回复
+	// 后再把 user+assistant 一起提交;失败则什么都不留——否则流式中途出错会留下孤立 user,
+	// 下次 Run 再 Add user → planner 会话出现连续两条 user(E4)。
+	userMsg := provider.Message{Role: provider.RoleUser, Content: input}
+	reqMessages := append(append([]provider.Message(nil), c.plannerSess.Messages...), userMsg)
 
 	ch, err := c.planner.Stream(ctx, provider.Request{
-		Messages:    c.plannerSess.Messages,
+		Messages:    reqMessages,
 		Temperature: c.temperature,
 	})
 	if err != nil {
@@ -96,6 +100,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 	c.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: c.plannerPricing})
 
 	plan := text.String()
+	c.plannerSess.Add(userMsg)
 	c.plannerSess.Add(provider.Message{Role: provider.RoleAssistant, Content: plan})
 	return plan, nil
 }

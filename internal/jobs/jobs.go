@@ -126,16 +126,20 @@ func (m *Manager) Start(kind, label string, run func(ctx context.Context, out io
 		result, err := run(ctx, jobWriter{j})
 		j.mu.Lock()
 		j.result = result
-		switch {
-		case ctx.Err() != nil:
-			j.status = Killed
-		case err != nil:
-			j.status = Failed
-			if result == "" {
-				j.result = err.Error()
+		// Kill() 可能已在 run 自然返回的窗口里同步把 status 置为 Killed:不要用自然返回
+		// 的状态覆写它,否则调用方拿到 Kill()==true 却又看到 Done,状态不一致(E7)。
+		if j.status != Killed {
+			switch {
+			case ctx.Err() != nil:
+				j.status = Killed
+			case err != nil:
+				j.status = Failed
+				if result == "" {
+					j.result = err.Error()
+				}
+			default:
+				j.status = Done
 			}
-		default:
-			j.status = Done
 		}
 		st := j.status
 		j.mu.Unlock()

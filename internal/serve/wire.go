@@ -97,6 +97,7 @@ var kindNames = map[event.Kind]string{
 	event.CompactionStarted: "compaction_started",
 	event.CompactionDone:    "compaction_done",
 	event.ToolProgress:      "tool_progress",
+	event.MCPSurfaceReady:   "mcp_surface_ready", // 漏了它 → MCP phase B 完成时前端收到 kind:"" 被丢弃(E8)
 }
 
 // toWireAsk converts an event.Ask into its JSON wire form.

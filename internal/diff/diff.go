@@ -77,6 +77,18 @@ func Build(path, oldText, newText string, kind Kind) Change {
 			c.Removed++
 		}
 	}
+	if c.Added == 0 && c.Removed == 0 {
+		// 逐行全等但 oldText != newText(57 行已排除相等)→ 唯一差异是末尾换行符。unified
+		// 此时为空,会被渲染成「无变化」,用户会批一个看不见的修改。显式标注(E5)。
+		if oldEOL && !newEOL {
+			c.Diff = `\ No newline at end of file (trailing newline removed)`
+		} else if !oldEOL && newEOL {
+			c.Diff = `\ Newline added at end of file`
+		} else {
+			c.Diff = "(end-of-file whitespace change)"
+		}
+		return c
+	}
 	c.Diff = unified(path, ops, oldEOL, newEOL, defaultContext)
 	return c
 }

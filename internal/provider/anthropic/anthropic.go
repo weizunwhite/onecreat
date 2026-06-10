@@ -369,6 +369,12 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			}
 		case "content_block_stop":
 			if tc := tools[ev.Index]; tc != nil {
+				// 零参数 tool_use 不发 input_json_delta → Arguments 为空串,下游
+				// json.Unmarshal 报 "unexpected end of JSON input"。归一化成 "{}"
+				// (buildRequest 重放时也是这么补的)(E1)。
+				if tc.Arguments == "" {
+					tc.Arguments = "{}"
+				}
 				out <- provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}
 				delete(tools, ev.Index)
 			}

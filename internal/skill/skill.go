@@ -256,6 +256,13 @@ func (s *Store) Read(name string) (Skill, bool) {
 			return s.parse(flatCand, name, r.Scope)
 		}
 	}
+	// frontmatter `name:` 可覆盖文件名 stem,使索引里的可调用名与文件名不一致;按文件名
+	// 找不到时,回退到按「解析后的 Name」反查已发现的 skill,保留 frontmatter 覆盖能力(E6)。
+	for _, sk := range s.List() {
+		if sk.Name == name {
+			return sk, true
+		}
+	}
 	if !s.disableBuiltins {
 		for _, sk := range builtinSkills() {
 			if sk.Name == name {
