@@ -3,8 +3,8 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 
 	"reasonix/internal/tool"
 )
@@ -56,18 +56,22 @@ func (e editFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
 	}
 
-	switch strings.Count(content, p.OldString) {
-	case 0:
+	start, end, note, ferr := findUniqueMatch(content, p.OldString)
+	switch {
+	case errors.Is(ferr, errEditNoMatch):
 		return "", fmt.Errorf("old_string not found in %s", p.Path)
-	case 1:
-		// ok
-	default:
+	case errors.Is(ferr, errEditNotUnique):
 		return "", fmt.Errorf("old_string is not unique in %s; add more surrounding context", p.Path)
+	case ferr != nil:
+		return "", ferr
 	}
 
-	updated := strings.Replace(content, p.OldString, p.NewString, 1)
+	updated := content[:start] + p.NewString + content[end:]
 	if err := writeFileEncoded(p.Path, updated, enc); err != nil {
 		return "", fmt.Errorf("write %s: %w", p.Path, err)
+	}
+	if note != "" {
+		return fmt.Sprintf("edited %s (%s)", p.Path, note), nil
 	}
 	return fmt.Sprintf("edited %s", p.Path), nil
 }

@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -89,7 +90,7 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// returns before the write, leaving the file untouched — that's the
 	// safety guarantee that makes multi_edit preferable to chained
 	// edit_file calls.
-	applied := 0
+	applied, fuzzy := 0, 0
 	for i, step := range p.Edits {
 		if step.OldString == "" {
 			return "", fmt.Errorf("edit %d: old_string is required", i+1)
@@ -103,19 +104,29 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 			applied += count
 			continue
 		}
-		switch strings.Count(content, step.OldString) {
-		case 0:
+		start, end, note, ferr := findUniqueMatch(content, step.OldString)
+		switch {
+		case errors.Is(ferr, errEditNoMatch):
 			return "", fmt.Errorf("edit %d: old_string not found", i+1)
-		case 1:
-			content = strings.Replace(content, step.OldString, step.NewString, 1)
-			applied++
-		default:
+		case errors.Is(ferr, errEditNotUnique):
 			return "", fmt.Errorf("edit %d: old_string is not unique; add more surrounding context or set replace_all", i+1)
+		case ferr != nil:
+			return "", fmt.Errorf("edit %d: %w", i+1, ferr)
+		}
+		content = content[:start] + step.NewString + content[end:]
+		applied++
+		if note != "" {
+			fuzzy++
 		}
 	}
 
 	if err := writeFileEncoded(p.Path, content, enc); err != nil {
 		return "", fmt.Errorf("write %s: %w", p.Path, err)
 	}
-	return fmt.Sprintf("multi_edit %s: %d edits applied (%d total replacements)", p.Path, len(p.Edits), applied), nil
+	msg := fmt.Sprintf("multi_edit %s: %d edits applied (%d total replacements)", p.Path, len(p.Edits), applied)
+	if fuzzy > 0 {
+		// 如实标注:有 N 步是忽略空白差异后才匹配上的(transcript 可审计)。
+		msg += fmt.Sprintf(" (%d fuzzy-matched, whitespace differences ignored)", fuzzy)
+	}
+	return msg, nil
 }
