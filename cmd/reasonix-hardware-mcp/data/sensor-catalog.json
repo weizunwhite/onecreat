@@ -1,0 +1,1804 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "零一优创硬件项目模块目录 - 基于实际项目积累（所有条目均为集成模块，非裸元器件）",
+    "last_updated": "2026-02-22",
+    "total_entries": 65
+  },
+  "sensors": {
+    "DHT11": {
+      "category": "温湿度",
+      "function": "温度+湿度",
+      "protocol": "OneWire",
+      "pins_required": {
+        "data": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "data": 4
+        },
+        "esp32_s3": {
+          "data": 4
+        },
+        "arduino_nano": {
+          "data": 2
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "DHT sensor library"
+        ],
+        "platformio": [
+          "adafruit/DHT sensor library@^1.4.4"
+        ]
+      },
+      "voltage": "3.3-5V",
+      "range": "温度0~50℃, 湿度20~90%RH",
+      "precision": "温度±2℃, 湿度±5%RH",
+      "notes": "模块已内置上拉电阻, 直接三线接入(VCC/GND/DATA); 读取间隔需>2秒; 精度一般, 适合入门",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "灭火装置",
+        "智能花盆",
+        "教室空气监测"
+      ]
+    },
+    "DHT22": {
+      "category": "温湿度",
+      "function": "温度+湿度（高精度）",
+      "protocol": "OneWire",
+      "pins_required": {
+        "data": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "data": 4
+        },
+        "esp32_s3": {
+          "data": 4
+        },
+        "arduino_nano": {
+          "data": 2
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "DHT sensor library"
+        ],
+        "platformio": [
+          "adafruit/DHT sensor library@^1.4.4"
+        ]
+      },
+      "voltage": "3.3-5V",
+      "range": "温度-40~80℃, 湿度0~100%RH",
+      "precision": "温度±0.5℃, 湿度±2%RH",
+      "notes": "模块已内置上拉电阻, 接线同DHT11; 比DHT11精度高, 价格稍贵",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "植物监测站"
+      ]
+    },
+    "DS18B20": {
+      "category": "温度",
+      "function": "防水温度探头",
+      "protocol": "OneWire",
+      "pins_required": {
+        "data": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "data": 4
+        },
+        "esp32_s3": {
+          "data": 4
+        },
+        "arduino_nano": {
+          "data": 2
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "OneWire",
+          "DallasTemperature"
+        ],
+        "platformio": [
+          "paulstoffregen/OneWire@^2.3.7",
+          "milesburton/DallasTemperature@^3.11.0"
+        ]
+      },
+      "voltage": "3.0-5.5V",
+      "range": "-55~125℃",
+      "precision": "±0.5℃",
+      "notes": "防水探头型模块, 三线接入; 支持多个并联在同一数据线(每个有唯一地址)",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "水质监测"
+      ]
+    },
+    "MQ-2": {
+      "category": "气体",
+      "function": "烟雾/可燃气体",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 34
+        },
+        "esp32_s3": {
+          "analog": 1
+        },
+        "arduino_nano": {
+          "analog": "A0"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V",
+      "range": "300~10000ppm",
+      "precision": "模拟量输出",
+      "notes": "模块已内置加热电路和比较器; 上电预热20秒; DO口输出开关量(可调阈值), AO口输出模拟量; ESP32注意ADC2与WiFi冲突",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "灭火装置",
+        "燃气报警器"
+      ]
+    },
+    "MQ-7": {
+      "category": "气体",
+      "function": "一氧化碳(CO)",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 35
+        },
+        "esp32_s3": {
+          "analog": 2
+        },
+        "arduino_nano": {
+          "analog": "A1"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V",
+      "range": "20~2000ppm",
+      "precision": "模拟量输出",
+      "notes": "模块已内置高低压切换加热电路; 预热时间较长(约60秒); DO/AO双输出",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "灭火装置"
+      ]
+    },
+    "HC-SR04": {
+      "category": "距离",
+      "function": "超声波测距",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "trig": 1,
+        "echo": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "trig": 26,
+          "echo": 27
+        },
+        "esp32_s3": {
+          "trig": 5,
+          "echo": 6
+        },
+        "arduino_nano": {
+          "trig": 9,
+          "echo": 10
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "NewPing"
+        ],
+        "platformio": [
+          "teckel12/NewPing@^1.9.7"
+        ]
+      },
+      "voltage": "5V",
+      "range": "2~400cm",
+      "precision": "±3mm",
+      "notes": "四线模块(VCC/Trig/Echo/GND); 5V供电, Echo输出5V, 接3.3V板(ESP32)建议串1K电阻保护或用分压; 发散角约15°",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "盲人手杖",
+        "智能垃圾桶",
+        "避障小车"
+      ]
+    },
+    "VL53L0X": {
+      "category": "距离",
+      "function": "ToF激光测距",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1,
+        "XSHUT": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22,
+          "XSHUT": 16
+        },
+        "esp32_s3": {
+          "SDA": 8,
+          "SCL": 9,
+          "XSHUT": 10
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5",
+          "XSHUT": 7
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Pololu VL53L0X"
+        ],
+        "platformio": [
+          "pololu/VL53L0X@^1.3.1"
+        ]
+      },
+      "voltage": "2.6-3.5V",
+      "range": "0~200cm",
+      "precision": "±3mm",
+      "notes": "模块已内置稳压和电平转换, 3.3-5V均可直接供电; I2C默认地址0x29; 多个模块需通过XSHUT引脚逐一修改地址",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "坐位体前屈",
+        "智能台灯",
+        "自动取药机"
+      ]
+    },
+    "VL6180X": {
+      "category": "距离",
+      "function": "短距激光+环境光",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1,
+        "XSHUT": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22,
+          "XSHUT": 16
+        },
+        "esp32_s3": {
+          "SDA": 8,
+          "SCL": 9,
+          "XSHUT": 10
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5",
+          "XSHUT": 7
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Pololu VL6180X"
+        ],
+        "platformio": [
+          "pololu/VL6180X@^1.3.0"
+        ]
+      },
+      "voltage": "2.6-3.0V",
+      "range": "0~10cm",
+      "precision": "±1mm",
+      "notes": "模块已内置稳压, 3.3-5V直接供电; 适合近距离精密测量; 可同时测量环境光强度",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "盲人手杖"
+      ]
+    },
+    "MPU6050": {
+      "category": "运动/姿态",
+      "function": "6轴(加速度+陀螺仪)",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22
+        },
+        "esp32_s3": {
+          "SDA": 8,
+          "SCL": 9
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5"
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Adafruit MPU6050",
+          "MPU6050_tockn"
+        ],
+        "platformio": [
+          "adafruit/Adafruit MPU6050@^2.2.4",
+          "electroniccats/MPU6050@^1.3.0"
+        ]
+      },
+      "voltage": "3.3V",
+      "range": "加速度±16g, 陀螺仪±2000°/s",
+      "precision": "16位ADC",
+      "notes": "模块已内置稳压和I2C上拉; 3.3-5V直接供电; AD0焊盘接GND地址0x68, 悬空或接VCC地址0x69; 建议使用DMP输出姿态角",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "自动跟随书包",
+        "自平衡配送箱",
+        "姿态检测"
+      ]
+    },
+    "GY-25": {
+      "category": "运动/姿态",
+      "function": "数字倾角传感器",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        },
+        "esp32_s3": {
+          "TX": 17,
+          "RX": 18
+        },
+        "arduino_nano": {
+          "TX": 3,
+          "RX": 2
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "range": "±180°",
+      "precision": "±1°",
+      "notes": "模块内置处理器, 直接串口输出角度值; 默认波特率115200; Arduino Nano需用SoftwareSerial",
+      "difficulty": "beginner",
+      "used_in_projects": []
+    },
+    "HMC5883L": {
+      "category": "运动/姿态",
+      "function": "电子罗盘",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22
+        },
+        "esp32_s3": {
+          "SDA": 8,
+          "SCL": 9
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5"
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Adafruit HMC5883"
+        ],
+        "platformio": [
+          "adafruit/Adafruit HMC5883 Unified@^1.2.3"
+        ]
+      },
+      "voltage": "3.3V",
+      "range": "0~360°",
+      "precision": "1~2°",
+      "notes": "模块已内置稳压和上拉; 需远离电机等电磁干扰源; 首次使用需8字校准消除误差",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "水质监测船"
+      ]
+    },
+    "HX711": {
+      "category": "称重",
+      "function": "称重传感器ADC",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "DT": 1,
+        "SCK": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "DT": 16,
+          "SCK": 17
+        },
+        "esp32_s3": {
+          "DT": 11,
+          "SCK": 12
+        },
+        "arduino_nano": {
+          "DT": 3,
+          "SCK": 2
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "HX711"
+        ],
+        "platformio": [
+          "bogde/HX711@^0.7.5"
+        ]
+      },
+      "voltage": "2.6-5.5V",
+      "range": "24位ADC, 取决于传感器量程",
+      "precision": "±0.05%",
+      "notes": "模块已集成24位ADC; 配合应变片称重传感器使用; 上电需校准(去皮归零); 任意GPIO均可接",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "自动跟随书包",
+        "校园营养分析仪"
+      ]
+    },
+    "FSR402": {
+      "category": "压力",
+      "function": "薄膜压力传感器",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 34
+        },
+        "esp32_s3": {
+          "analog": 1
+        },
+        "arduino_nano": {
+          "analog": "A0"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "range": "0.1~10kg",
+      "precision": "±5%",
+      "notes": "薄膜压力模块, 模块板上已带分压电阻; 只能检测有/无和大致力度, 不适合精确称重",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "公交让座装置"
+      ]
+    },
+    "MLX90640": {
+      "category": "热成像",
+      "function": "红外热成像阵列",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 19,
+          "SCL": 18
+        },
+        "esp32_s3": {
+          "SDA": 8,
+          "SCL": 9
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Adafruit MLX90640"
+        ],
+        "platformio": [
+          "adafruit/Adafruit MLX90640@^1.1.1"
+        ]
+      },
+      "voltage": "3.3V",
+      "range": "-40~300℃, 32×24像素",
+      "precision": "±1℃",
+      "notes": "模块已内置稳压; I2C速度需设400kHz; 帧率最高64Hz; 需较大RAM(ESP32可用, Arduino Nano内存不够)",
+      "difficulty": "advanced",
+      "used_in_projects": [
+        "灭火装置"
+      ]
+    },
+    "TDS_sensor": {
+      "category": "水质",
+      "function": "水质TDS值",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 34
+        },
+        "esp32_s3": {
+          "analog": 1
+        },
+        "arduino_nano": {
+          "analog": "A0"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "range": "0~1000ppm",
+      "precision": "±10%",
+      "notes": "模块带信号调理板, 探头+转接板+模拟输出; 探头不能长期浸泡; 测量时需温度补偿",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "水质监测船",
+        "水培营养液监测"
+      ]
+    },
+    "turbidity_sensor": {
+      "category": "水质",
+      "function": "水浑浊度",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 35
+        },
+        "esp32_s3": {
+          "analog": 2
+        },
+        "arduino_nano": {
+          "analog": "A1"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V",
+      "range": "0~3000NTU",
+      "precision": "模拟量",
+      "notes": "模块带信号调理板, 红外光散射原理; 探头窗口需保持清洁",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "水质监测船"
+      ]
+    },
+    "PH_sensor": {
+      "category": "水质",
+      "function": "酸碱度",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 32
+        },
+        "esp32_s3": {
+          "analog": 3
+        },
+        "arduino_nano": {
+          "analog": "A2"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V",
+      "range": "pH 0~14",
+      "precision": "±0.1pH",
+      "notes": "模块带信号调理板+BNC接口; 探头需定期用标准液校准; 不用时探头浸泡在保护液中",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "水质监测船"
+      ]
+    },
+    "soil_moisture": {
+      "category": "土壤",
+      "function": "土壤含水量",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 34
+        },
+        "esp32_s3": {
+          "analog": 1
+        },
+        "arduino_nano": {
+          "analog": "A0"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "range": "0~100%",
+      "precision": "相对值",
+      "notes": "模块带比较器板, DO/AO双输出; 电极式易腐蚀建议用电容式; 需根据土质校准",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "智能花盆"
+      ]
+    },
+    "PIR_HCSR501": {
+      "category": "人体感应",
+      "function": "人体红外",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "out": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "out": 13
+        },
+        "esp32_s3": {
+          "out": 13
+        },
+        "arduino_nano": {
+          "out": 2
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5-20V",
+      "range": "3~7m, 120°",
+      "precision": "有/无",
+      "notes": "模块已内置菲涅尔透镜和信号调理; 背面可调延时和灵敏度; 上电需1分钟稳定期",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "独居老人监测"
+      ]
+    },
+    "RCWL0516": {
+      "category": "人体感应",
+      "function": "微波雷达感应",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "out": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "out": 13
+        },
+        "esp32_s3": {
+          "out": 13
+        },
+        "arduino_nano": {
+          "out": 2
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "4-28V",
+      "range": "5~9m, 360°",
+      "precision": "有/无",
+      "notes": "模块已集成微波收发电路; 可穿透非金属遮挡; 不受温度影响; 比PIR更灵敏但易误触发",
+      "difficulty": "beginner",
+      "used_in_projects": []
+    },
+    "photoresistor": {
+      "category": "光照",
+      "function": "光敏电阻",
+      "protocol": "Analog",
+      "pins_required": {
+        "analog": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 34
+        },
+        "esp32_s3": {
+          "analog": 1
+        },
+        "arduino_nano": {
+          "analog": "A0"
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "range": "相对值",
+      "precision": "模拟量",
+      "notes": "模块带比较器板和分压电阻, DO/AO双输出; 适合简单亮暗判断",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "智能护眼台灯"
+      ]
+    },
+    "BH1750": {
+      "category": "光照",
+      "function": "数字光照度",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22
+        },
+        "esp32_s3": {
+          "SDA": 8,
+          "SCL": 9
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5"
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "BH1750"
+        ],
+        "platformio": [
+          "claws/BH1750@^1.3.0"
+        ]
+      },
+      "voltage": "3.3-5V",
+      "range": "1~65535 lux",
+      "precision": "±1 lux",
+      "notes": "模块已内置稳压和上拉; 直接输出勒克斯数值, 比光敏电阻精确得多",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "植物生长监测站"
+      ]
+    },
+    "sound_sensor": {
+      "category": "声音",
+      "function": "声音检测",
+      "protocol": "Analog+Digital",
+      "pins_required": {
+        "analog": 1,
+        "digital": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 34,
+          "digital": 13
+        },
+        "esp32_s3": {
+          "analog": 1,
+          "digital": 13
+        },
+        "arduino_nano": {
+          "analog": "A0",
+          "digital": 2
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "range": "48~66dB",
+      "precision": "相对值",
+      "notes": "模块带运放和比较器; DO口可调阈值触发, AO口输出连续值; 适合噪音检测",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "教室噪音监测器"
+      ]
+    },
+    "INMP441": {
+      "category": "声音",
+      "function": "I2S数字麦克风",
+      "protocol": "I2S",
+      "pins_required": {
+        "WS": 1,
+        "SCK": 1,
+        "SD": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "WS": 25,
+          "SCK": 26,
+          "SD": 33
+        },
+        "esp32_s3": {
+          "WS": 15,
+          "SCK": 16,
+          "SD": 17
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3V",
+      "range": "60~-26dBFS",
+      "precision": "24位",
+      "notes": "I2S数字麦克风模块; 高保真输出; Arduino Nano不支持I2S, 仅限ESP32使用",
+      "difficulty": "advanced",
+      "used_in_projects": [
+        "AI语音助手"
+      ]
+    },
+    "rain_sensor": {
+      "category": "环境",
+      "function": "雨滴检测",
+      "protocol": "Analog+Digital",
+      "pins_required": {
+        "analog": 1,
+        "digital": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "analog": 34,
+          "digital": 13
+        },
+        "arduino_nano": {
+          "analog": "A0",
+          "digital": 2
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "range": "有/无 + 大小",
+      "precision": "相对值",
+      "notes": "模块含感应板+比较器板, 双输出; 感应板长期暴露易氧化, 建议不用时收起",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "智能晾衣架"
+      ]
+    },
+    "PM25_sensor": {
+      "category": "环境",
+      "function": "PM2.5/PM10颗粒物",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        },
+        "esp32_s3": {
+          "TX": 17,
+          "RX": 18
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V",
+      "range": "0~500μg/m³",
+      "precision": "±10%",
+      "notes": "PMS5003/PMS7003一体模块, 串口直接输出PM2.5/PM10数值; 需预热30秒; 自带风扇",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "教室空气质量监测"
+      ]
+    },
+    "MH_Z19B": {
+      "category": "环境",
+      "function": "CO2浓度",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        },
+        "esp32_s3": {
+          "TX": 17,
+          "RX": 18
+        },
+        "arduino_nano": {
+          "TX": 3,
+          "RX": 2
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "MH-Z19"
+        ],
+        "platformio": [
+          "wifwaf/MH-Z19@^1.5.4"
+        ]
+      },
+      "voltage": "5V",
+      "range": "400~5000ppm",
+      "precision": "±50ppm",
+      "notes": "NDIR红外CO2模块, 串口直接输出ppm数值; 预热3分钟; 支持自动校准",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "教室空气质量监测"
+      ]
+    }
+  },
+  "communication_modules": {
+    "RFID_RC522": {
+      "category": "通信/识别",
+      "function": "NFC/RFID刷卡",
+      "protocol": "SPI",
+      "pins_required": {
+        "SDA_SS": 1,
+        "SCK": 1,
+        "MOSI": 1,
+        "MISO": 1,
+        "RST": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA_SS": 5,
+          "SCK": 18,
+          "MOSI": 23,
+          "MISO": 19,
+          "RST": 27
+        },
+        "esp32_s3": {
+          "SDA_SS": 10,
+          "SCK": 12,
+          "MOSI": 11,
+          "MISO": 13,
+          "RST": 14
+        },
+        "arduino_nano": {
+          "SDA_SS": 10,
+          "SCK": 13,
+          "MOSI": 11,
+          "MISO": 12,
+          "RST": 9
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "MFRC522"
+        ],
+        "platformio": [
+          "miguelbalboa/MFRC522@^1.4.10"
+        ]
+      },
+      "voltage": "3.3V",
+      "range": "~5cm",
+      "notes": "模块已内置天线和调理电路; 注意只能3.3V供电! 5V会烧毁模块; SPI接线, ESP32引脚可自定义",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "自动取药机",
+        "公交让座装置"
+      ]
+    },
+    "NRF24L01": {
+      "category": "通信",
+      "function": "2.4G无线",
+      "protocol": "SPI",
+      "pins_required": {
+        "CE": 1,
+        "CSN": 1,
+        "SCK": 1,
+        "MOSI": 1,
+        "MISO": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "CE": 4,
+          "CSN": 5,
+          "SCK": 18,
+          "MOSI": 23,
+          "MISO": 19
+        },
+        "arduino_nano": {
+          "CE": 7,
+          "CSN": 8,
+          "SCK": 13,
+          "MOSI": 11,
+          "MISO": 12
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "RF24"
+        ],
+        "platformio": [
+          "nrf24/RF24@^1.4.8"
+        ]
+      },
+      "voltage": "3.3V",
+      "range": "~100m(开阔)",
+      "notes": "模块已内置天线; 3.3V供电! 建议VCC和GND间焊一个10μF电容防抖; 有PA+LNA增强版(距离更远)",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "盲人手杖"
+      ]
+    },
+    "UWB_MK8000": {
+      "category": "通信/定位",
+      "function": "超宽带精确定位",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_s3": {
+          "TX": 17,
+          "RX": 18
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3V",
+      "range": "~100m, 精度±8cm",
+      "notes": "国产UWB模块, 串口通信; 需配合配置工具设置基站/标签角色; 建议用ESP32-S3(多硬件串口)",
+      "difficulty": "advanced",
+      "used_in_projects": [
+        "自动跟随书包",
+        "水质监测船"
+      ]
+    },
+    "GPS_ATGM336H": {
+      "category": "通信/定位",
+      "function": "GPS定位",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        },
+        "esp32_s3": {
+          "TX": 17,
+          "RX": 18
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "TinyGPSPlus"
+        ],
+        "platformio": [
+          "mikalhart/TinyGPSPlus@^1.0.3"
+        ]
+      },
+      "voltage": "3.3-5V",
+      "range": "全球, 精度±2-3m",
+      "notes": "模块已内置天线(部分型号外置); 冷启动30秒~几分钟; 室内基本无信号; 默认9600波特率",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "水质监测船"
+      ]
+    },
+    "HC_05": {
+      "category": "通信",
+      "function": "蓝牙2.0串口透传",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "arduino_nano": {
+          "TX": 3,
+          "RX": 2
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "SoftwareSerial"
+        ],
+        "platformio": []
+      },
+      "voltage": "3.3-6V",
+      "range": "~10m",
+      "notes": "模块已内置蓝牙天线; AT命令配置; ESP32自带蓝牙不需要此模块; 主要给Arduino Nano用",
+      "difficulty": "beginner",
+      "used_in_projects": []
+    }
+  },
+  "displays": {
+    "OLED_SSD1306": {
+      "category": "显示",
+      "function": "0.96寸OLED",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22
+        },
+        "esp32_s3": {
+          "SDA": 8,
+          "SCL": 9
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5"
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Adafruit SSD1306",
+          "Adafruit GFX"
+        ],
+        "platformio": [
+          "adafruit/Adafruit SSD1306@^2.5.7",
+          "adafruit/Adafruit GFX Library@^1.11.9"
+        ]
+      },
+      "voltage": "3.3-5V",
+      "resolution": "128×64",
+      "notes": "模块已内置升压和稳压; 3.3-5V直接供电; I2C地址通常0x3C(有的0x3D); 对比度高适合状态显示",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "自动跟随书包",
+        "智能台灯"
+      ]
+    },
+    "TFT_ST7735": {
+      "category": "显示",
+      "function": "1.8寸彩色TFT",
+      "protocol": "SPI",
+      "pins_required": {
+        "CS": 1,
+        "DC": 1,
+        "RST": 1,
+        "SCK": 1,
+        "MOSI": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "CS": 5,
+          "DC": 2,
+          "RST": 4,
+          "SCK": 18,
+          "MOSI": 23
+        },
+        "esp32_s3": {
+          "CS": 10,
+          "DC": 3,
+          "RST": 4,
+          "SCK": 12,
+          "MOSI": 11
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Adafruit ST7735",
+          "Adafruit GFX"
+        ],
+        "platformio": [
+          "adafruit/Adafruit ST7735 and ST7789 Library@^1.10.3"
+        ]
+      },
+      "voltage": "3.3V",
+      "resolution": "128×160",
+      "notes": "模块已内置背光驱动; 3.3V逻辑, 5V板需电平转换; SPI接口速度快; 可显示中文和图片",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "自动取药机"
+      ]
+    },
+    "LCD1602_I2C": {
+      "category": "显示",
+      "function": "16×2字符LCD",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5"
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "LiquidCrystal_I2C"
+        ],
+        "platformio": [
+          "marcoschwartz/LiquidCrystal_I2C@^1.1.4"
+        ]
+      },
+      "voltage": "5V",
+      "resolution": "16×2字符",
+      "notes": "模块带I2C转接板(PCF8574); 地址通常0x27或0x3F; 需5V供电背光才亮; 只能显示英文数字",
+      "difficulty": "beginner",
+      "used_in_projects": []
+    },
+    "WS2812B": {
+      "category": "显示/指示",
+      "function": "RGB可编程灯带",
+      "protocol": "SingleWire",
+      "pins_required": {
+        "data": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "data": 13
+        },
+        "esp32_s3": {
+          "data": 38
+        },
+        "arduino_nano": {
+          "data": 6
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Adafruit NeoPixel"
+        ],
+        "platformio": [
+          "adafruit/Adafruit NeoPixel@^1.12.0"
+        ]
+      },
+      "voltage": "5V(数据线可3.3V)",
+      "notes": "灯带/灯珠模块; 数据线级联, 单GPIO控制任意数量; 每颗全白约60mA, 长灯带需外部5V供电",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "智能药箱"
+      ]
+    },
+    "TM1637": {
+      "category": "显示",
+      "function": "4位数码管",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "CLK": 1,
+        "DIO": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "CLK": 25,
+          "DIO": 26
+        },
+        "arduino_nano": {
+          "CLK": 5,
+          "DIO": 4
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "TM1637Display"
+        ],
+        "platformio": [
+          "avishorp/TM1637@^1.2.0"
+        ]
+      },
+      "voltage": "3.3-5V",
+      "notes": "数码管模块已内置驱动芯片; 两线控制(CLK+DIO); 适合显示时间温度等纯数字",
+      "difficulty": "beginner",
+      "used_in_projects": []
+    }
+  },
+  "actuators": {
+    "SG90": {
+      "category": "执行/舵机",
+      "function": "180°舵机",
+      "protocol": "PWM",
+      "pins_required": {
+        "signal": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "signal": 13
+        },
+        "esp32_s3": {
+          "signal": 13
+        },
+        "arduino_nano": {
+          "signal": 9
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "ESP32Servo",
+          "Servo"
+        ],
+        "platformio": [
+          "madhephaestus/ESP32Servo@^1.1.2"
+        ]
+      },
+      "voltage": "4.8-6V",
+      "range": "0~180°",
+      "notes": "微型舵机模块, 三线(信号/VCC/GND); 堵转电流700mA需独立供电; ESP32用ESP32Servo库",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "自动取药机",
+        "腿部康复装置"
+      ]
+    },
+    "MG996R": {
+      "category": "执行/舵机",
+      "function": "大扭矩金属舵机",
+      "protocol": "PWM",
+      "pins_required": {
+        "signal": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "signal": 13
+        },
+        "arduino_nano": {
+          "signal": 9
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "ESP32Servo",
+          "Servo"
+        ],
+        "platformio": [
+          "madhephaestus/ESP32Servo@^1.1.2"
+        ]
+      },
+      "voltage": "4.8-7.2V",
+      "range": "0~180°",
+      "notes": "大扭矩金属齿轮舵机; 堵转电流2.5A! 必须独立供电, 绝对不能从开发板取电",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "腿部康复装置"
+      ]
+    },
+    "28BYJ-48": {
+      "category": "执行/步进电机",
+      "function": "5V步进电机",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "IN1": 1,
+        "IN2": 1,
+        "IN3": 1,
+        "IN4": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "IN1": 13,
+          "IN2": 14,
+          "IN3": 27,
+          "IN4": 26
+        },
+        "arduino_nano": {
+          "IN1": 8,
+          "IN2": 9,
+          "IN3": 10,
+          "IN4": 11
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Stepper",
+          "AccelStepper"
+        ],
+        "platformio": [
+          "waspinator/AccelStepper@^1.64"
+        ]
+      },
+      "voltage": "5V",
+      "range": "4096步/圈(半步模式)",
+      "notes": "配套ULN2003驱动板, 四线控制; 速度慢但角度精确; 整套模块十几块钱",
+      "difficulty": "beginner",
+      "used_in_projects": []
+    },
+    "DC_motor_L298N": {
+      "category": "执行/电机驱动",
+      "function": "L298N双路直流电机",
+      "protocol": "PWM+DigitalIO",
+      "pins_required": {
+        "ENA": 1,
+        "IN1": 1,
+        "IN2": 1,
+        "ENB": 1,
+        "IN3": 1,
+        "IN4": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "ENA": 25,
+          "IN1": 26,
+          "IN2": 27,
+          "ENB": 14,
+          "IN3": 12,
+          "IN4": 13
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5-35V电机, 5V逻辑",
+      "range": "2A×2路",
+      "notes": "电机驱动模块, 接线端子输入; ENA/ENB接PWM调速; 板载5V稳压可给ESP32供电(跳帽选择); 效率约50%有发热",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "自平衡配送箱",
+        "灭火装置"
+      ]
+    },
+    "DC_motor_TB6612": {
+      "category": "执行/电机驱动",
+      "function": "TB6612双路直流电机",
+      "protocol": "PWM+DigitalIO",
+      "pins_required": {
+        "PWMA": 1,
+        "AIN1": 1,
+        "AIN2": 1,
+        "PWMB": 1,
+        "BIN1": 1,
+        "BIN2": 1,
+        "STBY": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "PWMA": 25,
+          "AIN1": 26,
+          "AIN2": 27,
+          "PWMB": 14,
+          "BIN1": 12,
+          "BIN2": 13,
+          "STBY": 33
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "2.5-13.5V电机, 3.3-5V逻辑",
+      "range": "1.2A×2路(峰值3.2A)",
+      "notes": "电机驱动模块, 比L298N效率高体积小; STBY引脚拉高使能; 适合对效率和体积有要求的项目",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "智能垃圾桶"
+      ]
+    },
+    "PCA9685": {
+      "category": "执行/PWM扩展",
+      "function": "16路PWM舵机控制",
+      "protocol": "I2C",
+      "pins_required": {
+        "SDA": 1,
+        "SCL": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "SDA": 21,
+          "SCL": 22
+        },
+        "arduino_nano": {
+          "SDA": "A4",
+          "SCL": "A5"
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "Adafruit PWM Servo Driver"
+        ],
+        "platformio": [
+          "adafruit/Adafruit PWM Servo Driver Library@^3.0.1"
+        ]
+      },
+      "voltage": "3.3-5V逻辑, 独立V+供舵机",
+      "range": "16路PWM",
+      "notes": "16路PWM扩展模块; I2C控制; 可通过焊接跳线修改地址级联多块; 需独立V+给舵机供电",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "腿部康复装置"
+      ]
+    },
+    "relay_module": {
+      "category": "执行/开关",
+      "function": "继电器模块",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "signal": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "signal": 13
+        },
+        "arduino_nano": {
+          "signal": 7
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V控制, 最大250V/10A负载",
+      "notes": "继电器模块, 光耦隔离; 低电平触发为主; 指示灯显示通断状态; 可控制220V大功率设备",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "智能插线板",
+        "智能花盆"
+      ]
+    },
+    "water_pump": {
+      "category": "执行/泵",
+      "function": "直流微型水泵",
+      "protocol": "DigitalIO(通过继电器/MOS管)",
+      "pins_required": {
+        "signal": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "signal": 13
+        },
+        "arduino_nano": {
+          "signal": 7
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3-12V",
+      "notes": "直流微型水泵; 不能直接接GPIO! 通过继电器模块或MOS管模块驱动",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "智能花盆",
+        "水质监测船"
+      ]
+    },
+    "buzzer_active": {
+      "category": "执行/声音",
+      "function": "有源蜂鸣器",
+      "protocol": "DigitalIO",
+      "pins_required": {
+        "signal": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "signal": 13
+        },
+        "arduino_nano": {
+          "signal": 8
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "notes": "有源蜂鸣器模块; 高电平响低电平停; 已内置振荡电路无需PWM; 三线接入(VCC/GND/IO)",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "坐位体前屈",
+        "灭火装置"
+      ]
+    },
+    "DFPlayer_Mini": {
+      "category": "执行/音频",
+      "function": "MP3播放模块",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        },
+        "arduino_nano": {
+          "TX": 3,
+          "RX": 2
+        }
+      },
+      "libraries": {
+        "arduino": [
+          "DFRobotDFPlayerMini"
+        ],
+        "platformio": [
+          "dfrobot/DFRobotDFPlayerMini@^1.0.6"
+        ]
+      },
+      "voltage": "3.3-5V",
+      "notes": "MP3播放模块; TF卡存MP3文件; TX串联1K电阻; 自带3W功放可直接接小喇叭; 串口控制",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "智能药箱",
+        "智能垃圾桶"
+      ]
+    },
+    "offline_voice_module": {
+      "category": "执行/语音",
+      "function": "离线语音识别+播报",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        },
+        "arduino_nano": {
+          "TX": 3,
+          "RX": 2
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "notes": "离线语音模块(LD3320/HLK-V20等); 免联网; 通过厂家工具配置唤醒词和命令词; 串口与主控通信",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "自动取药机",
+        "智能垃圾桶"
+      ]
+    }
+  },
+  "vision_modules": {
+    "MaixCAM": {
+      "category": "视觉/AI",
+      "function": "嘉楠K210 AI视觉模块",
+      "protocol": "UART/SPI",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V",
+      "notes": "自带摄像头+屏幕; 支持YOLOv8目标检测; MicroPython编程; 通过串口与ESP32通信",
+      "difficulty": "advanced",
+      "used_in_projects": [
+        "智能垃圾桶(宠物垃圾清理)"
+      ]
+    },
+    "K230": {
+      "category": "视觉/AI",
+      "function": "嘉楠K230 AI开发板",
+      "protocol": "UART",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V",
+      "notes": "性能强于K210; 自带摄像头; 支持人体检测/人脸识别; CanMV框架",
+      "difficulty": "advanced",
+      "used_in_projects": [
+        "智能语音垃圾桶"
+      ]
+    },
+    "USB_Camera": {
+      "category": "视觉",
+      "function": "USB摄像头",
+      "protocol": "USB",
+      "pins_required": {},
+      "default_pins": {},
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "5V(USB供电)",
+      "notes": "配合树莓派/行空板/N100使用; OpenCV+MediaPipe处理; 不能直接接Arduino/ESP32",
+      "difficulty": "intermediate",
+      "used_in_projects": [
+        "坐位体前屈",
+        "校园营养分析仪",
+        "AI纹影法"
+      ]
+    },
+    "barcode_scanner": {
+      "category": "视觉/识别",
+      "function": "条形码/二维码扫描",
+      "protocol": "UART/USB",
+      "pins_required": {
+        "TX": 1,
+        "RX": 1
+      },
+      "default_pins": {
+        "esp32_devkit": {
+          "TX": 17,
+          "RX": 16
+        }
+      },
+      "libraries": {
+        "arduino": [],
+        "platformio": []
+      },
+      "voltage": "3.3-5V",
+      "notes": "串口输出扫描结果; 支持一维码和二维码; 可配置为USB键盘模式",
+      "difficulty": "beginner",
+      "used_in_projects": [
+        "坐位体前屈"
+      ]
+    }
+  },
+  "power_modules": {
+    "TP4056": {
+      "category": "电源",
+      "function": "锂电池充电模块",
+      "voltage": "5V输入, 4.2V输出",
+      "notes": "最大充电电流1A; 带保护电路防过充过放; 配合18650电池使用"
+    },
+    "MT3608": {
+      "category": "电源",
+      "function": "升压模块",
+      "voltage": "2-24V输入, 最高28V输出",
+      "notes": "最大2A输出; 可将3.7V锂电升至5V; 效率约90%"
+    },
+    "LM2596": {
+      "category": "电源",
+      "function": "降压模块",
+      "voltage": "4.5-40V输入, 1.25-37V可调输出",
+      "notes": "最大3A输出; 12V电池降至5V给ESP32供电"
+    },
+    "18650_battery": {
+      "category": "电源",
+      "function": "18650锂电池",
+      "voltage": "3.7V(标称), 4.2V(满电)",
+      "notes": "常用2000-3400mAh; 2串=7.4V, 3串=11.1V; 需保护板"
+    }
+  }
+}

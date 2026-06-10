@@ -13,6 +13,7 @@ export function ApprovalModal({
   onAnswer: (allow: boolean, session: boolean) => void;
   onRevisePlan?: (text: string) => void;
   onExitPlan?: () => void;
+  onOpenFile?: (path: string) => void;
 }) {
   const t = useT();
   const [revisionOpen, setRevisionOpen] = useState(false);

@@ -10,7 +10,13 @@ import type { Todo } from "../lib/tools";
 // shows the current item so the footer stays compact during a long run. The ✕
 // dismisses it (onDismiss) when the user abandons the task; a fresh todo_write
 // brings it back.
-export function TodoPanel({ todos, onDismiss }: { todos: Todo[]; onDismiss: () => void }) {
+export function TodoPanel({
+  todos,
+  onDismiss,
+}: {
+  todos: Todo[];
+  onDismiss: () => void;
+}) {
   const t = useT();
   const [open, setOpen] = useState(true);
   if (todos.length === 0) return null;
@@ -38,20 +44,20 @@ export function TodoPanel({ todos, onDismiss }: { todos: Todo[]; onDismiss: () =
 
       {open && (
         <ul className="todobar__list">
-          {todos.map((t, i) => (
+          {todos.map((todo, i) => (
             <li
               key={i}
-              className={`todobar__item todobar__item--${t.status}${t.level ? " todobar__item--sub" : ""}`}
+              className={`todobar__item todobar__item--${todo.status}${todo.level ? " todobar__item--sub" : ""}`}
             >
-              {t.status === "completed" ? (
+              {todo.status === "completed" ? (
                 <Check size={14} className="todobar__ico todobar__ico--done" />
-              ) : t.status === "in_progress" ? (
+              ) : todo.status === "in_progress" ? (
                 <CircleDot size={14} className="todobar__ico todobar__ico--active" />
               ) : (
                 <Circle size={14} className="todobar__ico" />
               )}
               <span className="todobar__text">
-                {t.status === "in_progress" && t.activeForm ? t.activeForm : t.content}
+                {todo.status === "in_progress" && todo.activeForm ? todo.activeForm : todo.content}
               </span>
             </li>
           ))}

@@ -1,4 +1,4 @@
-// Command reasonix-desktop is the Wails shell around the Reasonix kernel: a native
+// Command reasonix-desktop is the Wails shell around the onecreat kernel: a native
 // window hosting a webview frontend, with the Go-side control.Controller bound
 // directly to the UI (no HTTP hop — bindings in, runtime events out). It lives in
 // a nested module (reasonix/desktop) so the CGO/WebKit desktop build never touches
@@ -40,7 +40,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "Reasonix",
+		Title:     "onecreat",
 		Width:     1240,
 		Height:    720,
 		MinWidth:  760,
@@ -51,6 +51,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 26, G: 26, B: 46, A: 255},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup:        app.startup,
+		OnDomReady:       app.domReady,
 		OnShutdown:       app.shutdown,
 		Bind:             []any{app},
 
@@ -67,7 +68,7 @@ func main() {
 			Theme: windows.SystemDefault,
 		},
 		Linux: &linux.Options{
-			ProgramName: "Reasonix",
+			ProgramName: "onecreat",
 			// WebKitGTK GPU compositing is inconsistent across distros/drivers and
 			// is the one real cross-platform rough edge for a Go+webview stack:
 			// "always" can yield blank or flickering webviews on some setups, so

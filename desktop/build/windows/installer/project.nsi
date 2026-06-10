@@ -105,6 +105,7 @@ Section
     SetOutPath $INSTDIR
 
     !insertmacro wails.files
+    File "reasonix-hardware-mcp.exe"
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"

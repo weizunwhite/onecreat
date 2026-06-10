@@ -1,0 +1,129 @@
+{
+  "_meta": {
+    "version": "0.2.0",
+    "description": "冷门/易错平台的软件 API 地面真值。sensor-catalog.json 只有接线,这里补软件写法。重点覆盖模型最爱幻觉的国产生态(MaixCAM K230 / 行空板),以及跨平台库差异。",
+    "note": "imports 与 gotchas 已人工核对;snippet 为最小可用范式,细节(如 UART 设备节点、core 版本)以官方文档为准。0.2.0 据 DeepSeek 硬件能力边界实测补:esp32_arduino(LEDC PWM)、unihiker ADC、esp32_micropython PWM。"
+  },
+  "apis": {
+    "maixcam": {
+      "label": "MaixCAM (K230) MaixPy v4",
+      "aliases": [
+        "maixcam",
+        "maix_cam",
+        "k230",
+        "maixpy",
+        "maixcam_python"
+      ],
+      "language": "python",
+      "verified": "已对照官方文档 wiki.sipeed.com/maixpy (camera/display/find_blobs/uart)",
+      "summary": "MaixCAM 用嘉楠 K230,跑 MaixPy v4(maix.* 模块)。摄像头识别后通过 UART 与 ESP32/Arduino 通信是最常见的双板用法。",
+      "imports": [
+        "from maix import camera, display, image, uart, app"
+      ],
+      "gotchas": [
+        "MaixCAM 是 K230 芯片,不是 K210。必须用 MaixPy v4 的 maix.* API。",
+        "不要用 K210 老 API:import sensor / import lcd / from fpioa_manager import fm / lcd.init() / sensor.reset() —— 这些在 MaixCAM 上不存在。",
+        "串口用 from maix import uart;serial = uart.UART(\"/dev/ttyS0\", 115200),不要用 machine.UART。设备名可用 uart.list_devices() 查。",
+        "颜色识别 img.find_blobs(thresholds, pixels_threshold=500) —— 参数名是 pixels_threshold 不是 area_threshold。",
+        "阈值是 LAB 色彩空间 [L_min,L_max, A_min,A_max, B_min,B_max],不是 RGB。官方示例:红 [0,80,40,80,10,80]、绿 [0,80,-120,-10,0,30]、蓝 [0,80,30,100,-120,-60]。",
+        "主循环用 while not app.need_exit(),不要写 while True 死循环。"
+      ],
+      "snippet": "from maix import camera, display, image, uart, app\n\ncam = camera.Camera(320, 240)             # 摄像头 RGB 320x240\ndisp = display.Display()                  # 屏幕\nserial = uart.UART(\"/dev/ttyS0\", 115200)   # 板载 UART(设备名可用 uart.list_devices() 查)\n\n# LAB 阈值 [L_min,L_max, A_min,A_max, B_min,B_max](官方示例值,现场可微调)\nred_thr  = [[0, 80, 40, 80, 10, 80]]\nblue_thr = [[0, 80, 30, 100, -120, -60]]\n\nwhile not app.need_exit():\n    img = cam.read()\n    if img.find_blobs(red_thr, pixels_threshold=500):\n        serial.write_str(\"R\")              # 发红色标识给下位机\n    elif img.find_blobs(blue_thr, pixels_threshold=500):\n        serial.write_str(\"B\")\n    disp.show(img)"
+    },
+    "unihiker": {
+      "label": "行空板 Unihiker (pinpong + unihiker)",
+      "aliases": [
+        "unihiker",
+        "xingkongban",
+        "行空板",
+        "unihiker_python"
+      ],
+      "language": "python",
+      "verified": "imports/gotchas 已核对;ADC 已对照 unihiker.com/wiki PinPong Analog Input(P21/Pin.ANALOG/0~4095)",
+      "summary": "行空板:GPIO 用 pinpong 库,屏幕 UI 用 unihiker 库。两者分工固定,最易混淆。",
+      "imports": [
+        "from unihiker import GUI",
+        "from pinpong.board import Board, Pin"
+      ],
+      "gotchas": [
+        "GPIO(读按钮/控制引脚)用 pinpong:from pinpong.board import Board, Pin。屏幕显示用 unihiker:from unihiker import GUI。",
+        "Board 来自 pinpong.board,不是 unihiker。写 from unihiker import Board 会 ImportError。",
+        "pinpong 没有 on_press/on_release 这类事件回调 API。要读按钮就轮询 pin.read_digital()。",
+        "用引脚前必须先 Board().begin() 初始化板子。",
+        "按钮通常一端接 GND,按下读到 0(低电平),松开读到 1。",
+        "读模拟量(电位器/光敏/土壤湿度等)用 pinpong 的 ADC:adc = Pin(Pin.P21, Pin.ANALOG);val = adc.read_analog()。模式常量是 Pin.ANALOG,不是 Pin.ANALOG_IN(不存在)。",
+        "合法模拟输入引脚只有 P0 P1 P2 P3 P4 P10 P21 P22(12 位 ADC),没有 Pin.A0。read_analog() 返回 0~4095,换算电压用 raw*3.3/4095(分母是 4095 不是 1023)。",
+        "数字温度模块(DHT11/DHT22/DS18B20)不是模拟量,不能用 read_analog,要用对应数字/OneWire 库。"
+      ],
+      "snippet": "from unihiker import GUI\nfrom pinpong.board import Board, Pin\nimport time\n\nBoard().begin()                       # 初始化行空板(必须)\ngui = GUI()                           # 屏幕 UI\nbutton = Pin(Pin.P21, Pin.IN)         # P21 数字输入(读按钮)\nadc = Pin(Pin.P22, Pin.ANALOG)        # P22 模拟输入(读电位器等),常量是 Pin.ANALOG\n\nlabel = gui.draw_text(x=120, y=140, text=\"松开\", font_size=24, origin=\"center\")\nvolt = gui.draw_text(x=120, y=190, text=\"\", font_size=18, origin=\"center\")\n\nlast = 1\nwhile True:\n    state = button.read_digital()     # 0=按下, 1=松开\n    if state != last:\n        label.config(text=\"按下\" if state == 0 else \"松开\")\n        last = state\n    raw = adc.read_analog()           # 0~4095(12 位 ADC)\n    voltage = raw * 3.3 / 4095        # 换算电压,分母用 4095\n    volt.config(text=\"%.2fV\" % voltage)\n    time.sleep(0.05)"
+    },
+    "esp32_micropython": {
+      "label": "ESP32 MicroPython",
+      "aliases": [
+        "micropython",
+        "esp32_micropython",
+        "upython"
+      ],
+      "language": "python",
+      "verified": "已核对",
+      "summary": "ESP32 跑 MicroPython 时用 machine 模块(与 Arduino C++ 完全不同)。",
+      "imports": [
+        "from machine import Pin, ADC, UART, PWM",
+        "import time"
+      ],
+      "gotchas": [
+        "引脚用 machine.Pin(4, Pin.OUT),不是 Arduino 的 digitalWrite。",
+        "延时用 time.sleep_ms(),记得 import time。",
+        "ADC 用 machine.ADC(Pin(34));ESP32 上 ADC1 引脚(32-39)在 WiFi 开启时仍可用,ADC2 不行。",
+        "PWM 用 machine.PWM:pwm = PWM(Pin(2), freq=1000)。占空比两种 API 都是真实的:duty()(0~1023,10 位,ESP32 专属)和 duty_u16()(0~65535,16 位,跨平台标准)。别把 duty(0~1023) 当幻觉,也别给 duty_u16 传 0~1023。",
+        "按钮用 Pin(p, Pin.IN, Pin.PULL_UP),一端接 GND,按下读 0。做按钮输入要避开 strapping 引脚 GPIO0(开机按住会进下载模式)、GPIO2、GPIO15。"
+      ],
+      "snippet": "from machine import Pin, UART\nimport time\n\nuart = UART(2, baudrate=115200, tx=17, rx=16)  # UART2\nled = Pin(2, Pin.OUT)\n\nwhile True:\n    if uart.any():\n        cmd = uart.read(1)\n        led.value(1 if cmd == b'R' else 0)\n    time.sleep_ms(20)"
+    },
+    "esp32_arduino": {
+      "label": "ESP32 (Arduino C++ / 乐鑫 core)",
+      "aliases": [
+        "esp32_arduino",
+        "esp32",
+        "esp32dev",
+        "esp32_dev_module",
+        "arduino_esp32",
+        "esp32 arduino"
+      ],
+      "language": "cpp",
+      "verified": "已对照 docs.espressif.com arduino-esp32 LEDC(2.x→3.0 迁移指南)与 ESP32Servo 库",
+      "summary": "ESP32 用 Arduino 框架时,PWM(电机调速/LED 调光/蜂鸣器)必须用 LEDC,不要用 analogWrite;且 core 2.x 与 3.x 的 LEDC API 不同。舵机用 ESP32Servo。",
+      "imports": [
+        "#include <Arduino.h>",
+        "#include <ESP32Servo.h>   // 舵机(标准 Servo.h 在 ESP32 编译失败)",
+        "#include <WiFi.h>         // 联网"
+      ],
+      "gotchas": [
+        "PWM 用 LEDC,不要默认 analogWrite():老的 core 2.x 上 analogWrite 常缺失/不可靠,可能报 'analogWrite' was not declared。统一用 LEDC 最稳、最可解释。",
+        "LEDC 在 core 2.x 与 3.x 写法不同。core 2.x:ledcSetup(channel, freq, bits); ledcAttachPin(pin, channel); ledcWrite(channel, duty)。core 3.x:ledcAttach(pin, freq, bits); ledcWrite(pin, duty)(自动分配通道,无需手动 channel)。不确定版本时,3.x 是当前默认。",
+        "占空比范围由分辨率决定:bits=8 时 duty 是 0~255,bits=10 时 0~1023,即 0~(2^bits - 1)。",
+        "舵机用 ESP32Servo 库:#include <ESP32Servo.h>;Servo s; s.attach(pin); s.write(angle);。在 ESP32 上 #include <Servo.h> 会报 'Servo.h: No such file or directory'。",
+        "HC-SR04 的 Echo 是 5V 输出,直接进 ESP32 的 3.3V GPIO 有损坏风险:Echo 与 GPIO 之间串 1kΩ 电阻,或用分压电路。",
+        "ESP32 没有 AVR 的 tone();蜂鸣器发声也用 LEDC 设频率(ledcWriteTone/直接设 freq)。"
+      ],
+      "snippet": "// ESP32 (Arduino) — L298N 电机调速(LEDC PWM)+ HC-SR04 测距 最小范式\n// PWM 必须用 LEDC,不要用 analogWrite。下面是 core 3.x 写法,2.x 见注释。\nconst int PIN_MOTOR_ENA = 25;   // L298N ENA -> GPIO25(PWM 调速)\nconst int PIN_MOTOR_IN1 = 26;   // 方向控制\nconst int PIN_MOTOR_IN2 = 27;\nconst int PWM_FREQ = 1000;      // PWM 频率 1kHz\nconst int PWM_BITS = 8;         // 8 位分辨率 -> duty 0~255\nconst int PIN_TRIG = 5;         // HC-SR04 Trig\nconst int PIN_ECHO = 18;        // HC-SR04 Echo(5V,经 1k 电阻进 3.3V 脚)\n\nvoid setup() {\n  Serial.begin(115200);\n  pinMode(PIN_MOTOR_IN1, OUTPUT);\n  pinMode(PIN_MOTOR_IN2, OUTPUT);\n  ledcAttach(PIN_MOTOR_ENA, PWM_FREQ, PWM_BITS);   // core 3.x:一行绑定引脚\n  // core 2.x 改为: ledcSetup(0, PWM_FREQ, PWM_BITS); ledcAttachPin(PIN_MOTOR_ENA, 0);\n  pinMode(PIN_TRIG, OUTPUT);\n  pinMode(PIN_ECHO, INPUT);\n}\n\nlong readDistanceCm() {\n  digitalWrite(PIN_TRIG, LOW);  delayMicroseconds(2);\n  digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);\n  digitalWrite(PIN_TRIG, LOW);\n  long us = pulseIn(PIN_ECHO, HIGH, 30000);   // 超时 30ms 防卡死\n  return us / 58;                              // 微秒换算成厘米\n}\n\nvoid loop() {\n  digitalWrite(PIN_MOTOR_IN1, HIGH);\n  digitalWrite(PIN_MOTOR_IN2, LOW);\n  ledcWrite(PIN_MOTOR_ENA, 180);    // core 3.x:对引脚写占空比(0~255)\n  // core 2.x 改为: ledcWrite(0, 180);\n  Serial.println(readDistanceCm());\n  delay(100);\n}"
+    }
+  },
+  "platform_library_rules": {
+    "description": "跨平台库差异:同一外设在不同板上用不同库。模型最常错的地方。",
+    "rules": [
+      {
+        "component": "舵机 servo",
+        "esp32": "用 ESP32Servo 库(#include <ESP32Servo.h>),不是 AVR 的 Servo.h",
+        "avr": "用 Servo 库(#include <Servo.h>)",
+        "note": "在 ESP32 上 #include <Servo.h> 会编译失败:Servo.h: No such file or directory"
+      },
+      {
+        "component": "WiFi",
+        "esp32": "#include <WiFi.h>",
+        "esp8266": "#include <ESP8266WiFi.h>",
+        "avr": "无板载 WiFi,需外接模块(ESP-01 等)"
+      }
+    ]
+  }
+}

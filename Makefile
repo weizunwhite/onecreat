@@ -5,11 +5,12 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 # with any change to the integration in internal/codegraph.
 CODEGRAPH_VERSION := v0.9.7
 
-.PHONY: build vet fmt test hooks cross clean e2e-codegraph
+.PHONY: build vet fmt test hardware-verify hardware-device-verify windows-package-verify hooks cross clean e2e-codegraph
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix ./cmd/reasonix
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix-plugin-example ./cmd/reasonix-plugin-example
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix-hardware-mcp ./cmd/reasonix-hardware-mcp
 
 vet:
 	go vet ./...
@@ -19,6 +20,15 @@ fmt:
 
 test:
 	go test ./...
+
+hardware-verify:
+	scripts/hardware-verify.sh
+
+hardware-device-verify:
+	scripts/hardware-device-verify.sh $(ARGS)
+
+windows-package-verify:
+	scripts/windows-package-verify.sh
 
 hooks:
 	@git config core.hooksPath .githooks
@@ -30,6 +40,7 @@ cross:
 		os=$${p%/*}; arch=$${p#*/}; ext=; [ $$os = windows ] && ext=.exe; \
 		echo "build $$os/$$arch"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o dist/reasonix-$$os-$$arch$$ext ./cmd/reasonix; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o dist/reasonix-hardware-mcp-$$os-$$arch$$ext ./cmd/reasonix-hardware-mcp; \
 	done
 
 clean:

@@ -12,6 +12,7 @@ export function FileMenu({
   onHover,
 }: {
   items: DirEntry[];
+  dir?: string;
   activeIndex: number;
   onPick: (e: DirEntry) => void;
   onHover: (i: number) => void;
@@ -24,28 +25,28 @@ export function FileMenu({
   return (
     <div className="slashmenu" role="listbox">
       {items.map((e, i) => (
-        <button
-          key={(e.isDir ? "d:" : "f:") + e.name}
-          ref={i === activeIndex ? activeRef : undefined}
-          role="option"
-          aria-selected={i === activeIndex}
-          className={`slashmenu__item ${i === activeIndex ? "slashmenu__item--active" : ""}`}
-          onMouseDown={(ev) => {
-            ev.preventDefault();
-            onPick(e);
-          }}
-          onMouseMove={() => onHover(i)}
-        >
-          {e.isDir ? (
-            <Folder size={13} className="filemenu__icon filemenu__icon--dir" />
-          ) : (
-            <FileText size={13} className="filemenu__icon" />
-          )}
-          <span className="slashmenu__name slashmenu__name--file">
-            {e.name}
-            {e.isDir ? "/" : ""}
-          </span>
-        </button>
+          <button
+            key={(e.isDir ? "d:" : "f:") + e.name}
+            ref={i === activeIndex ? activeRef : undefined}
+            role="option"
+            aria-selected={i === activeIndex}
+            className={`slashmenu__item ${i === activeIndex ? "slashmenu__item--active" : ""}`}
+            onMouseDown={(ev) => {
+              ev.preventDefault();
+              onPick(e);
+            }}
+            onMouseMove={() => onHover(i)}
+          >
+            {e.isDir ? (
+              <Folder size={13} className="filemenu__icon filemenu__icon--dir" />
+            ) : (
+              <FileText size={13} className="filemenu__icon" />
+            )}
+            <span className="slashmenu__name slashmenu__name--file">
+              {e.name}
+              {e.isDir ? "/" : ""}
+            </span>
+          </button>
       ))}
     </div>
   );

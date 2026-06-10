@@ -95,6 +95,19 @@ jobs:
       - name: Build and package
         run: scripts/desktop-build.sh "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}"
 
+      - name: Windows native smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/windows-native-smoke.ps1 -InstallerPath "dist/onecreat-windows-amd64-installer.exe" -SummaryPath "$env:RUNNER_TEMP/windows-native-smoke-summary.json"
+
+      - name: Upload Windows native smoke summary
+        if: runner.os == 'Windows' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-smoke-summary
+          path: ${{ runner.temp }}/windows-native-smoke-summary.json
+          if-no-files-found: warn
+
       - name: Sign artifacts (minisign)
         working-directory: desktop
         env:
@@ -145,7 +158,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.ver.outputs.tag }}" dist/* \
-            --title "Reasonix Desktop ${{ steps.ver.outputs.tag }}" \
+            --title "onecreat Desktop ${{ steps.ver.outputs.tag }}" \
             --generate-notes
 
   mirror:

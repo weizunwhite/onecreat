@@ -5,9 +5,9 @@
 #
 # Output lands in <repo>/dist/ with stable, platform-keyed names that
 # desktop/cmd/sign's `manifest` subcommand maps back to update.PlatformKey:
-#   macOS:   Reasonix-darwin-<arch>.zip                  (ditto archive of the .app)
-#   Windows: Reasonix-windows-<arch>-installer.exe       (NSIS per-user installer)
-#   Linux:   Reasonix-linux-<arch>.tar.gz                (bare binary)
+#   macOS:   onecreat-darwin-<arch>.zip                  (ditto archive of the .app)
+#   Windows: onecreat-windows-<arch>-installer.exe       (NSIS per-user installer)
+#   Linux:   onecreat-linux-<arch>.tar.gz                (bare binary)
 #
 # Usage: scripts/desktop-build.sh <os/arch> <version>
 #   e.g. scripts/desktop-build.sh darwin/arm64 v1.1.0
@@ -20,32 +20,66 @@ os="${PLATFORM%/*}"
 arch="${PLATFORM#*/}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APPNAME="Reasonix"            # wails.json productName -> Reasonix.app
+APPNAME="onecreat"            # wails.json productName -> onecreat.app
 BINNAME="reasonix-desktop"    # wails.json outputfilename -> linux binary name
 
 cd "$ROOT/desktop"
+
+if command -v wails >/dev/null 2>&1; then
+	WAILS="$(command -v wails)"
+else
+	gopath="$(go env GOPATH 2>/dev/null || true)"
+	if [ -n "$gopath" ] && [ -x "$gopath/bin/wails" ]; then
+		WAILS="$gopath/bin/wails"
+	else
+		echo "wails CLI not found. Install it with: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0" >&2
+		exit 127
+	fi
+fi
+
+hardware_ext=""
+[ "$os" = windows ] && hardware_ext=".exe"
+
+# The Windows NSIS installer is produced during `wails build -nsis`, so its extra
+# payload must exist before Wails invokes makensis. macOS/Linux package the MCP
+# after Wails finishes.
+if [ "$os" = windows ]; then
+	hardware_installer_payload="build/windows/installer/reasonix-hardware-mcp.exe"
+	echo "==> building bundled hardware MCP for NSIS -> $hardware_installer_payload"
+	CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "-s -w -X main.version=$VERSION" \
+		-o "$hardware_installer_payload" ../cmd/reasonix-hardware-mcp
+fi
 
 # NSIS installer is Windows-only (Wails requires a single windows target for -nsis).
 build_args=(-clean -platform "$PLATFORM" -ldflags "-X main.version=$VERSION")
 [ "$os" = windows ] && build_args+=(-nsis)
 
-echo "==> wails build ${build_args[*]}"
-wails build "${build_args[@]}"
+echo "==> $WAILS build ${build_args[*]}"
+"$WAILS" build "${build_args[@]}"
+
+hardware_bin="build/bin/reasonix-hardware-mcp${hardware_ext}"
+if [ "$os" != windows ]; then
+	echo "==> building bundled hardware MCP -> $hardware_bin"
+	CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "-s -w -X main.version=$VERSION" \
+		-o "$hardware_bin" ../cmd/reasonix-hardware-mcp
+fi
 
 mkdir -p "$ROOT/dist"
 
 case "$os" in
 darwin)
 	# Wails names the bundle after outputfilename (reasonix-desktop.app); repackage
-	# it as Reasonix.app for a clean user-facing name. Ad-hoc sign the copy (still
+	# it as onecreat.app for a clean user-facing name. Ad-hoc sign the copy (still
 	# not notarized — the real fix is a Developer ID cert); this cuts down the
 	# Gatekeeper "is damaged / can't be opened" error on a downloaded build, though
 	# users may still need to clear the quarantine attribute (see desktop/README.md).
 	staging=$(mktemp -d)
 	app="$staging/${APPNAME}.app"
 	cp -R "build/bin/reasonix-desktop.app" "$app"
+	cp "$hardware_bin" "$app/Contents/MacOS/reasonix-hardware-mcp"
+	find "$app" -name '._*' -delete
 	codesign --force --deep -s - "$app"
-	ditto -c -k --keepParent "$app" "$ROOT/dist/${APPNAME}-darwin-${arch}.zip"
+	COPYFILE_DISABLE=1 ditto -c -k --norsrc --noextattr --keepParent "$app" "$ROOT/dist/${APPNAME}-darwin-${arch}.zip"
 	rm -rf "$staging"
 	;;
 windows)
@@ -56,7 +90,7 @@ windows)
 	cp "$installer" "$ROOT/dist/${APPNAME}-windows-${arch}-installer.exe"
 	;;
 linux)
-	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin "$BINNAME"
+	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin "$BINNAME" "reasonix-hardware-mcp"
 	;;
 *)
 	echo "unsupported os: $os" >&2

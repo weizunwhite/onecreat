@@ -1,5 +1,6 @@
-import { ChevronDown, ChevronRight, Search, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Folder, Search, Trash2 } from "lucide-react";
 import { useMemo, useRef, useState, type ReactNode } from "react";
+import { basename, fileRemarkFor, projectRemarkFor } from "../lib/fileRemarks";
 import { useT } from "../lib/i18n";
 import type { MemoryFact, MemoryView } from "../lib/types";
 import { ResizableDrawer } from "./ResizableDrawer";
@@ -11,6 +12,19 @@ type LinkInfo = {
 
 function displayTitle(fact: MemoryFact): string {
   return fact.title || fact.name.replaceAll("-", " ");
+}
+
+function dirname(path: string): string {
+  const clean = path.replace(/\/$/, "");
+  const parts = clean.split("/").filter(Boolean);
+  if (parts.length <= 1) return "";
+  const prefix = clean.startsWith("/") ? "/" : "";
+  return prefix + parts.slice(0, -1).join("/");
+}
+
+function pathRemark(path: string, isDir = false): string {
+  if (isDir) return projectRemarkFor(path);
+  return fileRemarkFor(path) || "指令文件";
 }
 
 function uniqueLinks(body: string, names: Set<string>): LinkInfo[] {
@@ -25,6 +39,87 @@ function uniqueLinks(body: string, names: Set<string>): LinkInfo[] {
     links.push({ name, exists: names.has(name) });
   }
   return links;
+}
+
+function MemoryPathSummary({
+  path,
+  label,
+  isDir = false,
+  compact = false,
+}: {
+  path: string;
+  label?: string;
+  isDir?: boolean;
+  compact?: boolean;
+}) {
+  const dir = dirname(path);
+  const remark = pathRemark(path, isDir);
+  const Icon = isDir ? Folder : FileText;
+  return (
+    <span className={`mem-path-summary${compact ? " mem-path-summary--compact" : ""}`} title={path}>
+      <Icon size={13} aria-hidden="true" />
+      <span className="mem-path-summary__body">
+        {label && <span className="mem-path-summary__label">{label}</span>}
+        <span className="mem-path-summary__line">
+          <strong>{basename(path)}</strong>
+          <small>{remark}</small>
+          {dir && <code>{dir}</code>}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function MemoryIndexFile({
+  facts,
+  docs,
+  storeDir,
+}: {
+  facts: number;
+  docs: number;
+  storeDir?: string;
+}) {
+  const t = useT();
+
+  return (
+    <section className="memory-index-file" title={`memory_index.md · ${t("memory.indexRemark")}`}>
+      <FileText size={15} aria-hidden="true" />
+      <span className="memory-index-file__body">
+        <span className="memory-index-file__label">{t("memory.indexFile")}</span>
+        <span className="memory-index-file__line">
+          <strong>memory_index.md</strong>
+          <small>{t("memory.indexRemark")}</small>
+        </span>
+      </span>
+      <span className="memory-index-file__meta">
+        <code>{t("memory.summary", { facts, docs })}</code>
+        {storeDir && <small>{basename(storeDir)}</small>}
+      </span>
+    </section>
+  );
+}
+
+function MemorySectionFile({
+  name,
+  remark,
+  count,
+}: {
+  name: string;
+  remark: string;
+  count?: number;
+}) {
+  return (
+    <div className="memory-section-file" title={`${name} · ${remark}`}>
+      <FileText size={13} aria-hidden="true" />
+      <span className="memory-section-file__body">
+        <span className="memory-section-file__line">
+          <strong>{name}</strong>
+          <small>{remark}</small>
+        </span>
+      </span>
+      {typeof count === "number" && <code>{count}</code>}
+    </div>
+  );
 }
 
 // MemoryPanel is the desktop memory manager: a right-side drawer over the loaded
@@ -199,11 +294,13 @@ export function MemoryPanel({
           <div className="empty">{t("memory.unavailable")}</div>
         ) : (
           <div className="drawer__body">
+            <MemoryIndexFile facts={facts.length} docs={view.docs.length} storeDir={view.storeDir} />
             {/* Saved auto-memories — the model owns these via remember/forget;
                 the panel can delete one and follow [[name]] cross-links. */}
             <section className="mem-section">
               <div className="mem-section__row">
                 <div>
+                  <MemorySectionFile name="memory_facts.jsonl" remark={t("memory.factsFileRemark")} count={facts.length} />
                   <div className="mem-section__title">{t("memory.savedMemories")}</div>
                   <div className="mem-note">{t("memory.fallibleNote")}</div>
                 </div>
@@ -364,14 +461,15 @@ export function MemoryPanel({
                 </div>
               )}
               {view.storeDir && (
-                <div className="mem-hint" title={view.storeDir}>
-                  {t("memory.storedUnder", { dir: view.storeDir })}
+                <div className="mem-hint mem-hint--path">
+                  <MemoryPathSummary path={view.storeDir} label={t("memory.storeLocation")} isDir compact />
                 </div>
               )}
             </section>
 
             {/* Quick-add: scope selector + note, mirroring the "#" shortcut. */}
             <section className="mem-section">
+              <MemorySectionFile name="memory_note_draft.md" remark={t("memory.noteDraftRemark")} />
               <div className="mem-section__title">{t("memory.quickAdd")}</div>
               <div className="mem-add">
                 <select
@@ -403,13 +501,20 @@ export function MemoryPanel({
                   {t("memory.remember")}
                 </button>
               </div>
-              <div className="mem-hint">
-                {scopes.find((s) => s.scope === activeScope)?.path}
-              </div>
+              {scopes.find((s) => s.scope === activeScope)?.path && (
+                <div className="mem-hint mem-hint--path">
+                  <MemoryPathSummary
+                    path={scopes.find((s) => s.scope === activeScope)?.path ?? ""}
+                    label={t("memory.scopeTarget")}
+                    compact
+                  />
+                </div>
+              )}
             </section>
 
             {/* Doc files — editable in place. */}
             <section className="mem-section">
+              <MemorySectionFile name="REASONIX.md" remark={t("memory.instructionsRemark")} count={view.docs.length} />
               <div className="mem-section__title">{t("memory.instructionFiles")}</div>
               {view.docs.length === 0 && (
                 <div className="mem-empty">{t("memory.noDocs")}</div>
@@ -420,9 +525,7 @@ export function MemoryPanel({
                   <div className="mem-doc" key={d.path}>
                     <div className="mem-doc__head">
                       <span className={`badge badge--${d.scope}`}>{d.scope}</span>
-                      <span className="mem-doc__path" title={d.path}>
-                        {d.path}
-                      </span>
+                      <MemoryPathSummary path={d.path} label={t("memory.instructionFile")} />
                       {!editing && (
                         <button
                           className="btn btn--small"

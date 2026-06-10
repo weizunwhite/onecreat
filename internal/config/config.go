@@ -399,7 +399,7 @@ func (c *Config) AutoStartPlugins() []PluginEntry {
 }
 
 // DefaultSystemPrompt is used when config provides none.
-const DefaultSystemPrompt = `You are Reasonix, a coding agent focused on executing code tasks.
+const DefaultSystemPrompt = `You are OneCreat, a coding agent focused on executing code tasks.
 Use the provided tools to read and write files and run shell commands.
 Principles: understand the request before acting; verify with tools instead of
 guessing; keep changes minimal and correct; briefly summarize what you did.
@@ -434,7 +434,10 @@ func Default() *Config {
 			// compaction, not by a round count. Set a positive agent.max_steps only
 			// if you want a hard guard against runaway.
 			MaxSteps: 0,
-			AutoPlan: "ask",
+			// off：不按关键词强行切进 plan 模式（否则「这个项目是什么」这种纯问答
+			// 也会弹出「计划已就绪」执行门，过度过程化）。plan 模式只在用户主动选择时
+			// 进入；是否先出方案交给模型自己判断。想要自动方案的可手动设为 on。
+			AutoPlan: "off",
 		},
 		// Mode "ask" with no rules keeps `reasonix run` autonomous (no TTY → ask
 		// resolves to allow) while `reasonix chat` prompts before writers. Users add

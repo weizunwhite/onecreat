@@ -10,7 +10,7 @@
     "name": "esengine"
   },
   "info": {
-    "productName": "Reasonix",
-    "comments": "Reasonix desktop — a Wails shell around the Go kernel."
+    "productName": "onecreat",
+    "comments": "onecreat desktop — a Wails shell around the Go kernel."
   }
 }

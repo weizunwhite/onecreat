@@ -25,6 +25,7 @@ export function HistoryPanel({
   onPreview: (path: string) => Promise<HistoryMessage[]>;
   onDelete: (path: string) => void;
   onRename: (path: string, title: string) => void;
+  onOpenFile?: (path: string) => void;
   onClose: () => void;
 }) {
   const tr = useT();

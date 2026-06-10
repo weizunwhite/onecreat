@@ -15,7 +15,19 @@ import type {
   EffortInfo,
   FilePreview,
   HistoryMessage,
+  HardwareBoardFactsView,
+  HardwareDetectView,
+  HardwareEvidenceStatusView,
+  HardwareMCPView,
+  HardwareRunInput,
+  HardwareRunResult,
+  ReferenceFileResult,
   JobView,
+  KnowledgeBaseView,
+  KnowledgeImportResult,
+  KnowledgePromptView,
+  KnowledgeSearchResult,
+  KnowledgeView,
   MCPServerInput,
   MemoryView,
   Meta,
@@ -29,6 +41,7 @@ import type {
   SkillRootView,
   SkillView,
   SlashArgsResult,
+  TabMeta,
   UpdateInfo,
   UpdateProgress,
   WireEvent,
@@ -46,6 +59,14 @@ export interface AppBindings {
   SetPlanMode(on: boolean): Promise<void>;
   Compact(): Promise<void>;
   NewSession(): Promise<void>;
+  // 多标签多任务(像 Codex / Claude Code):每个标签一个独立 controller + session,
+  // 后台标签的 controller 照常在自己的 goroutine 里跑。CreateTab 新建并设为活动;
+  // SetActiveTab 在切换标签时把后端「活动镜像」重指到目标标签,既有会话类方法随之作用
+  // 到该标签;事件按 agent:event:<tabId> 独立通道走。
+  CreateTab(kind: string): Promise<TabMeta>;
+  CloseTab(id: string): Promise<void>;
+  ListTabs(): Promise<TabMeta[]>;
+  SetActiveTab(id: string): Promise<void>;
   History(): Promise<HistoryMessage[]>;
   // Checkpoints lists the session's rewind points; Rewind restores one (scope
   // "code" | "conversation" | "both"), after which the caller re-reads History.
@@ -80,6 +101,25 @@ export interface AppBindings {
   // Retry reconnects a configured server that failed (config untouched).
   Capabilities(): Promise<CapabilitiesView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
+  HardwareMCP(): Promise<HardwareMCPView>;
+  HardwareDetect(): Promise<HardwareDetectView>;
+  HardwareEvidenceStatus(): Promise<HardwareEvidenceStatusView>;
+  // 把 tests/hardware_evidence.jsonl 的真机验证记录汇总成可粘进竞赛材料的 Markdown（无记录返回空串）。
+  HardwareEvidenceExport(projectDir: string): Promise<string>;
+  // 写代码前确定性取出已选板卡的校验事实（电平/引脚/平台 API），供前端注入 prompt。
+  HardwareBoardFacts(board: string, platform: string): Promise<HardwareBoardFactsView>;
+  PickReferenceFile(): Promise<string>;
+  ImportReferenceFile(pathOrURL: string): Promise<ReferenceFileResult>;
+  HardwareValidate(input: HardwareRunInput): Promise<HardwareRunResult>;
+  HardwareUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
+  HardwareMonitor(input: HardwareRunInput): Promise<HardwareRunResult>;
+  AddHardwareMCPServer(): Promise<number>;
+  KnowledgeView(): Promise<KnowledgeView>;
+  KnowledgeCreate(name: string): Promise<KnowledgeBaseView>;
+  KnowledgeDelete(id: string): Promise<void>;
+  KnowledgeImportFiles(baseID: string): Promise<KnowledgeImportResult>;
+  KnowledgeSearch(baseIDs: string[], query: string, limit: number): Promise<KnowledgeSearchResult>;
+  KnowledgeBuildPrompt(baseIDs: string[], question: string, limit: number): Promise<KnowledgePromptView>;
   RemoveMCPServer(name: string): Promise<void>;
   RetryMCPServer(name: string): Promise<void>;
   PickSkillFolder(): Promise<string>;
@@ -94,6 +134,8 @@ export interface AppBindings {
   ReadFile(rel: string): Promise<FilePreview>;
   OpenWorkspacePath(rel: string): Promise<void>;
   RevealWorkspacePath(rel: string): Promise<void>;
+  // 在系统文件管理器打开任意绝对路径的文件夹(侧栏「在文件夹中打开」)。
+  OpenFolder(path: string): Promise<void>;
   SavePastedImage(dataUrl: string): Promise<string>;
   SavePastedFile(name: string, dataUrl: string): Promise<string>;
   AttachmentDataURL(path: string): Promise<string>;
@@ -163,10 +205,11 @@ function getMock(): AppBindings {
   return mockSingleton;
 }
 
-// onEvent subscribes to the agent's typed event stream; returns an unsubscribe.
-export function onEvent(cb: (e: WireEvent) => void): () => void {
+// onEvent subscribes to one tab's typed event stream (agent:event:<tabId>);
+// returns an unsubscribe. 每个标签独立通道,所以后台标签的事件互不串扰。
+export function onEvent(tabId: string, cb: (e: WireEvent) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn(EVENT_CHANNEL, (payload) => cb(payload as WireEvent));
+    return window.runtime.EventsOn(`${EVENT_CHANNEL}:${tabId}`, (payload) => cb(payload as WireEvent));
   }
   return mockSubscribe(cb);
 }
@@ -184,11 +227,11 @@ export function onUpdaterProgress(cb: (p: UpdateProgress) => void): () => void {
   };
 }
 
-// onReady subscribes to the agent:ready event fired when boot.Build completes.
-// The frontend re-fetches Meta/Context/History when this lands.
-export function onReady(cb: () => void): () => void {
+// onReady subscribes to one tab's agent:ready:<tabId> event, fired when that
+// tab's boot.Build completes. The frontend re-fetches Meta/Context/History then.
+export function onReady(tabId: string, cb: () => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("agent:ready", () => cb());
+    return window.runtime.EventsOn(`agent:ready:${tabId}`, () => cb());
   }
   // In dev mock, fire immediately since there's no real boot sequence.
   cb();
@@ -246,7 +289,15 @@ function delay(ms: number): Promise<void> {
 function makeMockApp(): AppBindings {
   let cancelled = false;
   let cwd = "~/projects/reasonix"; // mutable so PickWorkspace is visible in dev
-  let workspaces = ["~/projects/reasonix", "~/projects/blade", "~/projects/deepseek-forge", "~/projects/cc-switch-light", "~/projects/SuperRig"];
+  let workspaces = [
+    "~/projects/reasonix",
+    "~/Documents/hardware/esp32_snake_web",
+    "~/Documents/hardware/hardware_lessons",
+    "~/projects/blade",
+    "~/projects/deepseek-forge",
+    "~/projects/cc-switch-light",
+    "~/projects/SuperRig",
+  ];
   let mockEffort = "auto";
   const day = 86_400_000;
   const t0 = Date.now();
@@ -308,15 +359,127 @@ function makeMockApp(): AppBindings {
       noProxy: "",
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
-    agent: { temperature: 0.2, maxSteps: 0, systemPrompt: "You are Reasonix, a coding agent." },
+    agent: { temperature: 0.2, maxSteps: 0, systemPrompt: "You are onecreat, a coding agent." },
     configPath: "~/projects/reasonix/reasonix.toml",
     providerKinds: ["openai"],
     bypass: false,
+  };
+  const now = Date.now();
+  const mockKnowledge: KnowledgeView = {
+    storeDir: "~/.config/onecreat/knowledge",
+    mode: "模式 A：本地存储 + 客户自填 API；当前检索在本机完成，只把命中片段加入本次请求。",
+    supportedExtensions: [".txt", ".md", ".json", ".py", ".ino", ".cpp", ".ts", ".tsx"],
+    bases: [
+      {
+        id: "kb_mock_hardware",
+        name: "客户硬件资料",
+        createdAt: now - day,
+        updatedAt: now - 3600_000,
+        documents: 2,
+        chunks: 4,
+      },
+    ],
+    documents: [
+      {
+        id: "doc_mock_uart",
+        baseId: "kb_mock_hardware",
+        name: "esp32_uart.md",
+        originalPath: "~/Documents/esp32_uart.md",
+        storedPath: "~/.config/onecreat/knowledge/files/kb_mock_hardware/doc_mock_uart.md",
+        size: 2048,
+        importedAt: now - 3600_000,
+        status: "ready",
+        chunks: 2,
+      },
+      {
+        id: "doc_mock_wiring",
+        baseId: "kb_mock_hardware",
+        name: "wiring.md",
+        originalPath: "~/Documents/esp32_snake_web/docs/wiring.md",
+        storedPath: "~/.config/onecreat/knowledge/files/kb_mock_hardware/doc_mock_wiring.md",
+        size: 1536,
+        importedAt: now - 1800_000,
+        status: "ready",
+        chunks: 2,
+      },
+    ],
+  };
+
+  const cloneKnowledge = (): KnowledgeView => JSON.parse(JSON.stringify(mockKnowledge)) as KnowledgeView;
+  const rebuildKnowledgeCounts = () => {
+    mockKnowledge.bases = mockKnowledge.bases.map((base) => {
+      const docs = mockKnowledge.documents.filter((doc) => doc.baseId === base.id && doc.status === "ready");
+      return {
+        ...base,
+        documents: docs.length,
+        chunks: docs.reduce((sum, doc) => sum + doc.chunks, 0),
+        updatedAt: docs[0]?.importedAt ?? base.updatedAt,
+      };
+    });
   };
   return {
     async Submit(input) {
       cancelled = false;
       emit({ kind: "turn_started" });
+      if (input.toLowerCase().includes("progress")) {
+        emit({
+          kind: "tool_dispatch",
+          tool: {
+            id: "todo-dev",
+            name: "todo_write",
+            args: JSON.stringify({
+              todos: [
+                { content: "Read docs/wiring.md and src/main.cpp", status: "completed" },
+                {
+                  content: "Audit docs/board_profile.md and PlatformIO layout",
+                  activeForm: "Auditing ESP32 project context",
+                  status: "in_progress",
+                },
+                { content: "Verify hardware workspace with platformio.ini and tests/hardware_checklist.md", status: "pending" },
+              ],
+            }),
+            readOnly: false,
+          },
+        });
+      }
+      if (input.toLowerCase().includes("approval")) {
+        emit({
+          kind: "approval_request",
+          approval: {
+            id: "approval-dev",
+            tool: "edit_file",
+            subject: 'path: src/main.cpp\nold_string: "Serial.println(\\"hi\\");"\nnew_string: "Serial.println(\\"hello\\");"\nreference: docs/wiring.md',
+          },
+        });
+      }
+      if (input.toLowerCase().includes("ask")) {
+        emit({
+          kind: "ask_request",
+          ask: {
+            id: "ask-dev",
+            questions: [
+              {
+                id: "board",
+                header: "Board",
+                prompt: "这次硬件项目使用哪块板卡？",
+                options: [
+                  { label: "ESP32", description: "WiFi 项目、网页控制和轻量边缘推理" },
+                  { label: "Arduino Nano", description: "传感器采集、电机控制和简单执行层" },
+                ],
+              },
+              {
+                id: "port",
+                header: "Port",
+                prompt: "是否已经确认上传端口？",
+                options: [
+                  { label: "已确认", description: "可以进入接线图和代码生成" },
+                  { label: "还没有", description: "先打开端口检测和驱动提示" },
+                ],
+              },
+            ],
+          },
+        });
+      }
       // Simulate the server's pre-first-token latency so the deferred user bubble
       // and the "un-send on Esc before any reply" path are observable in browser
       // dev. Bail if cancelled during the wait — nothing was streamed yet.
@@ -338,14 +501,14 @@ function makeMockApp(): AppBindings {
         tool: {
           id: "t1",
           name: "edit_file",
-          args: '{"path":"main.go","old_string":"println(\\"hi\\")","new_string":"println(\\"hello\\")"}',
+          args: '{"path":"src/main.cpp","old_string":"Serial.println(\\"hi\\");","new_string":"Serial.println(\\"hello\\");"}',
           readOnly: false,
         },
       });
       await delay(350);
       emit({
         kind: "tool_result",
-        tool: { id: "t1", name: "edit_file", output: "edited main.go", readOnly: false },
+        tool: { id: "t1", name: "edit_file", output: "edited src/main.cpp", readOnly: false },
       });
       emit({
         kind: "usage",
@@ -373,6 +536,14 @@ function makeMockApp(): AppBindings {
     async SetPlanMode() {},
     async Compact() {},
     async NewSession() {},
+    async CreateTab(kind: string) {
+      return { id: `tab${Date.now()}`, kind: kind || "chat", label: "", ready: true, active: true };
+    },
+    async CloseTab() {},
+    async ListTabs() {
+      return [{ id: "main", kind: "chat", label: "", ready: true, active: true }];
+    },
+    async SetActiveTab() {},
     async Checkpoints() {
       return [];
     },
@@ -484,6 +655,206 @@ function makeMockApp(): AppBindings {
       });
       return tools;
     },
+    async HardwareMCP() {
+      const server = capServers.find((s) => s.name === "hardware");
+      return {
+        name: "hardware",
+        available: true,
+        command: "reasonix-hardware-mcp",
+        source: "browser mock",
+        configured: Boolean(server),
+        connected: server?.status === "connected",
+        error: server?.error,
+      };
+    },
+    async HardwareDetect() {
+      return {
+        available: true,
+        workspace: cwd,
+        projectDir: cwd,
+        projectTypes: ["platformio"],
+        serialPorts: ["/dev/cu.usbserial-0001"],
+        boards: [
+          {
+            port: "/dev/cu.usbserial-0001",
+            protocol: "serial",
+            boardName: "ESP32 Dev Module",
+            fqbn: "esp32:esp32:esp32",
+            core: "esp32:esp32",
+          },
+        ],
+        devices: [
+          {
+            port: "/dev/cu.usbserial-0001",
+            description: "USB Serial",
+            hwid: "USB VID:PID=10C4:EA60",
+          },
+        ],
+        toolchains: [
+          {
+            name: "arduino-cli",
+            command: "arduino-cli version",
+            available: true,
+            path: "/usr/local/bin/arduino-cli",
+            version: "arduino-cli Version: 1.3.1",
+          },
+          {
+            name: "PlatformIO",
+            command: "pio --version",
+            available: true,
+            path: "/usr/local/bin/pio",
+            version: "PlatformIO Core, version 6.1.20",
+          },
+          {
+            name: "ESP-IDF idf.py",
+            command: "idf.py --version",
+            available: false,
+            hint: "Install ESP-IDF, then activate the environment before launching onecreat.",
+          },
+        ],
+        recommendations: ["ESP-IDF 工程建议优先接入官方 Tools MCP。"],
+        espIdfOfficialMcp: {},
+      };
+    },
+    async HardwareBoardFacts() {
+      return {
+        found: true,
+        facts:
+          "板卡：ESP32 Dev Module（FQBN esp32:esp32:esp32）\n" +
+          "逻辑电平：3.3V。5V 传感器输出接 ESP32 输入脚前必须分压/电平转换。\n" +
+          "平台 API（ESP32 Arduino）——务必照此写：PWM 用 LEDC（core 3.x 用 ledcAttach），别用 analogWrite；舵机用 ESP32Servo。",
+      };
+    },
+    async HardwareEvidenceStatus() {
+      return {
+        available: true,
+        projectDir: cwd,
+        platform: "platformio",
+        board: "esp32dev",
+        evidenceFile: `${cwd}/tests/hardware_evidence.jsonl`,
+        recordCount: 1,
+        currentRecordCount: 1,
+        staleRecordCount: 0,
+        status: "hardware_pending",
+        summary: "Local compile passed; real-device upload and monitor evidence are still missing.",
+        missingGroups: ["real_device"],
+        recommendations: ["连接真实开发板后执行 upload/monitor，并用 hardware_evidence_record 保存输出。"],
+      };
+    },
+    async HardwareEvidenceExport() {
+      return [
+        "# 真机验证证据（onecreat 自动导出）",
+        "",
+        "共 1 条验证记录。",
+        "",
+        "## 1. 【编译/语法】passed",
+        "- 时间（UTC）：2026-06-06T04:30:00Z",
+        "- 平台 / 板卡：platformio / esp32dev",
+        "- 结果：1 passed, 0 failed",
+      ].join("\n");
+    },
+    async PickReferenceFile() {
+      return "";
+    },
+    async ImportReferenceFile(pathOrURL: string) {
+      return {
+        name: pathOrURL.split("/").pop() || pathOrURL,
+        path: pathOrURL,
+        text: "(dev mock — 这里会是文件解析后的文本)",
+        charCount: 30,
+        truncated: false,
+        source: "file",
+        formatHint: "txt",
+      } as ReferenceFileResult;
+    },
+    async HardwareValidate(_input: HardwareRunInput) {
+      return {
+        status: "passed",
+        summary: "1 passed, 0 failed, 0 skipped (dev mock)",
+      } as HardwareRunResult;
+    },
+    async HardwareUpload(_input: HardwareRunInput) {
+      return { status: "skipped", summary: "dev mock — no device attached" } as HardwareRunResult;
+    },
+    async HardwareMonitor(_input: HardwareRunInput) {
+      return { status: "skipped", summary: "dev mock — no device attached" } as HardwareRunResult;
+    },
+    async AddHardwareMCPServer() {
+      return this.AddMCPServer({
+        name: "hardware",
+        transport: "stdio",
+        command: "reasonix-hardware-mcp",
+        args: [],
+        url: "",
+        env: {},
+      });
+    },
+    async KnowledgeView() {
+      rebuildKnowledgeCounts();
+      return cloneKnowledge();
+    },
+    async KnowledgeCreate(name: string) {
+      const trimmed = name.trim() || "未命名知识库";
+      const base: KnowledgeBaseView = {
+        id: `kb_mock_${Date.now()}`,
+        name: trimmed,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        documents: 0,
+        chunks: 0,
+      };
+      mockKnowledge.bases.unshift(base);
+      return { ...base };
+    },
+    async KnowledgeDelete(id: string) {
+      mockKnowledge.bases = mockKnowledge.bases.filter((base) => base.id !== id);
+      mockKnowledge.documents = mockKnowledge.documents.filter((doc) => doc.baseId !== id);
+    },
+    async KnowledgeImportFiles(baseID: string) {
+      const doc = {
+        id: `doc_mock_${Date.now()}`,
+        baseId: baseID,
+        name: "mock_hardware_notes.md",
+        originalPath: "~/Documents/mock_hardware_notes.md",
+        storedPath: `${mockKnowledge.storeDir}/files/${baseID}/mock_hardware_notes.md`,
+        size: 1536,
+        importedAt: Date.now(),
+        status: "ready",
+        chunks: 1,
+      };
+      mockKnowledge.documents.unshift(doc);
+      rebuildKnowledgeCounts();
+      return { imported: [{ ...doc }], skipped: [] };
+    },
+    async KnowledgeSearch(baseIDs: string[], query: string, limit: number) {
+      const selected = new Set(baseIDs.filter(Boolean));
+      const docs = mockKnowledge.documents.filter((doc) => selected.size === 0 || selected.has(doc.baseId));
+      const matches = docs.slice(0, Math.max(1, limit || 5)).map((doc, index) => {
+        const base = mockKnowledge.bases.find((item) => item.id === doc.baseId);
+        return {
+          baseId: doc.baseId,
+          baseName: base?.name || "知识库",
+          documentId: doc.id,
+          documentName: doc.name,
+          chunkId: `${doc.id}:0`,
+          chunkIndex: 0,
+          text: `Mock 命中：${query || "ESP32 UART"}。ESP32 与 Unihiker 可以通过 UART 以 115200 波特率通信，资料只来自本机导入文件。`,
+          score: 10 - index,
+        };
+      });
+      return { query, matches };
+    },
+    async KnowledgeBuildPrompt(baseIDs: string[], question: string, limit: number) {
+      const search = await this.KnowledgeSearch(baseIDs, question, limit);
+      if (!search.matches.length) return { prompt: question, sources: [] };
+      return {
+        prompt:
+          "你正在回答用户问题。下面是用户在 onecreat 知识库中显式选择的本地资料片段。\n\n" +
+          search.matches.map((m, index) => `[${index + 1}] ${m.baseName} / ${m.documentName}\n${m.text}`).join("\n\n") +
+          `\n\n# 用户问题\n${question}`,
+        sources: search.matches,
+      };
+    },
     async RemoveMCPServer(name: string) {
       capServers = capServers.filter((s) => s.name !== name);
     },
@@ -571,7 +942,7 @@ function makeMockApp(): AppBindings {
     },
     async ReadFile(rel: string) {
       const samples: Record<string, string> = {
-        "README.md": "# Reasonix\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
+        "README.md": "# onecreat\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
         "go.mod": "module reasonix\n\ngo 1.23\n",
         "desktop/file.go": "package desktop\n\nfunc main() {\n\tprintln(\"workspace preview\")\n}\n",
         "internal/event.go": "package internal\n\n// mock file used by the browser dev seam\n",
@@ -586,6 +957,9 @@ function makeMockApp(): AppBindings {
     },
     async OpenWorkspacePath(rel: string) {
       console.info("mock OpenWorkspacePath", rel);
+    },
+    async OpenFolder(path: string) {
+      console.info("mock OpenFolder", path);
     },
     async RevealWorkspacePath(rel: string) {
       console.info("mock RevealWorkspacePath", rel);
@@ -620,7 +994,7 @@ function makeMockApp(): AppBindings {
           {
             path: "REASONIX.md",
             scope: "project",
-            body: "# Reasonix project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
+            body: "# onecreat project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
           },
           {
             path: "~/.config/reasonix/REASONIX.md",
@@ -703,17 +1077,8 @@ function makeMockApp(): AppBindings {
       return "v1.0.0 (browser dev)";
     },
     async CheckUpdate() {
-      // Dev mock advertises an update so the banner and apply flow are exercisable
-      // in the browser without a real release behind it.
-      return {
-        available: true,
-        current: "v1.0.0",
-        latest: "v1.1.0",
-        notes: "- Mock release notes\n- The **Update now** button streams a fake download here.",
-        canSelfUpdate: true,
-        downloadUrl: "https://github.com/esengine/reasonix/releases/latest",
-        assetSize: 12_345_678,
-      };
+      // Browser dev preview should not show fake update prompts in the product UI.
+      return null;
     },
     async ApplyUpdate() {
       const total = 12_345_678;

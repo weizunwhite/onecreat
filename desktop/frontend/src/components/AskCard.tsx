@@ -53,38 +53,41 @@ export function AskCard({
   return (
     <div className="modal-backdrop">
       <div className="modal modal--ask">
-        {ask.questions.map((q) => (
-          <div className="ask-q" key={q.id}>
-            {q.header && <div className="ask-q__header">{q.header}</div>}
-            <div className="ask-q__prompt">{q.prompt}</div>
-            <div className="ask-q__options">
-              {q.options.map((o) => {
-                const on = (sel[q.id] ?? []).includes(o.label);
-                return (
-                  <button
-                    key={o.label}
-                    className={`ask-opt ${on ? "ask-opt--on" : ""}`}
-                    onClick={() => toggle(q, o.label)}
-                  >
-                    <span className="ask-opt__mark">
-                      {q.multi ? (on ? "☑" : "☐") : on ? "●" : "○"}
-                    </span>
-                    <span className="ask-opt__body">
-                      <span className="ask-opt__label">{o.label}</span>
-                      {o.description && <span className="ask-opt__desc">{o.description}</span>}
-                    </span>
-                  </button>
-                );
-              })}
+        {/* 问题多时这一区可滚动，下面的提交按钮固定常显，避免够不到确认 */}
+        <div className="ask-scroll">
+          {ask.questions.map((q) => (
+            <div className="ask-q" key={q.id}>
+              {q.header && <div className="ask-q__header">{q.header}</div>}
+              <div className="ask-q__prompt">{q.prompt}</div>
+              <div className="ask-q__options">
+                {q.options.map((o) => {
+                  const on = (sel[q.id] ?? []).includes(o.label);
+                  return (
+                    <button
+                      key={o.label}
+                      className={`ask-opt ${on ? "ask-opt--on" : ""}`}
+                      onClick={() => toggle(q, o.label)}
+                    >
+                      <span className="ask-opt__mark">
+                        {q.multi ? (on ? "☑" : "☐") : on ? "●" : "○"}
+                      </span>
+                      <span className="ask-opt__body">
+                        <span className="ask-opt__label">{o.label}</span>
+                        {o.description && <span className="ask-opt__desc">{o.description}</span>}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <input
+                className="ask-q__custom"
+                placeholder={t("ask.customPlaceholder")}
+                value={custom[q.id] ?? ""}
+                onChange={(e) => setTyped(q, e.target.value)}
+              />
             </div>
-            <input
-              className="ask-q__custom"
-              placeholder={t("ask.customPlaceholder")}
-              value={custom[q.id] ?? ""}
-              onChange={(e) => setTyped(q, e.target.value)}
-            />
-          </div>
-        ))}
+          ))}
+        </div>
         <div className="modal__actions">
           <button className="btn" onClick={onDismiss}>
             {t("ask.justChat")}

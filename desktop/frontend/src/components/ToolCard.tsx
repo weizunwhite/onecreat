@@ -54,7 +54,14 @@ function StatusGlyph({ status }: { status: ToolItem["status"] }) {
 // ToolCard renders one tool call. `subcalls` are sub-agent calls nested under a
 // `task` card (their ParentID points at this call); they render inline, live, so
 // the sub-agent's work is visible as it happens.
-export const ToolCard = memo(function ToolCard({ item, subcalls }: { item: ToolItem; subcalls?: ToolItem[] }) {
+export const ToolCard = memo(function ToolCard({
+  item,
+  subcalls,
+}: {
+  item: ToolItem;
+  subcalls?: ToolItem[];
+  onOpenFile?: (path: string) => void;
+}) {
   const t = useT();
   const diffs = diffsFor(item.name, item.args);
   const subject = subjectOf(item.name, item.args);
@@ -106,7 +113,11 @@ export const ToolCard = memo(function ToolCard({ item, subcalls }: { item: ToolI
 
       {diffs.map((d, i) => (
         <div className="tool__body" key={i}>
-          {d.label && <div className="tool__difflabel">{d.label}</div>}
+          {(d.path || d.label) && (
+            <div className={`tool__difflabel${d.path ? " tool__difflabel--file" : ""}`}>
+              {d.label}
+            </div>
+          )}
           <DiffView original={d.original} modified={d.modified} language={d.lang} maxHeight={260} />
         </div>
       ))}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -58,18 +60,59 @@ type App struct {
 	disabledMCP map[string]ServerView
 	mcpOrder    []string
 
+	// 多标签多任务(像 Codex / Claude Code):每个 tab 一个独立 controller + sink +
+	// session 文件,后台 tab 的 controller 照常在自己的 goroutine 里跑,事件发到
+	// 独立通道 agent:event:<tabID> —— 所以多个任务可以「真并行」。
+	// ctrl/sink/label/model/ready/startupErr 这几个字段始终镜像「当前活动 tab」,
+	// 既有的 52 处 a.ctrl 读取无需改动;SetActiveTab 在切换时重指镜像。
+	tabs      map[string]*tabRuntime
+	tabOrder  []string // 标签顺序(新建追加到末尾)
+	activeTab string
+	tabSeq    int // 生成新 tab id 的自增计数
+
 	// Per-turn autosave runs off the event goroutine so disk I/O never delays
 	// event delivery; overlapping requests coalesce into one trailing write.
+	// 按 tab 单飞:后台 tab 完成一轮也各存各的 session,不串到活动 tab。
 	saveMu    sync.Mutex
-	saving    bool
-	saveAgain bool
+	saving    map[string]bool
+	saveAgain map[string]bool
+}
+
+// tabRuntime 是一个独立任务标签的后端运行时:自己的 controller、事件 sink、
+// session(session 路径存在 ctrl 里)。kind 仅供前端决定显示对话还是硬件视图,
+// 后端不据此分支(硬件视图也只是往同一个 controller 注入提示词)。
+type tabRuntime struct {
+	id         string
+	kind       string // "chat" | "hardware"
+	sink       *eventSink
+	ctrl       *control.Controller
+	label      string
+	model      string
+	ready      bool
+	startupErr string
+}
+
+// TabMeta 是给前端的标签快照。
+type TabMeta struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Label      string `json:"label"`
+	Ready      bool   `json:"ready"`
+	StartupErr string `json:"startupErr,omitempty"`
+	Active     bool   `json:"active"`
 }
 
 // NewApp constructs the bound object. The controller is built later, in startup,
 // once the Wails context exists.
 func NewApp() *App {
-	a := &App{sink: &eventSink{}, disabledMCP: map[string]ServerView{}}
-	a.sink.app = a
+	a := &App{
+		disabledMCP: map[string]ServerView{},
+		tabs:        map[string]*tabRuntime{},
+		saving:      map[string]bool{},
+		saveAgain:   map[string]bool{},
+	}
+	// 主标签的 sink(tabID "main");同时作为「活动 tab 镜像」的初始 sink。
+	a.sink = &eventSink{app: a, tabID: "main"}
 	return a
 }
 
@@ -84,6 +127,11 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.sink.ctx = ctx
+	a.showMainWindow(ctx)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		a.showMainWindow(ctx)
+	}()
 
 	// Everything else — workspace resolution, config loading, i18n setup, and
 	// boot.Build — runs in the background so the webview appears instantly.
@@ -92,50 +140,84 @@ func (a *App) startup(ctx context.Context) {
 	go a.buildController()
 }
 
+func (a *App) domReady(ctx context.Context) {
+	a.showMainWindow(ctx)
+}
+
+func (a *App) showMainWindow(ctx context.Context) {
+	runtime.WindowShow(ctx)
+	runtime.WindowUnminimise(ctx)
+	runtime.WindowCenter(ctx)
+}
+
 // buildController runs the full initialization sequence in a background goroutine:
 // workspace resolution, config loading, i18n setup, and boot.Build. On success it
 // wires up the controller and flips ready; on failure it stores the error so
 // Meta().StartupErr surfaces it.
 func (a *App) buildController() {
-	ctx := a.ctx // captured by startup before this goroutine starts
-
 	// A GUI launch starts in "/" (read-only); move into a real, writable working
 	// folder (the remembered one, else home) before anything reads/writes config,
 	// .env, memory, or skills relative to cwd.
 	ensureWorkspace()
 
-	// Resolve the active model to its canonical "provider/model" ref up front so
-	// the switcher can mark it current.
+	// Drive the Go-side catalogue (i18n.M) from the configured language so the
+	// backend-provided slash UI — command descriptions, sub-command hints,
+	// listing notices — comes through localized, matching the frontend.
+	if cfg, err := config.Load(); err == nil {
+		i18n.DetectLanguage(cfg.Language)
+	}
+
+	// 注册初始的「主标签」,沿用 NewApp 建好的 a.sink(tabID "main"),并设为活动。
+	a.mu.Lock()
+	rt := &tabRuntime{id: "main", kind: "chat", sink: a.sink}
+	a.tabs["main"] = rt
+	a.tabOrder = append(a.tabOrder, "main")
+	a.activeTab = "main"
+	a.mu.Unlock()
+
+	a.buildTab(rt)
+}
+
+// buildTab 在一个标签运行时里装配一个独立 controller(boot.Build 可能较慢,所以由
+// CreateTab 放到 goroutine 里调)。装配完成后:写回该 tab 的运行时;若它正是当前活动
+// tab,则同步「活动镜像」字段;最后发 agent:ready:<tabID> 通知前端该标签可用。
+func (a *App) buildTab(rt *tabRuntime) {
+	// 解析当前文件夹的默认模型为规范的 "provider/model"。
 	model := ""
 	if cfg, err := config.Load(); err == nil {
-		// Drive the Go-side catalogue (i18n.M) from the configured language so the
-		// backend-provided slash UI — command descriptions, sub-command hints,
-		// listing notices — comes through localized, matching the frontend.
-		i18n.DetectLanguage(cfg.Language)
 		model = cfg.DefaultModel
 		if e, ok := cfg.ResolveModel(cfg.DefaultModel); ok {
 			model = e.Name + "/" + e.Model
 		}
 	}
 
-	a.mu.Lock()
-	a.model = model
-	a.mu.Unlock()
-
-	ctrl, err := boot.Build(ctx, boot.Options{Model: model, RequireKey: false, Sink: a.sink})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink})
 	if err != nil {
 		a.mu.Lock()
-		a.startupErr = err.Error()
-		a.ready = true
+		rt.startupErr = err.Error()
+		rt.ready = true
+		if a.activeTab == rt.id {
+			a.startupErr = rt.startupErr
+			a.ready = true
+		}
 		a.mu.Unlock()
-		runtime.EventsEmit(ctx, "agent:ready")
+		runtime.EventsEmit(a.ctx, "agent:ready:"+rt.id)
 		return
 	}
 
 	a.mu.Lock()
-	a.ctrl = ctrl
-	a.label = ctrl.Label()
-	a.ready = true
+	rt.ctrl = ctrl
+	rt.model = model
+	rt.label = ctrl.Label()
+	rt.ready = true
+	if a.activeTab == rt.id {
+		a.ctrl = ctrl
+		a.sink = rt.sink
+		a.model = model
+		a.label = ctrl.Label()
+		a.ready = true
+		a.startupErr = ""
+	}
 	a.mu.Unlock()
 
 	// Desktop is interactive: route "ask" gate decisions to the frontend as
@@ -147,9 +229,105 @@ func (a *App) buildController() {
 		ctrl.SetSessionPath(agent.NewSessionPath(dir, ctrl.Label()))
 	}
 
-	// Notify the frontend that the controller is ready — it re-fetches Meta,
-	// ContextUsage, and History.
-	runtime.EventsEmit(ctx, "agent:ready")
+	// Notify the frontend this tab is ready — it re-fetches Meta/Context/History.
+	runtime.EventsEmit(a.ctx, "agent:ready:"+rt.id)
+}
+
+// CreateTab 新建一个独立任务标签并设为活动;controller 异步装配(期间 Ready=false,
+// 前端显示 loading),装配完发 agent:ready:<id>。后台标签照常在自己的 goroutine 里
+// 跑、事件发到自己的通道,所以多个标签可真并行(像 Codex / Claude Code 的多任务)。
+func (a *App) CreateTab(kind string) (TabMeta, error) {
+	if a.ctx == nil {
+		return TabMeta{}, fmt.Errorf("app not ready")
+	}
+	if kind == "" {
+		kind = "chat"
+	}
+	a.mu.Lock()
+	a.tabSeq++
+	id := fmt.Sprintf("tab%d", a.tabSeq)
+	rt := &tabRuntime{id: id, kind: kind, sink: &eventSink{ctx: a.ctx, app: a, tabID: id}}
+	a.tabs[id] = rt
+	a.tabOrder = append(a.tabOrder, id)
+	// 新建即设为活动(用户刚开它就是要用),活动镜像先指向未就绪的新 tab。
+	a.activeTab = id
+	a.ctrl = nil
+	a.sink = rt.sink
+	a.label = ""
+	a.model = ""
+	a.ready = false
+	a.startupErr = ""
+	a.mu.Unlock()
+
+	go a.buildTab(rt)
+	return TabMeta{ID: id, Kind: kind, Ready: false, Active: true}, nil
+}
+
+// SetActiveTab 把「活动镜像」重指到目标标签:既有的会话类方法(读 a.ctrl)随之作用
+// 到该标签。前端在切换标签、以及对某标签发指令前调用它。未知 id 是空操作。
+func (a *App) SetActiveTab(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	rt := a.tabs[id]
+	if rt == nil {
+		return
+	}
+	a.activeTab = id
+	a.ctrl = rt.ctrl
+	a.sink = rt.sink
+	a.label = rt.label
+	a.model = rt.model
+	a.ready = rt.ready
+	a.startupErr = rt.startupErr
+}
+
+// CloseTab 关闭一个标签:快照并关掉它的 controller,从注册表移除;若关的是活动标签,
+// 自动切到末尾的另一个标签。
+func (a *App) CloseTab(id string) {
+	a.mu.Lock()
+	rt := a.tabs[id]
+	if rt == nil {
+		a.mu.Unlock()
+		return
+	}
+	delete(a.tabs, id)
+	for i, x := range a.tabOrder {
+		if x == id {
+			a.tabOrder = append(a.tabOrder[:i], a.tabOrder[i+1:]...)
+			break
+		}
+	}
+	if a.activeTab == id {
+		a.activeTab = ""
+		a.ctrl, a.sink, a.label, a.model, a.ready, a.startupErr = nil, nil, "", "", false, ""
+		if len(a.tabOrder) > 0 {
+			next := a.tabOrder[len(a.tabOrder)-1]
+			if nt := a.tabs[next]; nt != nil {
+				a.activeTab = next
+				a.ctrl, a.sink, a.label, a.model, a.ready, a.startupErr = nt.ctrl, nt.sink, nt.label, nt.model, nt.ready, nt.startupErr
+			}
+		}
+	}
+	a.mu.Unlock()
+	if rt.ctrl != nil {
+		_ = rt.ctrl.Snapshot()
+		rt.ctrl.Close()
+	}
+}
+
+// ListTabs 返回所有标签快照(按打开顺序),供前端渲染标签栏。
+func (a *App) ListTabs() []TabMeta {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]TabMeta, 0, len(a.tabOrder))
+	for _, id := range a.tabOrder {
+		rt := a.tabs[id]
+		if rt == nil {
+			continue
+		}
+		out = append(out, TabMeta{ID: id, Kind: rt.kind, Label: rt.label, Ready: rt.ready, StartupErr: rt.startupErr, Active: id == a.activeTab})
+	}
+	return out
 }
 
 // shutdown snapshots the conversation and stops plugin subprocesses on close.
@@ -189,7 +367,14 @@ func (a *App) SubmitDisplay(display, input string) {
 	if a.ctrl == nil {
 		return
 	}
-	_ = recordSessionDisplay(config.SessionDir(), a.ctrl.SessionPath(), input, display)
+	dir := config.SessionDir()
+	sessionPath := a.ctrl.SessionPath()
+	_ = recordSessionDisplay(dir, sessionPath, input, display)
+	// 记录该 session 创建时所在的 workspace,用于侧栏按文件夹分组。
+	// 只在首次有效消息时落,后续 workspace 切换不影响归属。
+	if cwd, err := os.Getwd(); err == nil {
+		_ = rememberSessionCwd(dir, sessionPath, cwd)
+	}
 	a.ctrl.Submit(input)
 }
 
@@ -361,6 +546,7 @@ type SessionMeta struct {
 	LastActivityAt int64  `json:"lastActivityAt"` // unix milliseconds
 	ModTime        int64  `json:"modTime"`        // compatibility alias for lastActivityAt
 	Current        bool   `json:"current"`
+	Cwd            string `json:"cwd,omitempty"` // workspace path at session creation, for sidebar grouping
 }
 
 type WorkspaceMeta struct {
@@ -379,6 +565,7 @@ func (a *App) ListSessions() []SessionMeta {
 		return []SessionMeta{}
 	}
 	titles := loadSessionTitles(dir)
+	cwds := loadSessionCwds(dir)
 	a.mu.RLock()
 	ctrl := a.ctrl
 	a.mu.RUnlock()
@@ -397,6 +584,7 @@ func (a *App) ListSessions() []SessionMeta {
 			LastActivityAt: s.LastActivityAt.UnixMilli(),
 			ModTime:        s.LastActivityAt.UnixMilli(),
 			Current:        s.Path == cur,
+			Cwd:            cwds[filepath.Base(s.Path)],
 		})
 	}
 	return out
@@ -563,6 +751,13 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	a.model = model
 	a.label = ctrl.Label()
 	a.startupErr = ""
+	// 同步活动 tab 的运行时(SwitchWorkspace 只重建当前活动 tab 的 controller)。
+	if rt := a.tabs[a.activeTab]; rt != nil {
+		rt.ctrl = ctrl
+		rt.model = model
+		rt.label = ctrl.Label()
+		rt.startupErr = ""
+	}
 	a.mu.Unlock()
 	ctrl.EnableInteractiveApproval()
 	if d := ctrl.SessionDir(); d != "" {
@@ -1120,6 +1315,77 @@ type MCPServerInput struct {
 	Env       map[string]string `json:"env"`
 }
 
+// HardwareMCPView describes the local hardware MCP binary the desktop can use.
+type HardwareMCPView struct {
+	Name       string `json:"name"`
+	Available  bool   `json:"available"`
+	Command    string `json:"command"`
+	Source     string `json:"source"`
+	Configured bool   `json:"configured"`
+	Connected  bool   `json:"connected"`
+	Error      string `json:"error,omitempty"`
+}
+
+// HardwareDetectView is a desktop-friendly projection of the hardware_detect MCP
+// tool output. The drawer can show real local readiness before the user asks the
+// agent to build or flash anything.
+type HardwareDetectView struct {
+	Available       bool                    `json:"available"`
+	Workspace       string                  `json:"workspace,omitempty"`
+	ProjectDir      string                  `json:"projectDir,omitempty"`
+	ProjectTypes    []string                `json:"projectTypes"`
+	SerialPorts     []string                `json:"serialPorts"`
+	Boards          []HardwareBoardView     `json:"boards"`
+	Devices         []HardwareDeviceView    `json:"devices"`
+	Toolchains      []HardwareToolchainView `json:"toolchains"`
+	Recommendations []string                `json:"recommendations"`
+	ESPIDFOfficial  map[string]string       `json:"espIdfOfficialMcp,omitempty"`
+	Error           string                  `json:"error,omitempty"`
+}
+
+// HardwareEvidenceStatusView is a compact projection of hardware_evidence_status
+// for the drawer. It makes the local/real-hardware verification boundary visible
+// without asking the model to summarize it first.
+type HardwareEvidenceStatusView struct {
+	Available          bool     `json:"available"`
+	ProjectDir         string   `json:"projectDir,omitempty"`
+	Platform           string   `json:"platform,omitempty"`
+	Board              string   `json:"board,omitempty"`
+	EvidenceFile       string   `json:"evidenceFile,omitempty"`
+	RecordCount        int      `json:"recordCount"`
+	CurrentRecordCount int      `json:"currentRecordCount"`
+	StaleRecordCount   int      `json:"staleRecordCount"`
+	Status             string   `json:"status"`
+	Summary            string   `json:"summary"`
+	MissingGroups      []string `json:"missingGroups"`
+	Recommendations    []string `json:"recommendations"`
+	Error              string   `json:"error,omitempty"`
+}
+
+type HardwareToolchainView struct {
+	Name      string `json:"name"`
+	Command   string `json:"command"`
+	Available bool   `json:"available"`
+	Path      string `json:"path,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Hint      string `json:"hint,omitempty"`
+}
+
+type HardwareBoardView struct {
+	Port       string `json:"port"`
+	Protocol   string `json:"protocol,omitempty"`
+	BoardName  string `json:"boardName,omitempty"`
+	FQBN       string `json:"fqbn,omitempty"`
+	Core       string `json:"core,omitempty"`
+	Properties string `json:"properties,omitempty"`
+}
+
+type HardwareDeviceView struct {
+	Port        string `json:"port"`
+	Description string `json:"description,omitempty"`
+	HWID        string `json:"hwid,omitempty"`
+}
+
 // AddMCPServer connects a server live and persists it to config (Customize → MCP →
 // Add). Returns the number of tools it exposed.
 func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
@@ -1133,6 +1399,709 @@ func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
 		Args:    in.Args,
 		URL:     in.URL,
 		Env:     in.Env,
+	})
+}
+
+// HardwareMCP reports whether the bundled or locally built hardware MCP server is
+// available and whether the current session already has it connected.
+func (a *App) HardwareMCP() HardwareMCPView {
+	cmd, source, err := resolveHardwareMCP()
+	view := HardwareMCPView{Name: "hardware", Command: cmd, Source: source, Available: err == nil}
+	if err != nil {
+		view.Error = err.Error()
+	}
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
+		return view
+	}
+	for _, s := range ctrl.Host().Servers() {
+		if s.Name == "hardware" {
+			view.Configured = true
+			view.Connected = true
+			return view
+		}
+	}
+	for _, f := range ctrl.Host().Failures() {
+		if f.Name == "hardware" {
+			view.Configured = true
+			view.Error = f.Error
+			return view
+		}
+	}
+	return view
+}
+
+// HardwareDetect runs the bundled MCP's detection tool directly so the hardware
+// drawer can display local toolchain and serial-port status even before the
+// server is connected to the current agent session.
+func (a *App) HardwareDetect() HardwareDetectView {
+	view := HardwareDetectView{
+		Available:       false,
+		ProjectTypes:    []string{},
+		SerialPorts:     []string{},
+		Boards:          []HardwareBoardView{},
+		Devices:         []HardwareDeviceView{},
+		Toolchains:      []HardwareToolchainView{},
+		Recommendations: []string{},
+	}
+	command, _, err := resolveHardwareMCP()
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	cwd, _ := os.Getwd()
+	text, err := callHardwareMCPTool(command, "hardware_detect", map[string]any{"project_dir": cwd}, 20*time.Second)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	if err := json.Unmarshal([]byte(text), &view); err != nil {
+		view.Error = "hardware_detect returned invalid JSON: " + err.Error()
+		return view
+	}
+	normalizeHardwareDetectView(&view)
+	view.Available = true
+	return view
+}
+
+// HardwareEvidenceStatus runs hardware_evidence_status directly so the drawer can
+// show whether the current project has only local validation or real-device proof.
+func (a *App) HardwareEvidenceStatus() HardwareEvidenceStatusView {
+	view := HardwareEvidenceStatusView{
+		MissingGroups:   []string{},
+		Recommendations: []string{},
+	}
+	command, _, err := resolveHardwareMCP()
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	cwd, _ := os.Getwd()
+	text, err := callHardwareMCPTool(command, "hardware_evidence_status", map[string]any{"project_dir": cwd}, 20*time.Second)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	if err := json.Unmarshal([]byte(text), &view); err != nil {
+		view.Error = "hardware_evidence_status returned invalid JSON: " + err.Error()
+		return view
+	}
+	normalizeHardwareEvidenceStatusView(&view)
+	view.Available = true
+	return view
+}
+
+// evidenceRecordMirror 反序列化 tests/hardware_evidence.jsonl 的每一行。
+// 真源是 hardware MCP 的 hardware_evidence_record；这里只读出来汇总成可读文本。
+type evidenceRecordMirror struct {
+	TimestampUTC  string `json:"timestampUtc"`
+	Platform      string `json:"platform"`
+	Board         string `json:"board"`
+	Stage         string `json:"stage"`
+	Status        string `json:"status"`
+	Summary       string `json:"summary"`
+	Command       string `json:"command"`
+	Port          string `json:"port"`
+	OutputExcerpt string `json:"outputExcerpt"`
+}
+
+// HardwareEvidenceExport 把 tests/hardware_evidence.jsonl 里的真机验证记录汇总成
+// 一段学生可直接粘进研究日志/论文的 Markdown——目的是让竞赛材料用「真实采集的
+// 编译/烧录/串口/部署证据」，而不是凭记忆编数字（这条是项目红线）。
+// 返回空字符串表示还没有任何验证记录。
+func (a *App) HardwareEvidenceExport(projectDir string) (string, error) {
+	dir := resolveHardwareProjectDir(projectDir)
+	path := filepath.Join(dir, "tests", "hardware_evidence.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil // 还没有证据文件，不算错误
+		}
+		return "", err
+	}
+	records := make([]evidenceRecordMirror, 0, 16)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec evidenceRecordMirror
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Stage != "" {
+			records = append(records, rec)
+		}
+	}
+	if len(records) == 0 {
+		return "", nil
+	}
+	return renderEvidenceMarkdown(records), nil
+}
+
+// evidenceStageLabel 把英文阶段名翻成学生能懂的中文。
+func evidenceStageLabel(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "compile", "build", "validate":
+		return "编译/语法"
+	case "upload", "flash":
+		return "烧录"
+	case "monitor", "serial":
+		return "串口/运行日志"
+	case "ssh", "ssh_deploy", "deploy":
+		return "真机部署"
+	case "mpremote":
+		return "MicroPython 部署"
+	default:
+		return stage
+	}
+}
+
+func renderEvidenceMarkdown(records []evidenceRecordMirror) string {
+	var b strings.Builder
+	b.WriteString("# 真机验证证据（onecreat 自动导出）\n\n")
+	b.WriteString("> 本文件由 onecreat 从真实的编译 / 烧录 / 串口 / 部署记录（tests/hardware_evidence.jsonl）自动汇总，")
+	b.WriteString("可作为研究日志、论文的原始验证依据。请勿手工编造数据。\n\n")
+	fmt.Fprintf(&b, "共 %d 条验证记录。\n", len(records))
+	for i, rec := range records {
+		fmt.Fprintf(&b, "\n## %d. 【%s】%s\n", i+1, evidenceStageLabel(rec.Stage), strings.TrimSpace(rec.Status))
+		if t := strings.TrimSpace(rec.TimestampUTC); t != "" {
+			fmt.Fprintf(&b, "- 时间（UTC）：%s\n", t)
+		}
+		plat := strings.TrimSpace(rec.Platform)
+		if board := strings.TrimSpace(rec.Board); board != "" {
+			plat = strings.TrimSpace(plat + " / " + board)
+		}
+		if plat != "" {
+			fmt.Fprintf(&b, "- 平台 / 板卡：%s\n", plat)
+		}
+		if p := strings.TrimSpace(rec.Port); p != "" {
+			fmt.Fprintf(&b, "- 端口：%s\n", p)
+		}
+		if s := strings.TrimSpace(rec.Summary); s != "" {
+			fmt.Fprintf(&b, "- 结果：%s\n", s)
+		}
+		if c := strings.TrimSpace(rec.Command); c != "" {
+			fmt.Fprintf(&b, "- 命令：`%s`\n", c)
+		}
+		if o := strings.TrimSpace(rec.OutputExcerpt); o != "" {
+			// 串口输出本身可能含 ```（罕见但会发生），用动态围栏避免提前闭合代码块、
+			// 破坏导出文档，同时原样保留输出内容。
+			fence := codeFence(o)
+			fmt.Fprintf(&b, "- 输出片段：\n\n%s\n%s\n%s\n", fence, o, fence)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// codeFence 返回一段比 content 里最长连续反引号还长一位的反引号围栏（至少 3 个），
+// 保证 Markdown 代码块不会被内容里的 ``` 提前闭合。
+func codeFence(content string) string {
+	longest, run := 0, 0
+	for _, r := range content {
+		if r == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	n := longest + 1
+	if n < 3 {
+		n = 3
+	}
+	return strings.Repeat("`", n)
+}
+
+// HardwareBoardFactsView 是「写代码前」要硬注入 prompt 的板卡事实串。
+// Found=false 表示当前板卡没有可注入的确定事实（自定义板/检测到的裸板），
+// 前端据此跳过注入、回退到原有「让模型自己调工具」的流程。
+type HardwareBoardFactsView struct {
+	Found bool   `json:"found"`
+	Facts string `json:"facts"`
+}
+
+// boardProfileMirror / moduleSpecMirror 只反序列化我们要渲染的字段子集。
+// 真源仍是 hardware MCP 的 catalog（platform-api.json / sensor-catalog.json /
+// builtInBoardProfiles）——这里不复制数据，只解析它的 JSON 输出。
+type boardProfileMirror struct {
+	Profile *struct {
+		Label                string   `json:"label"`
+		ArduinoFQBN          string   `json:"arduinoFqbn"`
+		LogicVoltage         string   `json:"logicVoltage"`
+		PowerNotes           string   `json:"powerNotes"`
+		RecommendedProtocols []string `json:"recommendedProtocols"`
+		DefaultPins          []struct {
+			Name  string   `json:"name"`
+			Pins  []string `json:"pins"`
+			Notes string   `json:"notes"`
+		} `json:"defaultPins"`
+		RiskyPins []struct {
+			Name  string   `json:"name"`
+			Pins  []string `json:"pins"`
+			Notes string   `json:"notes"`
+		} `json:"riskyPins"`
+		CommonFailures []string `json:"commonFailures"`
+		TeachingNotes  []string `json:"teachingNotes"`
+	} `json:"profile"`
+}
+
+type moduleSpecMirror struct {
+	Modules []struct {
+		Matched  bool     `json:"matched"`
+		Kind     string   `json:"kind"`
+		Function string   `json:"function"`
+		Imports  []string `json:"imports"`
+		Gotchas  []string `json:"gotchas"`
+		Snippet  string   `json:"snippet"`
+	} `json:"modules"`
+}
+
+// HardwareBoardFacts 在「写代码前」确定性地取出已选板卡的校验事实，拼成一段文本
+// 供 HardwarePanel 直接注入 prompt——不再依赖弱模型自觉去调 board_profile /
+// module_spec（项目实测：flash 裸写国产生态必幻觉，只有把事实压进上下文才对）。
+// 事实来自两个已有 MCP 工具（单一真源）：
+//   - hardware_board_profile：电平、默认/风险引脚、推荐协议、常见失败、教学提示
+//   - hardware_module_spec（板卡名当 module 查）：冷门平台 API 的正确 import、
+//     gotchas、最小示例（ESP32 LEDC / 行空板 pinpong / MaixCAM K230 maix.*）——
+//     这正是 flash 最容易编错库名和 API 的地方。
+func (a *App) HardwareBoardFacts(board, platform string) HardwareBoardFactsView {
+	board = strings.TrimSpace(board)
+	// 自定义板和「检测到的裸板」没有 catalog 事实，直接跳过
+	if board == "" || strings.EqualFold(board, "custom") || strings.HasPrefix(board, "detected:") {
+		return HardwareBoardFactsView{}
+	}
+	command, _, err := resolveHardwareMCP()
+	if err != nil {
+		return HardwareBoardFactsView{}
+	}
+	if strings.TrimSpace(platform) == "" {
+		platform = "auto"
+	}
+	sections := make([]string, 0, 2)
+
+	// 1) 板卡 profile：电平 / 引脚 / 协议 / 常见失败
+	if text, e := callHardwareMCPTool(command, "hardware_board_profile",
+		map[string]any{"board": board, "platform": platform}, 15*time.Second); e == nil {
+		var bp boardProfileMirror
+		if json.Unmarshal([]byte(text), &bp) == nil && bp.Profile != nil {
+			if s := renderBoardProfileFacts(bp); s != "" {
+				sections = append(sections, s)
+			}
+		}
+	}
+
+	// 2) 平台 API：把板卡名当 module 查，命中 platform_api 就拿到正确 import/坑/示例
+	if text, e := callHardwareMCPTool(command, "hardware_module_spec",
+		map[string]any{"modules": []string{board}, "board": board, "platform": platform}, 15*time.Second); e == nil {
+		var ms moduleSpecMirror
+		if json.Unmarshal([]byte(text), &ms) == nil {
+			if s := renderPlatformAPIFacts(ms); s != "" {
+				sections = append(sections, s)
+			}
+		}
+	}
+
+	if len(sections) == 0 {
+		return HardwareBoardFactsView{}
+	}
+	return HardwareBoardFactsView{Found: true, Facts: strings.Join(sections, "\n")}
+}
+
+// renderBoardProfileFacts 把板卡 profile 渲染成紧凑、学生可读的中文事实块。
+func renderBoardProfileFacts(bp boardProfileMirror) string {
+	p := bp.Profile
+	var b strings.Builder
+	title := p.Label
+	if title == "" {
+		title = "目标板卡"
+	}
+	if p.ArduinoFQBN != "" {
+		fmt.Fprintf(&b, "板卡：%s（FQBN %s）\n", title, p.ArduinoFQBN)
+	} else {
+		fmt.Fprintf(&b, "板卡：%s\n", title)
+	}
+	if p.LogicVoltage != "" {
+		line := "逻辑电平：" + p.LogicVoltage
+		if p.PowerNotes != "" {
+			line += "。" + p.PowerNotes
+		}
+		b.WriteString(line + "\n")
+	}
+	if len(p.RecommendedProtocols) > 0 {
+		fmt.Fprintf(&b, "推荐通信：%s\n", strings.Join(p.RecommendedProtocols, "、"))
+	}
+	for _, pin := range p.DefaultPins {
+		if len(pin.Pins) == 0 {
+			continue
+		}
+		seg := "默认引脚 " + pin.Name + "：" + strings.Join(pin.Pins, "/")
+		if pin.Notes != "" {
+			seg += "（" + pin.Notes + "）"
+		}
+		b.WriteString(seg + "\n")
+	}
+	for _, pin := range p.RiskyPins {
+		seg := "⚠️ 风险引脚 " + pin.Name
+		if len(pin.Pins) > 0 {
+			seg += " " + strings.Join(pin.Pins, "/")
+		}
+		if pin.Notes != "" {
+			seg += "：" + pin.Notes
+		}
+		b.WriteString(seg + "\n")
+	}
+	if len(p.CommonFailures) > 0 {
+		fmt.Fprintf(&b, "常见失败：%s\n", strings.Join(p.CommonFailures, "；"))
+	}
+	if len(p.TeachingNotes) > 0 {
+		fmt.Fprintf(&b, "教学提示：%s\n", strings.Join(p.TeachingNotes, "；"))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderPlatformAPIFacts 从 module_spec 结果里挑出 platform_api（冷门平台软件写法），
+// 渲染成「正确 import + 坑 + 最小示例」——这是防 flash 幻觉最关键的一段。
+func renderPlatformAPIFacts(ms moduleSpecMirror) string {
+	for _, m := range ms.Modules {
+		if !m.Matched || m.Kind != "platform_api" {
+			continue
+		}
+		var b strings.Builder
+		name := m.Function
+		if name == "" {
+			name = "平台 API"
+		}
+		fmt.Fprintf(&b, "平台 API（%s）——务必照此写，别凭记忆猜库名/方法：\n", name)
+		if len(m.Imports) > 0 {
+			fmt.Fprintf(&b, "正确 import：%s\n", strings.Join(m.Imports, "；"))
+		}
+		if len(m.Gotchas) > 0 {
+			fmt.Fprintf(&b, "注意：%s\n", strings.Join(m.Gotchas, "；"))
+		}
+		if strings.TrimSpace(m.Snippet) != "" {
+			fmt.Fprintf(&b, "最小示例：\n%s\n", strings.TrimSpace(m.Snippet))
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
+	return ""
+}
+
+// HardwareRunInput is the shared input for the one-click compile/upload/monitor
+// buttons in HardwarePanel. Fields are optional unless required by the underlying
+// MCP tool — the dispatch picks the right tool by Platform.
+type HardwareRunInput struct {
+	ProjectDir string `json:"projectDir"`
+	Platform   string `json:"platform"`
+	Board      string `json:"board,omitempty"`
+	Port       string `json:"port,omitempty"`
+	Seconds    int    `json:"seconds,omitempty"`
+}
+
+// HardwareRunResult is the normalized result the frontend renders into the
+// one-click action UI. RootCause + FixHint come from hardware_project_validate's
+// error-distillation; they are empty on success or when an underlying tool doesn't
+// distill (upload/monitor). Output is the truncated command output for the drawer.
+type HardwareRunResult struct {
+	Status    string `json:"status"`
+	Kind      string `json:"kind,omitempty"` // 验证子类(如 python_syntax)，前端据此区分「真编译」与「仅语法检查」
+	Summary   string `json:"summary"`
+	Output    string `json:"output,omitempty"`
+	RootCause string `json:"rootCause,omitempty"`
+	FixHint   string `json:"fixHint,omitempty"`
+	NextStep  string `json:"nextStep,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Command   string `json:"command,omitempty"`
+}
+
+// HardwareValidate runs hardware_project_validate. Returns the first failed
+// validationResult, otherwise the last one. The frontend's "编译" button calls it.
+func (a *App) HardwareValidate(input HardwareRunInput) HardwareRunResult {
+	command, err := a.requireHardwareMCP()
+	if err != nil {
+		return HardwareRunResult{Status: "failed", Error: err.Error()}
+	}
+	args := map[string]any{
+		"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
+		"timeout_seconds": 180,
+	}
+	if input.Platform != "" {
+		args["platform"] = input.Platform
+	}
+	if input.Board != "" {
+		args["board"] = input.Board
+	}
+	text, err := callHardwareMCPTool(command, "hardware_project_validate", args, 200*time.Second)
+	if err != nil {
+		return HardwareRunResult{Status: "failed", Summary: "编译/验证调用失败", Error: err.Error()}
+	}
+	var report struct {
+		Summary         string             `json:"summary"`
+		Results         []validationResult `json:"results"`
+		Recommendations []string           `json:"recommendations"`
+	}
+	if err := json.Unmarshal([]byte(text), &report); err != nil {
+		return HardwareRunResult{Status: "failed", Summary: "无法解析验证结果", Error: err.Error()}
+	}
+	pick := pickValidationResult(report.Results)
+	res := HardwareRunResult{
+		Status:    coalesceStatus(pick.Status, "skipped"),
+		Kind:      pick.Kind,
+		Summary:   strings.TrimSpace(report.Summary),
+		Output:    truncateOutput(pick.Output, 4096),
+		RootCause: pick.RootCause,
+		FixHint:   pick.FixHint,
+		NextStep:  pick.NextStep,
+		Error:     pick.Error,
+		Command:   pick.Command,
+	}
+	// py_compile 只是语法检查，不是真编译(不解析 import/API)。别让「N passed」
+	// 的绿勾被学生当成「已验证」——把摘要降级成诚实表述。
+	if res.Kind == "python_syntax" && res.Status == "passed" {
+		res.Summary = "仅语法检查通过（py_compile），API / 真机未验证"
+	}
+	if res.Summary == "" {
+		res.Summary = res.Status
+	}
+	return res
+}
+
+// HardwareUpload dispatches to the platform-appropriate upload MCP tool.
+// Arduino/PlatformIO/ESP-IDF/MicroPython are wired here; SSH-deployed Python
+// platforms (Unihiker / MaixCAM / RPi) fall back to "use chat" since they need
+// host + remote_path the student hasn't entered yet.
+func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
+	command, err := a.requireHardwareMCP()
+	if err != nil {
+		return HardwareRunResult{Status: "failed", Error: err.Error()}
+	}
+	projectDir := resolveHardwareProjectDir(input.ProjectDir)
+	switch input.Platform {
+	case "arduino":
+		if input.Port == "" {
+			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "在硬件面板选择上传端口后再点烧录。"}
+		}
+		args := map[string]any{
+			"sketch_dir":      projectDir,
+			"port":            input.Port,
+			"timeout_seconds": 120,
+		}
+		if input.Board != "" {
+			args["fqbn"] = arduinoFQBNFromBoard(input.Board)
+		}
+		return runHardwareSimple(command, "arduino_upload", args, 150*time.Second, "Arduino 烧录")
+	case "platformio":
+		args := map[string]any{
+			"project_dir":     projectDir,
+			"targets":         []string{"upload"},
+			"timeout_seconds": 180,
+		}
+		if input.Port != "" {
+			args["upload_port"] = input.Port
+		}
+		return runHardwareSimple(command, "platformio_run", args, 220*time.Second, "PlatformIO 烧录")
+	case "esp_idf":
+		args := map[string]any{
+			"project_dir":     projectDir,
+			"action":          "flash",
+			"timeout_seconds": 180,
+		}
+		if input.Port != "" {
+			args["port"] = input.Port
+		}
+		return runHardwareSimple(command, "esp_idf_run", args, 220*time.Second, "ESP-IDF 烧录")
+	case "micropython":
+		if input.Port == "" {
+			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "选择 MicroPython 设备端口后再点烧录。"}
+		}
+		args := map[string]any{
+			"port":            input.Port,
+			"project_dir":     projectDir,
+			"timeout_seconds": 60,
+		}
+		return runHardwareSimple(command, "mpremote_run", args, 80*time.Second, "MicroPython 部署")
+	case "unihiker_python", "maixcam_python", "raspberry_pi_python":
+		return HardwareRunResult{
+			Status:   "skipped",
+			Summary:  "该平台需要 SSH 部署,先在对话里完成",
+			NextStep: "Unihiker / MaixCAM / 树莓派项目用 SSH 烧录:在对话框输入 ssh 主机和路径,让 AI 调用 ssh_deploy_run。",
+		}
+	default:
+		return HardwareRunResult{Status: "failed", Summary: "未知平台", Error: "unsupported platform: " + input.Platform}
+	}
+}
+
+// HardwareMonitor dispatches to the platform-appropriate serial-monitor MCP tool
+// for a short sampling window. The frontend's "看串口" button calls it.
+func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
+	command, err := a.requireHardwareMCP()
+	if err != nil {
+		return HardwareRunResult{Status: "failed", Error: err.Error()}
+	}
+	seconds := input.Seconds
+	if seconds <= 0 {
+		seconds = 8
+	}
+	if seconds > 30 {
+		seconds = 30 // 别让前端按钮一按等半分钟
+	}
+	switch input.Platform {
+	case "arduino":
+		if input.Port == "" {
+			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "选择串口后再点查看串口。"}
+		}
+		args := map[string]any{
+			"port":            input.Port,
+			"seconds":         seconds,
+			"baud":            115200,
+			"timeout_seconds": seconds + 5,
+		}
+		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
+	case "platformio":
+		args := map[string]any{
+			"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
+			"targets":         []string{"monitor"},
+			"timeout_seconds": seconds + 5,
+		}
+		if input.Port != "" {
+			args["monitor_port"] = input.Port
+		}
+		return runHardwareSimple(command, "platformio_run", args, time.Duration(seconds+10)*time.Second, "PlatformIO 串口")
+	case "esp_idf":
+		args := map[string]any{
+			"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
+			"action":          "monitor",
+			"timeout_seconds": seconds + 5,
+		}
+		if input.Port != "" {
+			args["port"] = input.Port
+		}
+		return runHardwareSimple(command, "esp_idf_run", args, time.Duration(seconds+10)*time.Second, "ESP-IDF 串口")
+	default:
+		return HardwareRunResult{
+			Status:   "skipped",
+			Summary:  "该平台暂无一键串口",
+			NextStep: "Python/MicroPython/Unihiker/MaixCAM 项目请在对话框里让 AI 执行 SSH 或 mpremote 调试。",
+		}
+	}
+}
+
+// --- helpers for the 3 buttons ---
+
+func (a *App) requireHardwareMCP() (string, error) {
+	command, _, err := resolveHardwareMCP()
+	if err != nil {
+		return "", err
+	}
+	return command, nil
+}
+
+func resolveHardwareProjectDir(dir string) string {
+	if d := strings.TrimSpace(dir); d != "" {
+		return d
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
+// validationResult mirrors cmd/reasonix-hardware-mcp's structure for unmarshalling.
+type validationResult struct {
+	Kind      string `json:"kind"`
+	Target    string `json:"target"`
+	Status    string `json:"status"`
+	Command   string `json:"command,omitempty"`
+	Output    string `json:"output,omitempty"`
+	Error     string `json:"error,omitempty"`
+	RootCause string `json:"rootCause,omitempty"`
+	FixHint   string `json:"fixHint,omitempty"`
+	NextStep  string `json:"nextStep,omitempty"`
+}
+
+// pickValidationResult picks the first failure (so the UI surfaces a problem),
+// or the last result when everything passed/skipped (so we still show something).
+func pickValidationResult(results []validationResult) validationResult {
+	if len(results) == 0 {
+		return validationResult{Status: "skipped"}
+	}
+	for _, r := range results {
+		if r.Status == "failed" {
+			return r
+		}
+	}
+	return results[len(results)-1]
+}
+
+func coalesceStatus(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
+func truncateOutput(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "\n…(已截断)"
+}
+
+// runHardwareSimple wraps "call MCP tool + return result" for upload/monitor where
+// the underlying tool doesn't return structured validation results — we treat the
+// raw text as the output and let the model help if it fails.
+func runHardwareSimple(command, tool string, args map[string]any, timeout time.Duration, label string) HardwareRunResult {
+	text, err := callHardwareMCPTool(command, tool, args, timeout)
+	if err != nil {
+		return HardwareRunResult{
+			Status:  "failed",
+			Summary: label + "失败",
+			Error:   err.Error(),
+			Output:  truncateOutput(text, 4096),
+		}
+	}
+	return HardwareRunResult{
+		Status:  "passed",
+		Summary: label + "完成",
+		Output:  truncateOutput(text, 4096),
+	}
+}
+
+// arduinoFQBNFromBoard maps short board ids the frontend uses to arduino-cli FQBNs.
+// 覆盖范围必须与 hardware MCP 的 arduinoFQBN 保持一致：前端预设板传的是
+// 「arduino_uno」「arduino_nano」这种带前缀的 value，validate 走 MCP 的 arduinoFQBN、
+// upload 走这里——少一个别名就会出现「编译能过但烧录拿到非法 FQBN」的撕裂。
+func arduinoFQBNFromBoard(board string) string {
+	switch strings.ToLower(strings.TrimSpace(board)) {
+	case "uno", "arduino_uno":
+		return "arduino:avr:uno"
+	case "nano", "arduino_nano", "nanoatmega328":
+		return "arduino:avr:nano"
+	case "mega", "mega2560", "arduino_mega":
+		return "arduino:avr:mega"
+	case "esp32", "esp32dev", "esp32_devkit", "esp32_arduino":
+		return "esp32:esp32:esp32"
+	case "esp32s3", "esp32_s3":
+		return "esp32:esp32:esp32s3"
+	case "esp32c3", "esp32_c3":
+		return "esp32:esp32:esp32c3"
+	}
+	return board
+}
+
+// AddHardwareMCPServer connects the first available hardware MCP binary and
+// persists it to config. The frontend should use this rather than hardcoding a
+// developer-machine path.
+func (a *App) AddHardwareMCPServer() (int, error) {
+	command, _, err := resolveHardwareMCP()
+	if err != nil {
+		return 0, err
+	}
+	return a.AddMCPServer(MCPServerInput{
+		Name:      "hardware",
+		Transport: "stdio",
+		Command:   command,
+		Args:      []string{},
+		Env:       map[string]string{},
 	})
 }
 
@@ -1190,6 +2159,134 @@ func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
 	}
 	a.ctrl.DisconnectMCPServer(name)
 	return nil
+}
+
+type hardwareMCPRPCResponse struct {
+	Error  *hardwareMCPRPCError `json:"error,omitempty"`
+	Result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	} `json:"result"`
+}
+
+type hardwareMCPRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func callHardwareMCPTool(command, name string, args map[string]any, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, command)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return "", err
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	req := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      name,
+			"arguments": args,
+		},
+	}
+	if err := json.NewEncoder(stdin).Encode(req); err != nil {
+		_ = cmd.Process.Kill()
+		return "", err
+	}
+	_ = stdin.Close()
+	err = cmd.Wait()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("hardware MCP timed out after %s", timeout)
+	}
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("hardware MCP failed: %s", msg)
+	}
+	line := strings.TrimSpace(firstOutputLine(stdout.String()))
+	if line == "" {
+		return "", fmt.Errorf("hardware MCP returned no output")
+	}
+	var resp hardwareMCPRPCResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return "", fmt.Errorf("hardware MCP returned invalid JSON-RPC: %w", err)
+	}
+	if resp.Error != nil {
+		return "", fmt.Errorf("hardware MCP RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+	if resp.Result.IsError {
+		return "", fmt.Errorf("%s", firstTextContent(resp.Result.Content))
+	}
+	text := firstTextContent(resp.Result.Content)
+	if text == "" {
+		return "", fmt.Errorf("hardware MCP returned no text content")
+	}
+	return text, nil
+}
+
+func firstOutputLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func firstTextContent(content []struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}) string {
+	for _, item := range content {
+		if item.Type == "text" {
+			return item.Text
+		}
+	}
+	return ""
+}
+
+func normalizeHardwareDetectView(view *HardwareDetectView) {
+	if view.ProjectTypes == nil {
+		view.ProjectTypes = []string{}
+	}
+	if view.SerialPorts == nil {
+		view.SerialPorts = []string{}
+	}
+	if view.Boards == nil {
+		view.Boards = []HardwareBoardView{}
+	}
+	if view.Devices == nil {
+		view.Devices = []HardwareDeviceView{}
+	}
+	if view.Toolchains == nil {
+		view.Toolchains = []HardwareToolchainView{}
+	}
+	if view.Recommendations == nil {
+		view.Recommendations = []string{}
+	}
+}
+
+func normalizeHardwareEvidenceStatusView(view *HardwareEvidenceStatusView) {
+	if view.MissingGroups == nil {
+		view.MissingGroups = []string{}
+	}
+	if view.Recommendations == nil {
+		view.Recommendations = []string{}
+	}
 }
 
 func findMCPServerView(ctrl *control.Controller, name string) (ServerView, bool) {
@@ -1353,6 +2450,12 @@ func (a *App) SetModel(name string) error {
 	a.ctrl = newCtrl
 	a.model = name
 	a.label = newCtrl.Label()
+	// 同步活动 tab 的运行时(SetModel 只作用于当前活动 tab)。
+	if rt := a.tabs[a.activeTab]; rt != nil {
+		rt.ctrl = newCtrl
+		rt.model = name
+		rt.label = newCtrl.Label()
+	}
 	a.mu.Unlock()
 	newCtrl.EnableInteractiveApproval()
 
@@ -1368,6 +2471,66 @@ func (a *App) SetModel(name string) error {
 		newCtrl.SetSessionPath(path)
 	}
 	return nil
+}
+
+func resolveHardwareMCP() (command, source string, err error) {
+	const bin = "reasonix-hardware-mcp"
+	if override := strings.TrimSpace(os.Getenv("REASONIX_HARDWARE_MCP")); override != "" {
+		if executable(override) {
+			return override, "REASONIX_HARDWARE_MCP", nil
+		}
+		return "", "REASONIX_HARDWARE_MCP", fmt.Errorf("REASONIX_HARDWARE_MCP points to a missing or non-executable file: %s", override)
+	}
+	if exe, e := os.Executable(); e == nil {
+		exeDir := filepath.Dir(exe)
+		// Dev 模式优先回溯到 repo 根的 bin/(make build 的产物)。
+		// wails dev 的 bundle 是 reasonix-desktop.app(production 是 onecreat.app),
+		// dev bundle 在重建/cp 后路径不稳定,而 repo/bin/ 是稳定的开发期路径。
+		// production 走原 exe-based 路径,这段不会命中。
+		if strings.Contains(exeDir, "reasonix-desktop.app") {
+			// .../desktop/build/bin/reasonix-desktop.app/Contents/MacOS → 回溯 6 层到 repo 根
+			devCandidate := filepath.Join(exeDir, "..", "..", "..", "..", "..", "..", "bin", bin)
+			if executable(devCandidate) {
+				return filepath.Clean(devCandidate), "dev bin", nil
+			}
+		}
+		for _, candidate := range []string{
+			filepath.Join(exeDir, bin),
+			filepath.Join(exeDir, bin+".exe"),
+			filepath.Join(exeDir, "..", "Resources", bin),
+			filepath.Join(exeDir, "..", "Resources", bin+".exe"),
+		} {
+			if executable(candidate) {
+				return filepath.Clean(candidate), "app bundle", nil
+			}
+		}
+	}
+	if p, e := exec.LookPath(bin); e == nil {
+		return p, "PATH", nil
+	}
+	if cwd, e := os.Getwd(); e == nil {
+		for _, candidate := range []string{
+			filepath.Join(cwd, "bin", bin),
+			filepath.Join(cwd, "..", "bin", bin),
+			filepath.Join(cwd, "..", "..", "bin", bin),
+		} {
+			if executable(candidate) {
+				return filepath.Clean(candidate), "workspace bin", nil
+			}
+		}
+	}
+	return "", "", fmt.Errorf("hardware MCP binary not found; run `make build` or set REASONIX_HARDWARE_MCP")
+}
+
+func executable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if goruntime.GOOS == "windows" {
+		return true
+	}
+	return info.Mode()&0o111 != 0
 }
 
 func (a *App) Effort() EffortInfo {
@@ -1601,6 +2764,20 @@ func (a *App) OpenWorkspacePath(rel string) error {
 	return openWorkspacePath(path)
 }
 
+// OpenFolder 在系统文件管理器里打开一个绝对路径的文件夹(供侧栏「在文件夹中打开」用)。
+// 与 OpenWorkspacePath 不同:不限制在当前 workspace 内,可打开任意已存在的目录。
+func (a *App) OpenFolder(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return os.ErrInvalid
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return os.ErrInvalid
+	}
+	return openWorkspacePath(path)
+}
+
 // RevealWorkspacePath shows a workspace file in the native file manager.
 func (a *App) RevealWorkspacePath(rel string) error {
 	path, ok, err := workspacePath(rel)
@@ -1827,39 +3004,48 @@ func parseScope(s string) memory.Scope {
 // runtime.EventsEmit is goroutine-safe, and the ctx guard covers the brief window
 // before startup assigns it.
 type eventSink struct {
-	ctx context.Context
-	app *App
+	ctx   context.Context
+	app   *App
+	tabID string // 该 sink 归属的标签;事件发到 agent:event:<tabID>,空则发旧的全局通道
 }
 
 func (s *eventSink) Emit(e event.Event) {
 	if s.ctx != nil {
-		runtime.EventsEmit(s.ctx, eventChannel, toWire(e))
+		ch := eventChannel
+		if s.tabID != "" {
+			ch = eventChannel + ":" + s.tabID
+		}
+		runtime.EventsEmit(s.ctx, ch, toWire(e))
 	}
 	// Persist after each turn so a force-kill of a long session loses at most the
 	// in-flight prompt, not every turn back to the last workspace switch.
+	// 存的是「本 sink 所属标签」的 session,后台标签完成一轮也各存各的。
 	if e.Kind == event.TurnDone && s.app != nil {
-		s.app.scheduleSnapshot()
+		s.app.scheduleSnapshot(s.tabID)
 	}
 }
 
-// scheduleSnapshot kicks a single-flight background save of the active session;
+// scheduleSnapshot kicks a single-flight background save of one tab's session;
 // a request arriving while one runs sets a trailing pass so the final state lands.
-func (a *App) scheduleSnapshot() {
+func (a *App) scheduleSnapshot(tabID string) {
 	a.saveMu.Lock()
-	if a.saving {
-		a.saveAgain = true
+	if a.saving[tabID] {
+		a.saveAgain[tabID] = true
 		a.saveMu.Unlock()
 		return
 	}
-	a.saving = true
+	a.saving[tabID] = true
 	a.saveMu.Unlock()
-	go a.snapshotLoop()
+	go a.snapshotLoop(tabID)
 }
 
-func (a *App) snapshotLoop() {
+func (a *App) snapshotLoop(tabID string) {
 	for {
 		a.mu.RLock()
-		ctrl := a.ctrl
+		var ctrl *control.Controller
+		if rt := a.tabs[tabID]; rt != nil {
+			ctrl = rt.ctrl
+		}
 		a.mu.RUnlock()
 		if ctrl != nil {
 			if err := ctrl.Snapshot(); err != nil {
@@ -1867,12 +3053,13 @@ func (a *App) snapshotLoop() {
 			}
 		}
 		a.saveMu.Lock()
-		if a.saveAgain {
-			a.saveAgain = false
+		if a.saveAgain[tabID] {
+			a.saveAgain[tabID] = false
 			a.saveMu.Unlock()
 			continue
 		}
-		a.saving = false
+		delete(a.saving, tabID)
+		delete(a.saveAgain, tabID)
 		a.saveMu.Unlock()
 		return
 	}

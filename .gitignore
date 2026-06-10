@@ -4,6 +4,8 @@
 /stage/
 /reasonix
 /reasonix.exe
+/reasonix-hardware-mcp
+/reasonix-hardware-mcp.exe
 
 # Go test/build scratch
 *.test
@@ -48,3 +50,6 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# Claude Code local session config (per-developer, never committed)
+/.claude/

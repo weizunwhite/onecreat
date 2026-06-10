@@ -13,6 +13,7 @@ export interface ToolDiff {
   original: string;
   modified: string;
   lang: string;
+  path?: string;
   label?: string; // multi_edit labels each step ("edit 1", …)
 }
 
@@ -59,21 +60,22 @@ export function subjectOf(name: string, args: string): string {
 // away instead.
 export function diffsFor(name: string, args: string): ToolDiff[] {
   const a = parse(args);
-  const lang = extToLang(str(a, "path") || str(a, "file_path"));
+  const path = str(a, "path") || str(a, "file_path");
+  const lang = extToLang(path);
   if (name === "edit_file") {
     if (typeof a.old_string === "string" && typeof a.new_string === "string") {
-      return [{ original: a.old_string, modified: a.new_string, lang }];
+      return [{ original: a.old_string, modified: a.new_string, lang, path }];
     }
   }
   if (name === "write_file" && typeof a.content === "string") {
-    return [{ original: "", modified: a.content, lang }];
+    return [{ original: "", modified: a.content, lang, path }];
   }
   if (name === "multi_edit" && Array.isArray(a.edits)) {
     const out: ToolDiff[] = [];
     (a.edits as unknown[]).forEach((e, i) => {
       const step = e as Record<string, unknown>;
       if (typeof step?.old_string === "string" && typeof step?.new_string === "string") {
-        out.push({ original: step.old_string, modified: step.new_string, lang, label: `edit ${i + 1}` });
+        out.push({ original: step.old_string, modified: step.new_string, lang, path, label: `edit ${i + 1}` });
       }
     });
     return out;

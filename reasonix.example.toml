@@ -18,7 +18,7 @@ guessing; keep changes minimal and correct; briefly summarize what you did."""
 # system_prompt_file = "prompts/system.md"   # overrides system_prompt when set
 max_steps   = 25
 temperature = 0.0
-auto_plan   = "ask"   # off|ask|on; ask/on auto-enter plan mode for complex tasks
+auto_plan   = "off"   # off|ask|on; 默认 off（模型自己判断是否先出方案）。ask/on 会按关键词自动切进 plan 模式
 # auto_plan_classifier = "deepseek-flash"   # optional; only used for borderline tasks
 # planner_model = "mimo-pro"   # optional: enable two-model collaboration
 # subagent_model = "deepseek-pro"   # optional default for runAs=subagent skills
@@ -122,6 +122,22 @@ enabled = []   # empty = all built-in tools
 # name    = "example"
 # command = "reasonix-plugin-example"
 # tier    = "lazy"  # eager | lazy (default) | background
+
+# AI hardware programming tools: Arduino CLI, PlatformIO, ESP-IDF fallback,
+# ESP-IDF official MCP config generation, mpremote, and SSH deploy/run.
+# Build first with `make build`, then use the absolute command path when launching
+# Reasonix from another directory.
+# Optional ESP-IDF GUI-launch overrides:
+#   REASONIX_ESP_IDF_PATH=/path/to/esp-idf
+#   REASONIX_IDF_PYTHON_ENV_PATH=/path/to/idf-python-venv
+#   REASONIX_IDF_PYTHON=/path/to/idf-python-venv/bin/python
+#   REASONIX_DYLD_LIBRARY_PATH=/opt/homebrew/opt/expat/lib
+#   REASONIX_EIM=/path/to/eim
+# [[plugins]]
+# name    = "hardware"
+# command = "bin/reasonix-hardware-mcp"
+# tier    = "lazy"
+
 # # tier guidance:
 # #   eager      — handshake at boot; the agent waits. Use when the plugin's
 # #                tools must be in the very first turn's system prompt.

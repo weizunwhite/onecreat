@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { FileText } from "lucide-react";
+import { useT } from "../lib/i18n";
 import type { SlashArgItem } from "../lib/types";
 
 // ArgMenu is the autocomplete dropdown for a slash command's arguments (the part
@@ -16,11 +18,14 @@ export function ArgMenu({
   onPick: (it: SlashArgItem) => void;
   onHover: (i: number) => void;
 }) {
+  const t = useT();
   // Keep the keyboard-selected item in view (the list overflows at 280px).
   const activeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
+  const argumentFileName = (label: string) => `argument_${label.replace(/[^A-Za-z0-9_-]+/g, "_") || "value"}.md`;
+
   return (
     <div className="slashmenu" role="listbox">
       {items.map((it, i) => (
@@ -36,8 +41,17 @@ export function ArgMenu({
           }}
           onMouseMove={() => onHover(i)}
         >
-          <span className="slashmenu__name">{it.label}</span>
-          {it.hint && <span className="slashmenu__hint">{it.hint}</span>}
+          <FileText size={13} className="slashmenu__command-icon" />
+          <span className="slashmenu__command">
+            <span className="slashmenu__command-line">
+              <strong>{argumentFileName(it.label)}</strong>
+              <small>{t("slash.argumentRemark")}</small>
+            </span>
+            <span className="slashmenu__command-desc">
+              <code>{it.label}</code>
+              {it.hint && <span className="slashmenu__hint">{it.hint}</span>}
+            </span>
+          </span>
         </button>
       ))}
     </div>

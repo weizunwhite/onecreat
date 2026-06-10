@@ -87,9 +87,9 @@ func RenderTOML(c *Config) string {
 	fmt.Fprintf(&b, "temperature = %s\n", formatFloat(c.Agent.Temperature))
 	autoPlan := c.Agent.AutoPlan
 	if autoPlan == "" {
-		autoPlan = "ask"
+		autoPlan = "off"
 	}
-	fmt.Fprintf(&b, "auto_plan   = %q   # off|ask|on; ask/on auto-enter plan mode for complex tasks\n", autoPlan)
+	fmt.Fprintf(&b, "auto_plan   = %q   # off|ask|on; 默认 off（模型自己判断是否先出方案）。ask/on 会按关键词自动切进 plan 模式\n", autoPlan)
 	if c.Agent.AutoPlanClassifier != "" {
 		fmt.Fprintf(&b, "auto_plan_classifier = %q   # optional provider/model for borderline auto-plan decisions\n", c.Agent.AutoPlanClassifier)
 	} else {

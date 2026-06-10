@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { app } from "../lib/bridge";
+import { basename } from "../lib/fileRemarks";
 import { useT } from "../lib/i18n";
 import { loadLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import type { DirEntry, FilePreview } from "../lib/types";
@@ -48,15 +49,20 @@ function entryPath(dir: string, entry: DirEntry): string {
   return prefix + entry.name + (entry.isDir ? "/" : "");
 }
 
-function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? "";
-}
-
 function parentPath(path: string): string {
   const clean = path.replace(/\/$/, "");
   const parts = clean.split("/").filter(Boolean);
   return parts.slice(0, -1).join("/");
+}
+
+function displayDir(path: string): string {
+  const dir = parentPath(path);
+  return dir || ".";
+}
+
+function fileSearchText(path: string, isDir: boolean): string {
+  const dir = parentPath(path);
+  return `${path} ${basename(path)} ${dir} ${isDir ? "folder" : "file"}`.toLowerCase();
 }
 
 function parentDirs(path: string): string[] {
@@ -106,11 +112,44 @@ function formatBytes(n: number): string {
   return `${n} B`;
 }
 
+function WorkspaceFileSummary({
+  path,
+  size,
+}: {
+  path: string;
+  size?: number;
+}) {
+  const t = useT();
+  const dir = displayDir(path);
+
+  return (
+    <section className="workspace-file-summary" title={path}>
+      <FileText size={15} />
+      <span className="workspace-file-summary__body">
+        <span className="workspace-file-summary__label">{t("workspace.currentFile")}</span>
+        <span className="workspace-file-summary__line">
+          <strong>{basename(path)}</strong>
+        </span>
+        <span className="workspace-file-summary__meta">
+          <code>{dir}</code>
+          {typeof size === "number" && size > 0 && <span>{formatBytes(size)}</span>}
+        </span>
+      </span>
+    </section>
+  );
+}
+
+export type WorkspaceOpenRequest = {
+  path: string;
+  nonce: number;
+};
+
 export function WorkspacePanel({
   open,
   cwd,
   maximized,
   panelWidth,
+  openFileRequest,
   onClose,
   onToggleMaximized,
   onPreviewModeChange,
@@ -119,6 +158,7 @@ export function WorkspacePanel({
   cwd?: string;
   maximized: boolean;
   panelWidth?: number;
+  openFileRequest?: WorkspaceOpenRequest | null;
   onClose: () => void;
   onToggleMaximized: () => void;
   onPreviewModeChange?: (active: boolean) => void;
@@ -150,10 +190,10 @@ export function WorkspacePanel({
       const dirs = parentDirs(path);
       setOpenDirs((prev) => new Set([...Array.from(prev), ...dirs]));
       dirs.forEach((dir) => {
-        if (!entriesByDir[dir]) void loadDir(dir);
+        void loadDir(dir);
       });
     },
-    [entriesByDir, loadDir],
+    [loadDir],
   );
 
   useEffect(() => {
@@ -167,6 +207,14 @@ export function WorkspacePanel({
     setTreeVisible(true);
     void loadDir("");
   }, [cwd, loadDir, open]);
+
+  useEffect(() => {
+    if (!open || !openFileRequest?.path) return;
+    const path = openFileRequest.path.replace(/^\.\//, "").replace(/\/$/, "");
+    if (!path) return;
+    setTreeVisible(true);
+    selectFile(path);
+  }, [open, openFileRequest?.nonce, openFileRequest?.path, selectFile]);
 
   const refreshSelected = useCallback(() => {
     if (!selectedPath) return;
@@ -228,9 +276,11 @@ export function WorkspacePanel({
 
   const closeTab = (path: string) => {
     setOpenTabs((tabs) => {
+      const idx = tabs.indexOf(path);
       const next = tabs.filter((tab) => tab !== path);
       if (selectedPath === path) {
-        const replacement = next[next.length - 1] ?? null;
+        // 关掉当前 tab 后,焦点落到左邻(同标准编辑器);最左侧时取右邻
+        const replacement = next[Math.max(0, Math.min(idx - 1, next.length - 1))] ?? null;
         setSelectedPath(replacement);
         if (!replacement) {
           setPreview(null);
@@ -253,7 +303,7 @@ export function WorkspacePanel({
     const q = filter.trim().toLowerCase();
     if (!q) return null;
     return rows
-      .filter((row) => row.path.toLowerCase().includes(q))
+      .filter((row) => fileSearchText(row.path, row.entry.isDir).includes(q))
       .sort((a, b) => a.path.localeCompare(b.path));
   }, [entriesByDir, filter]);
 
@@ -368,7 +418,11 @@ export function WorkspacePanel({
           ) : (
             <FileText size={14} className="workspace-tree__icon" />
           )}
-          <span className="workspace-tree__name">{entry.name}</span>
+          <span className="workspace-tree__label">
+            <span className="workspace-tree__label-main">
+              <span className="workspace-tree__name">{entry.name}</span>
+            </span>
+          </span>
         </button>
       );
       if (!entry.isDir || !isOpen) return [row];
@@ -388,36 +442,43 @@ export function WorkspacePanel({
       {previewVisible && <section className="workspace-preview">
         <header className="workspace-preview__head">
           <div className="workspace-tabs">
-            {openTabs.map((tab) => (
-              <button
-                className={`workspace-tab${selectedPath === tab ? " workspace-tab--active" : ""}`}
-                key={tab}
-                onClick={() => setSelectedPath(tab)}
-                title={tab}
-              >
-                <FileText size={14} className="workspace-tab__icon" />
-                <span className="workspace-tab__name">{basename(tab)}</span>
-                <span
-                  className="workspace-tab__close"
-                  role="button"
-                  tabIndex={0}
-                  title={t("workspace.closeTab")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(tab);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
+            {openTabs.map((tab) => {
+              const tabDir = displayDir(tab);
+              return (
+                <button
+                  className={`workspace-tab${selectedPath === tab ? " workspace-tab--active" : ""}`}
+                  key={tab}
+                  onClick={() => setSelectedPath(tab)}
+                  title={tab}
+                  aria-label={basename(tab)}
+                >
+                  <FileText size={14} className="workspace-tab__icon" />
+                  <span className="workspace-tab__text">
+                    <span className="workspace-tab__name">{basename(tab)}</span>
+                    {tabDir && <span className="workspace-tab__dir">{tabDir}</span>}
+                  </span>
+                  <span
+                    className="workspace-tab__close"
+                    role="button"
+                    tabIndex={0}
+                    title={t("workspace.closeTab")}
+                    onClick={(e) => {
                       e.stopPropagation();
                       closeTab(tab);
-                    }
-                  }}
-                >
-                  <X size={12} />
-                </span>
-              </button>
-            ))}
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        closeTab(tab);
+                      }
+                    }}
+                  >
+                    <X size={12} />
+                  </span>
+                </button>
+              );
+            })}
             <button className="workspace-tab workspace-tab--new" onClick={openPickerTab} title={t("workspace.newTab")}>
               <Plus size={14} />
             </button>
@@ -450,11 +511,14 @@ export function WorkspacePanel({
             }}
             title={cwd}
           >
-            {shortCwd(cwd) || t("workspace.title")}
+            <span className="workspace-crumb__text">
+              <strong>{shortCwd(cwd) || t("workspace.title")}</strong>
+            </span>
           </button>
           {pathParts.map((part, index) => {
             const isLast = index === pathParts.length - 1;
             const dir = pathParts.slice(0, index + 1).join("/") + "/";
+            const crumbPath = isLast ? pathParts.slice(0, index + 1).join("/") : dir;
             return (
               <span className="workspace-crumb-group" key={`${part}-${index}`}>
                 <span>›</span>
@@ -467,15 +531,18 @@ export function WorkspacePanel({
                     setOpenDirs((prev) => new Set([...Array.from(prev), ...breadcrumbDirs, dir]));
                     void loadDir(dir);
                   }}
-                  title={isLast ? (selectedPath ?? undefined) : dir}
+                  title={crumbPath}
                 >
-                  {part}
+                  <span className="workspace-crumb__text">
+                    <strong>{part}</strong>
+                  </span>
                 </button>
               </span>
             );
           })}
           {preview && preview.size > 0 && <span className="workspace-preview__size">{formatBytes(preview.size)}</span>}
         </div>
+        {selectedPath && <WorkspaceFileSummary path={selectedPath} size={preview?.size} />}
 
         <div className="workspace-preview__body">
           {!selectedPath ? (
@@ -550,7 +617,11 @@ export function WorkspacePanel({
                     )}
                     <span className="workspace-tree__result">
                       <span className="workspace-tree__result-name">{basename(path)}</span>
-                      {dir && <span className="workspace-tree__result-dir">{dir}</span>}
+                      {dir && (
+                        <span className="workspace-tree__result-dir">
+                          {dir}
+                        </span>
+                      )}
                     </span>
                   </button>
                 );

@@ -45,12 +45,14 @@ export function Transcript({
   footerHeight = 0,
   onPrompt,
   onRewind,
+  onOpenHardware,
 }: {
   items: Item[];
   live?: LiveStream;
   footerHeight?: number;
   onPrompt: (text: string) => void;
   onRewind?: (turn: number, scope: string) => void;
+  onOpenHardware?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // stick tracks whether the view is pinned to the bottom; once the user scrolls
@@ -149,14 +151,17 @@ export function Transcript({
   // Each user message's turn = its ordinal among user messages, so a rewind
   // targets the matching checkpoint.
   const userTurn = new Map<string, number>();
+  const assistantTurn = new Map<string, number>();
   let nt = 0;
+  let na = 0;
   for (const it of items) {
     if (it.kind === "user") userTurn.set(it.id, nt++);
+    if (it.kind === "assistant") assistantTurn.set(it.id, na++);
   }
 
   return (
     <div className="transcript" ref={scrollRef} onScroll={onScroll}>
-      {items.length === 0 && <Welcome onPrompt={onPrompt} />}
+      {items.length === 0 && <Welcome onPrompt={onPrompt} onOpenHardware={onOpenHardware} />}
 
       {items.map((it) => {
         switch (it.kind) {
@@ -180,7 +185,7 @@ export function Transcript({
             // The streaming segment's text lives in `live`, not in items, so the
             // backlog ref stays stable per token; overlay it only on its own item.
             const shown = live && live.id === it.id ? { ...it, text: live.text, reasoning: live.reasoning, streaming: true } : it;
-            return <AssistantMessage key={it.id} item={shown} />;
+            return <AssistantMessage key={it.id} item={shown} turn={assistantTurn.get(it.id)} />;
           }
           case "tool":
             if (it.parentId) return null; // rendered nested under its parent

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { FileTerminal } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { CommandInfo } from "../lib/types";
 
@@ -34,6 +35,8 @@ export function SlashMenu({
         : kind === "skill"
           ? t("slash.skill")
           : "";
+  const commandFileName = (name: string) => `command_${name.replace(/[^A-Za-z0-9_-]+/g, "_") || "run"}.md`;
+
   return (
     <div className="slashmenu" role="listbox">
       {items.map((c, i) => (
@@ -49,10 +52,22 @@ export function SlashMenu({
           }}
           onMouseMove={() => onHover(i)}
         >
-          <span className="slashmenu__name">/{c.name}</span>
-          {c.hint && <span className="slashmenu__hint">{c.hint}</span>}
-          <span className="slashmenu__desc">{c.description}</span>
-          {kindTag(c.kind) && <span className="slashmenu__kind">{kindTag(c.kind)}</span>}
+          <FileTerminal size={13} className="slashmenu__command-icon" />
+          <span className="slashmenu__command">
+            <span className="slashmenu__command-head">
+              <span className="slashmenu__command-label">{t("slash.commandFile")}</span>
+              {kindTag(c.kind) && <span className="slashmenu__kind">{kindTag(c.kind)}</span>}
+            </span>
+            <span className="slashmenu__command-line">
+              <strong>{commandFileName(c.name)}</strong>
+              <small>{t("slash.commandRemark")}</small>
+            </span>
+            <span className="slashmenu__command-desc">
+              <code>/{c.name}</code>
+              {c.hint && <span className="slashmenu__hint">{c.hint}</span>}
+              <span>{c.description}</span>
+            </span>
+          </span>
         </button>
       ))}
     </div>

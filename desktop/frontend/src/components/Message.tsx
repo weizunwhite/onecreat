@@ -19,6 +19,7 @@ export function UserMessage({
   open?: boolean; // whether this message's rewind menu is the open one (lifted to Transcript)
   onToggle?: () => void;
   onRewind?: (turn: number, scope: string) => void;
+  onOpenFile?: (path: string) => void;
 }) {
   const t = useT();
   const canRewind = onRewind != null && turn != null;
@@ -27,7 +28,9 @@ export function UserMessage({
   return (
     <div className="msg msg--user">
       <span className="msg__caret">›</span>
-      <div className="msg__text">{displayText}</div>
+      <div className="msg__userbody">
+        <div className="msg__text">{displayText}</div>
+      </div>
       {canRewind && (
         <div className="rewind">
           <button className="rewind__btn" title={t("rewind.label")} onClick={onToggle}>
@@ -52,7 +55,13 @@ export function UserMessage({
 // memo: an unchanged message keeps a stable `item` ref across a streaming turn's
 // per-token re-renders, so only the live bubble re-parses markdown, not the whole
 // backlog.
-export const AssistantMessage = memo(function AssistantMessage({ item }: { item: AssistantItem }) {
+export const AssistantMessage = memo(function AssistantMessage({
+  item,
+}: {
+  item: AssistantItem;
+  turn?: number;
+  onOpenFile?: (path: string) => void;
+}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   return (

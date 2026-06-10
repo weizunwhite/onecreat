@@ -33,7 +33,7 @@ import (
 )
 
 // platforms are the manifest keys we publish. A built artifact is matched to a key
-// by substring (file names embed the key, e.g. Reasonix-darwin-arm64.zip), so the
+// by substring (file names embed the key, e.g. onecreat-darwin-arm64.zip), so the
 // generator and the updater agree on update.PlatformKey output.
 var platforms = []string{"darwin-arm64", "darwin-amd64", "windows-amd64", "linux-amd64"}
 
@@ -151,7 +151,7 @@ func signFiles(files []string) error {
 			return err
 		}
 		sig := minisign.SignWithComments(priv, data,
-			"file:"+filepath.Base(f), "Reasonix desktop release")
+			"file:"+filepath.Base(f), "onecreat desktop release")
 		out := f + ".minisig"
 		if err := os.WriteFile(out, sig, 0o644); err != nil {
 			return err

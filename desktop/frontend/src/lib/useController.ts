@@ -437,7 +437,11 @@ function reducer(s: State, a: Action): State {
   }
 }
 
-export function useController() {
+// useController 绑定到一个标签(tabId):订阅该标签的事件通道、加载它的会话。切换
+// tabId(用户切标签)时会重置 transcript 并重新加载目标标签的 Meta/History。命令
+// (send/cancel/approve…)打到后端「当前活动标签」——App 在切换时已调 SetActiveTab,
+// 所以 activeTabId 与后端活动标签一致,命令自然作用到本标签。
+export function useController(tabId: string) {
   const [state, dispatch] = useReducer(reducer, initialState);
   // A live mirror of state for event-handler callbacks (useCallback closures are
   // pinned to the first render); cancel() reads it to decide un-send vs. cancel.
@@ -460,7 +464,9 @@ export function useController() {
   }, []);
 
   useEffect(() => {
-    const off = onEvent((e) => {
+    // 切到这个标签时,先清掉上一个标签的 transcript,再订阅本标签通道并加载它的会话。
+    dispatch({ type: "reset" });
+    const off = onEvent(tabId, (e) => {
       dispatch({ type: "event", e });
       // The gauge's denominator (window) and post-turn prompt size come from the
       // kernel, not the stream — refresh once a turn settles. The wallet balance
@@ -491,7 +497,7 @@ export function useController() {
 
     // When boot.Build completes asynchronously, the Go side emits agent:ready.
     // Re-fetch session data so the UI reflects the now-available controller.
-    const offReady = onReady(() => {
+    const offReady = onReady(tabId, () => {
       void loadSessionData();
       app
         .Balance()
@@ -530,7 +536,7 @@ export function useController() {
       off();
       offReady();
     };
-  }, [loadSessionData]);
+  }, [loadSessionData, tabId]);
 
   const send = useCallback((displayText: string, submitText = displayText) => {
     dispatch({ type: "user", text: displayText });

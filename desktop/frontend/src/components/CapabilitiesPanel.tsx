@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { FileText, Folder } from "lucide-react";
 import { app } from "../lib/bridge";
+import { copyText } from "../lib/crash";
+import { basename, projectRemarkFor } from "../lib/fileRemarks";
 import { useT } from "../lib/i18n";
 import type { CapabilitiesView, MCPServerInput, ServerView, SkillRootView, SkillView } from "../lib/types";
 import { ResizableDrawer } from "./ResizableDrawer";
@@ -9,6 +12,32 @@ import { ResizableDrawer } from "./ResizableDrawer";
 // each server shows a connected/failed dot, transport, and tool/prompt/resource
 // counts, with add / remove / retry; skills list their scope and run mode.
 type CapTab = "servers" | "skills";
+
+function dirname(path: string): string {
+  const clean = path.replace(/\/$/, "");
+  const parts = clean.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return "";
+  const prefix = clean.startsWith("/") ? "/" : "";
+  return prefix + parts.slice(0, -1).join("/");
+}
+
+function CapabilityInventoryFile({ summary }: { summary: string }) {
+  const t = useT();
+
+  return (
+    <section className="cap-inventory-file" title={`capabilities.md · ${t("caps.inventoryRemark")}`}>
+      <FileText size={15} aria-hidden="true" />
+      <span className="cap-inventory-file__body">
+        <span className="cap-inventory-file__label">{t("caps.inventoryFile")}</span>
+        <span className="cap-inventory-file__line">
+          <strong>capabilities.md</strong>
+          <small>{t("caps.inventoryRemark")}</small>
+        </span>
+      </span>
+      {summary && <code>{summary}</code>}
+    </section>
+  );
+}
 
 export function CapabilitiesPanel({
   onClose,
@@ -120,6 +149,7 @@ export function CapabilitiesPanel({
           <div className="empty">{t("caps.loading")}</div>
         ) : (
           <div className="drawer__body">
+            <CapabilityInventoryFile summary={summary} />
             {err && <div className="banner banner--error">{err}</div>}
 
             <div className="cap-tabs" role="tablist" aria-label={t("caps.title")}>
@@ -129,7 +159,8 @@ export function CapabilitiesPanel({
                 aria-selected={tab === "servers"}
                 onClick={() => setTab("servers")}
               >
-                {t("caps.connectorsTab")}
+                <span>{t("caps.connectorsTab")}</span>
+                <code>mcp_servers.json</code>
               </button>
               <button
                 className={`cap-tab${tab === "skills" ? " cap-tab--active" : ""}`}
@@ -137,7 +168,8 @@ export function CapabilitiesPanel({
                 aria-selected={tab === "skills"}
                 onClick={() => setTab("skills")}
               >
-                {t("caps.skillsTab")}
+                <span>{t("caps.skillsTab")}</span>
+                <code>skills_index.md</code>
               </button>
             </div>
 
@@ -293,7 +325,7 @@ function SkillSources({
                   <span className={`cap-dot cap-dot--${skillRootDot(root)}`} />
                   <div className="cap-source__text">
                     <div className="cap-source__label">{skillRootLabel(root, t)}</div>
-                    <div className="cap-source__path" title={root.dir}>{root.dir}</div>
+                    <SkillRootPathSummary root={root} />
                     <div className="cap-source__meta">
                       <span>{skillRootStatus(root, t)}</span>
                       <span>{t("caps.skillRootCount", { skills: root.skills })}</span>
@@ -321,6 +353,25 @@ function SkillSources({
   );
 }
 
+function SkillRootPathSummary({ root }: { root: SkillRootView }) {
+  const t = useT();
+  const dir = dirname(root.dir);
+  const remark = projectRemarkFor(root.dir);
+  return (
+    <div className="cap-source-path" title={root.dir}>
+      <Folder size={13} aria-hidden="true" />
+      <span className="cap-source-path__body">
+        <span className="cap-source-path__label">{t("caps.sourceFolder")}</span>
+        <span className="cap-source-path__line">
+          <strong>{basename(root.dir)}</strong>
+          <small>{remark}</small>
+          {dir && <code>{dir}</code>}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function skillRootTone(root: SkillRootView): "active" | "empty" | "problem" {
   if (root.warning || root.status === "inactive" || root.status === "unreadable") return "problem";
   if (root.skills > 0) return "active";
@@ -341,9 +392,7 @@ function skillRootStatus(root: SkillRootView, t: ReturnType<typeof useT>): strin
 }
 
 function skillRootLabel(root: SkillRootView, t: ReturnType<typeof useT>): string {
-  const parts = root.dir.split(/[\\/]/).filter(Boolean);
-  const shortPath = parts.length >= 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : root.dir;
-  return `${skillScopeLabel(root.scope, t)} · ${shortPath}`;
+  return skillScopeLabel(root.scope, t);
 }
 
 function ServerGroup({
@@ -449,7 +498,7 @@ function FailedServersNotice({
                     <button className="btn btn--small" disabled={busy} onClick={() => onRetry(s.name)}>
                       {t("caps.retry")}
                     </button>
-                    <button className="btn btn--small" onClick={() => void navigator.clipboard?.writeText(error)}>
+                    <button className="btn btn--small" onClick={() => void copyText(error)}>
                       {t("common.copy")}
                     </button>
                     <button className="btn btn--small" onClick={() => onToggle(s.name)} aria-expanded={open}>

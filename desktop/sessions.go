@@ -24,9 +24,62 @@ var errActiveSession = errors.New("can't delete the session you're in — start 
 
 const sessionTitlesFile = ".titles.json"
 const sessionDisplayFile = ".display.json"
+const sessionCwdsFile = ".cwds.json" // basename -> 这条会话创建时的 workspace 路径,用于侧栏按文件夹分组
 
 func sessionTitlesPath(dir string) string  { return filepath.Join(dir, sessionTitlesFile) }
 func sessionDisplayPath(dir string) string { return filepath.Join(dir, sessionDisplayFile) }
+func sessionCwdsPath(dir string) string    { return filepath.Join(dir, sessionCwdsFile) }
+
+// loadSessionCwds 读取 basename→cwd 的映射(类似 loadSessionTitles)。
+func loadSessionCwds(dir string) map[string]string {
+	m := map[string]string{}
+	b, err := os.ReadFile(sessionCwdsPath(dir))
+	if err != nil {
+		return m
+	}
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+func saveSessionCwds(dir string, m map[string]string) error {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".cwds.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return fileutil.ReplaceFile(tmpPath, sessionCwdsPath(dir))
+}
+
+// rememberSessionCwd 在该 session 首次记录 cwd 时落盘,后续不覆盖
+// (会话归属哪个文件夹应当稳定,即便用户中途切换 workspace)。
+func rememberSessionCwd(dir, sessionPath, cwd string) error {
+	if strings.TrimSpace(sessionPath) == "" || strings.TrimSpace(cwd) == "" {
+		return nil
+	}
+	m := loadSessionCwds(dir)
+	key := filepath.Base(sessionPath)
+	if _, ok := m[key]; ok {
+		return nil // 已有记录,保持不变
+	}
+	m[key] = cwd
+	return saveSessionCwds(dir, m)
+}
 
 // loadSessionTitles reads the basename→title map (missing/corrupt → empty).
 func loadSessionTitles(dir string) map[string]string {
@@ -92,6 +145,12 @@ func deleteSessionFile(dir, sessionPath string) error {
 	if dm := loadSessionDisplays(dir); dm[filepath.Base(sessionPath)] != nil {
 		delete(dm, filepath.Base(sessionPath))
 		if err := saveSessionDisplays(dir, dm); err != nil {
+			return err
+		}
+	}
+	if cm := loadSessionCwds(dir); cm[filepath.Base(sessionPath)] != "" {
+		delete(cm, filepath.Base(sessionPath))
+		if err := saveSessionCwds(dir, cm); err != nil {
 			return err
 		}
 	}

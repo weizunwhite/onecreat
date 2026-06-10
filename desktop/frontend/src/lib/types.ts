@@ -119,6 +119,7 @@ export interface SessionMeta {
   lastActivityAt?: number; // unix milliseconds
   modTime: number; // compatibility alias for lastActivityAt
   current: boolean;
+  cwd?: string; // workspace path at session creation (for sidebar folder grouping)
 }
 
 export interface WorkspaceView {
@@ -139,6 +140,17 @@ export interface Meta {
   eventChannel: string;
   cwd: string;
   bypass?: boolean; // YOLO mode on (auto-approve every tool call)
+}
+
+// TabMeta 是一个任务标签的快照(对应 desktop/app.go 的 TabMeta)。每个标签是一个独立
+// 任务:自己的 controller + session,后台标签也并行跑。kind 决定显示对话还是硬件视图。
+export interface TabMeta {
+  id: string;
+  kind: string; // "chat" | "hardware"
+  label: string;
+  ready: boolean;
+  startupErr?: string;
+  active: boolean;
 }
 
 // Mode is the input mode cycled by Shift+Tab: normal → plan (read-only) → yolo
@@ -201,6 +213,124 @@ export interface CapabilitiesView {
   servers: ServerView[];
   skills: SkillView[];
   skillRoots: SkillRootView[];
+}
+export interface HardwareMCPView {
+  name: string;
+  available: boolean;
+  command: string;
+  source: string;
+  configured: boolean;
+  connected: boolean;
+  error?: string;
+}
+export interface HardwareToolchainView {
+  name: string;
+  command: string;
+  available: boolean;
+  path?: string;
+  version?: string;
+  hint?: string;
+}
+export interface HardwareBoardView {
+  port: string;
+  protocol?: string;
+  boardName?: string;
+  fqbn?: string;
+  core?: string;
+  properties?: string;
+}
+export interface HardwareDeviceView {
+  port: string;
+  description?: string;
+  hwid?: string;
+}
+export interface HardwareDetectView {
+  available: boolean;
+  workspace?: string;
+  projectDir?: string;
+  projectTypes: string[];
+  serialPorts: string[];
+  boards: HardwareBoardView[];
+  devices: HardwareDeviceView[];
+  toolchains: HardwareToolchainView[];
+  recommendations: string[];
+  espIdfOfficialMcp?: Record<string, string>;
+  error?: string;
+}
+export interface HardwareEvidenceStatusView {
+  available: boolean;
+  projectDir?: string;
+  platform?: string;
+  board?: string;
+  evidenceFile?: string;
+  recordCount: number;
+  currentRecordCount: number;
+  staleRecordCount: number;
+  status: string;
+  summary: string;
+  missingGroups: string[];
+  recommendations: string[];
+  error?: string;
+}
+
+// 写代码前硬注入 prompt 的板卡事实串（来自 hardware MCP 的 board_profile + 平台 API）。
+export interface HardwareBoardFactsView {
+  found: boolean;
+  facts: string;
+}
+
+export interface KnowledgeBaseView {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  documents: number;
+  chunks: number;
+}
+export interface KnowledgeDocumentView {
+  id: string;
+  baseId: string;
+  name: string;
+  originalPath: string;
+  storedPath?: string;
+  size: number;
+  importedAt: number;
+  status: string;
+  chunks: number;
+  error?: string;
+}
+export interface KnowledgeView {
+  storeDir: string;
+  mode: string;
+  supportedExtensions: string[];
+  bases: KnowledgeBaseView[];
+  documents: KnowledgeDocumentView[];
+}
+export interface KnowledgeImportIssue {
+  path: string;
+  error: string;
+}
+export interface KnowledgeImportResult {
+  imported: KnowledgeDocumentView[];
+  skipped: KnowledgeImportIssue[];
+}
+export interface KnowledgeMatchView {
+  baseId: string;
+  baseName: string;
+  documentId: string;
+  documentName: string;
+  chunkId: string;
+  chunkIndex: number;
+  text: string;
+  score: number;
+}
+export interface KnowledgeSearchResult {
+  query: string;
+  matches: KnowledgeMatchView[];
+}
+export interface KnowledgePromptView {
+  prompt: string;
+  sources: KnowledgeMatchView[];
 }
 export interface MCPServerInput {
   name: string;
@@ -343,6 +473,42 @@ export interface SettingsView {
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
   bypass: boolean; // live YOLO state (runtime-only) — whether approvals are skipped this session
+}
+
+// ReferenceFileResult 是 Composer 「📎 上传参考资料」按钮的返回。
+// 后端解析任意 Word/PDF/HTML/Markdown/代码 -> 一段可注入对话上下文的文本。
+export interface ReferenceFileResult {
+  name: string;
+  path: string;
+  text: string;
+  charCount: number;
+  truncated: boolean;
+  source: "file" | "url" | string;
+  formatHint: string;
+}
+
+// HardwareRunInput / Result drive the one-click 编译/烧录/看串口 buttons in HardwarePanel.
+// The backend dispatches to the right MCP tool by Platform; rootCause + fixHint come
+// from hardware_project_validate's error distillation (empty on success).
+export interface HardwareRunInput {
+  projectDir: string;
+  platform: string;
+  board?: string;
+  port?: string;
+  seconds?: number;
+}
+
+export interface HardwareRunResult {
+  status: "passed" | "failed" | "skipped" | string;
+  // 验证子类（如 python_syntax）：前端据此区分「真编译通过」与「仅 py_compile 语法通过」。
+  kind?: string;
+  summary: string;
+  output?: string;
+  rootCause?: string;
+  fixHint?: string;
+  nextStep?: string;
+  error?: string;
+  command?: string;
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;

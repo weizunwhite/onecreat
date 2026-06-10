@@ -106,7 +106,7 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
                     }}
                   />
                 )}
-                {tab === "updates" && <UpdatesSection configPath={s.configPath} />}
+                {tab === "updates" && <UpdatesSection />}
               </main>
             </div>
           </div>
@@ -825,7 +825,7 @@ const mb = (n: number) => (n / MB).toFixed(1);
 // UpdatesSection is the manual side of the auto-updater: it shows the running
 // version and a Check button, then the same state machine the top banner uses
 // (useUpdater) — available → install/download, with progress and errors inline.
-function UpdatesSection({ configPath }: { configPath: string }) {
+function UpdatesSection() {
   const t = useT();
   const { status, check, apply } = useUpdater();
   const [version, setVersion] = useState("");
@@ -872,11 +872,6 @@ function UpdatesSection({ configPath }: { configPath: string }) {
       {status.kind === "applying" && <div className="mem-hint">{t("updater.applying")}</div>}
       {status.kind === "done" && <div className="mem-hint">{t("updater.done")}</div>}
       {status.kind === "error" && <div className="banner banner--error">{t("updater.failed", { msg: status.message })}</div>}
-      {configPath && (
-        <div className="mem-hint settings-config-path" title={configPath}>
-          {t("settings.config", { path: configPath })}
-        </div>
-      )}
     </section>
   );
 }
