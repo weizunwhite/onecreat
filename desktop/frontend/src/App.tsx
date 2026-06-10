@@ -26,7 +26,7 @@ import {
   X,
 } from "lucide-react";
 import logo from "./assets/onecreat-logo.png";
-import { useT } from "./lib/i18n";
+import { useT, t as i18nT } from "./lib/i18n";
 import { useController } from "./lib/useController";
 import { Transcript } from "./components/Transcript";
 import { SessionArtifacts } from "./components/SessionArtifacts";
@@ -220,7 +220,7 @@ function relativeTime(ms: number): string {
 
 // 取路径最后一段作为文件夹显示名;空 cwd 归到「未关联文件夹」组。
 function cwdFolderLabel(cwd: string): string {
-  if (!cwd) return "未关联文件夹";
+  if (!cwd) return i18nT("sidebar.unlinkedFolder");
   const parts = cwd.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] || cwd;
 }
@@ -624,11 +624,12 @@ export default function App() {
       if (id === activeTabId) return;
       await app.SetActiveTab(id).catch(() => {});
       setActiveTabId(id);
-      const target = tabs.find((tab) => tab.id === id);
-      if (target) setMainView(target.kind === "hardware" ? "hardware" : "chat");
+      // P1 后硬件工作台是「工作区级」表面(单实例、作用于当前文件夹),不属于某个
+      // tab。切标签不再按 tab.kind 强切视图——否则全局 mainView 被各标签来回覆盖,
+      // 用户正看着硬件面板切个对话标签就被弹走。视图只由用户显式切换。
       void refreshTabs();
     },
-    [activeTabId, tabs, refreshTabs],
+    [activeTabId, refreshTabs],
   );
 
   // 新建任务标签:后端新起一个独立 controller(异步装配,期间 ready=false 显示 loading),
@@ -651,10 +652,8 @@ export default function App() {
       const list = await refreshTabs();
       if (id === activeTabId) {
         const next = list.find((tab) => tab.active) ?? list[list.length - 1];
-        if (next) {
-          setActiveTabId(next.id);
-          setMainView(next.kind === "hardware" ? "hardware" : "chat");
-        }
+        // 同 switchTab:关标签只换会话,不按 kind 强切视图。
+        if (next) setActiveTabId(next.id);
       }
     },
     [activeTabId, refreshTabs],
@@ -987,8 +986,8 @@ export default function App() {
             e.stopPropagation();
             toggleSessionPin(session.path);
           }}
-          title={sPinned ? "取消置顶" : "置顶对话"}
-          aria-label={sPinned ? "取消置顶" : "置顶对话"}
+          title={sPinned ? t("sidebar.unpin") : t("sidebar.pinSession")}
+          aria-label={sPinned ? t("sidebar.unpin") : t("sidebar.pinSession")}
         >
           <Pin size={12} className="sidebar-session__pin-on" />
           <PinOff size={12} className="sidebar-session__pin-off" />
@@ -997,7 +996,7 @@ export default function App() {
           className="sidebar-session__delete"
           onClick={(e) => {
             e.stopPropagation();
-            if (window.confirm(`删除会话「${sessionTitle(session, t("history.emptySession"))}」?`)) {
+            if (window.confirm(t("sidebar.deleteSessionConfirm", { title: sessionTitle(session, t("history.emptySession")) }))) {
               void onDeleteSession(session.path);
             }
           }}
@@ -1040,10 +1039,10 @@ export default function App() {
     setFolderMenu(null);
     const removable = group.sessions.filter((s) => !s.current);
     if (removable.length === 0) {
-      notice("该项目没有可删除的对话（正在用的那个不能删）", "warn");
+      notice(t("sidebar.noRemovable"), "warn");
       return;
     }
-    if (!window.confirm(`删除「${folderDisplayName(group.cwd, group.label)}」下的 ${removable.length} 个对话?`)) return;
+    if (!window.confirm(t("sidebar.deleteFolderConfirm", { name: folderDisplayName(group.cwd, group.label), count: removable.length }))) return;
     for (const s of removable) await deleteSession(s.path).catch(() => {});
     await refreshSessions();
   };
@@ -1067,14 +1066,14 @@ export default function App() {
           >
             <button className="sidebar-folder__pop-item" onClick={() => togglePin(folderMenu.group.cwd)}>
               <Pin size={13} />
-              {isPinned(folderMenu.group.cwd) ? "取消置顶" : "置顶项目"}
+              {isPinned(folderMenu.group.cwd) ? t("sidebar.unpin") : t("sidebar.pinFolder")}
             </button>
             <button
               className="sidebar-folder__pop-item"
               onClick={() => startEditFolder(folderMenu.group.cwd)}
             >
               <Pencil size={13} />
-              备注名（学生）
+              {t("sidebar.noteName")}
             </button>
             <button
               className="sidebar-folder__pop-item"
@@ -1082,14 +1081,14 @@ export default function App() {
               onClick={() => openFolderInFinder(folderMenu.group.cwd)}
             >
               <FolderOpen size={13} />
-              在文件夹中打开
+              {t("sidebar.openInFolder")}
             </button>
             <button
               className="sidebar-folder__pop-item sidebar-folder__pop-item--danger"
               onClick={() => void deleteFolderSessions(folderMenu.group)}
             >
               <Trash2 size={13} />
-              删除对话
+              {t("sidebar.deleteFolderSessions")}
             </button>
           </div>
         </>
@@ -1145,10 +1144,10 @@ export default function App() {
           <button
             className={`sidebar__hardware${mainView === "hardware" ? " sidebar__hardware--active" : ""}`}
             onClick={() => setMainView(mainView === "hardware" ? "chat" : "hardware")}
-            title="硬件编程工作台 — 选板卡、串口、开发环境,直接编译/烧录"
+            title={t("sidebar.hardwareTitle")}
           >
             <Cpu size={16} />
-            <span>硬件编程</span>
+            <span>{t("sidebar.hardware")}</span>
           </button>
 
           {/* 待办清单放侧栏(限高可滚动),不再挤占聊天区上方、遮挡模型回复 */}
@@ -1170,7 +1169,7 @@ export default function App() {
                   多任务时它作为切换器,后台任务照常并行跑。 */}
               {tabs.length > 1 && (
                 <div className="sidebar-tasks">
-                  <div className="sidebar__group-head">进行中</div>
+                  <div className="sidebar__group-head">{t("sidebar.inProgress")}</div>
                   {tabs.map((tab, idx) => (
                     <div
                       className={`sidebar-task${tab.id === activeTabId ? " sidebar-task--active" : ""}`}
@@ -1180,11 +1179,11 @@ export default function App() {
                         type="button"
                         className="sidebar-task__main"
                         onClick={() => void switchTab(tab.id)}
-                        title={tab.kind === "hardware" ? "硬件任务" : "对话任务"}
+                        title={tab.kind === "hardware" ? t("tabs.hardware") : t("tabs.chat")}
                       >
                         {tab.kind === "hardware" ? <Cpu size={14} /> : <MessageSquare size={14} />}
                         <span className="sidebar-task__label">
-                          {(tab.kind === "hardware" ? "硬件" : "对话") + " " + (idx + 1)}
+                          {(tab.kind === "hardware" ? t("tabs.hardware") : t("tabs.chat")) + " " + (idx + 1)}
                         </span>
                         {!tab.ready && <span className="sidebar-task__spin" aria-hidden />}
                       </button>
@@ -1231,7 +1230,7 @@ export default function App() {
                             className="sidebar-folder__edit-input"
                             value={editingNote}
                             autoFocus
-                            placeholder="备注名（如学生名）"
+                            placeholder={t("sidebar.notePlaceholder")}
                             onChange={(e) => setEditingNote(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === "Enter") saveFolderNote(group.cwd);
@@ -1265,8 +1264,8 @@ export default function App() {
                             type="button"
                             className="sidebar-folder__pin"
                             onClick={() => togglePin(group.cwd)}
-                            title="取消置顶"
-                            aria-label="取消置顶"
+                            title={t("sidebar.unpin")}
+                            aria-label={t("sidebar.unpin")}
                           >
                             <Pin size={11} className="sidebar-folder__pin-on" />
                             <PinOff size={11} className="sidebar-folder__pin-off" />

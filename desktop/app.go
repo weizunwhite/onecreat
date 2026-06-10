@@ -723,6 +723,15 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 		saveWorkspace(dir)
 		return dir, nil
 	}
+	// v1 限制防护:进程 cwd 是全局的,切换工作区只重建「活动」标签的 controller,
+	// 后台标签会继续按旧目录的相对路径读写(静默错位,极难排查)。开着多个任务
+	// 标签时直接拒绝并说明,让用户先收尾其他标签——诚实报错优于数据错位。
+	a.mu.RLock()
+	tabCount := len(a.tabs)
+	a.mu.RUnlock()
+	if tabCount > 1 {
+		return "", fmt.Errorf("当前开着 %d 个任务标签;切换项目文件夹前请先关闭其他任务标签(工作目录是全局的,后台任务会读写到错误的目录)", tabCount)
+	}
 	if err := os.Chdir(dir); err != nil {
 		return "", err
 	}

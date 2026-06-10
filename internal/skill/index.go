@@ -7,7 +7,10 @@ import (
 
 // IndexMaxChars caps the pinned skills-index block so it can't bloat the
 // cache-stable system-prompt prefix; bodies never enter the prefix.
-const IndexMaxChars = 4000
+// 12000:技能发现是垂直平台的命脉——老师装了 39 个教培技能时,4000 会把
+// 索引尾部的技能整条挤掉,弱模型(flash)就"看不见"它们、退回裸写。
+// 12000(约 3k token)能容纳 ~50 个技能的完整行,仍有硬上限防失控。
+const IndexMaxChars = 12000
 
 const missingDescPlaceholder = `(no description — frontmatter is missing a "description:" line; tell the user to add one)`
 
@@ -46,7 +49,9 @@ func indexLine(sk Skill) string {
 	if sk.RunAs == RunSubagent {
 		tag = " [🧬 subagent]"
 	}
-	max := 130 - len([]rune(sk.Name)) - len([]rune(tag))
+	// 220:技能描述的「Trigger on: 论文, 研究报告, 金鹏…」触发词通常在尾部,
+	// 130 会把它们齐刷刷剪掉——弱模型靠这些词匹配用户口语,剪掉=认不出技能。
+	max := 220 - len([]rune(sk.Name)) - len([]rune(tag))
 	clipped := clipRunes(desc, max)
 	if clipped == "" {
 		return "- " + sk.Name + tag

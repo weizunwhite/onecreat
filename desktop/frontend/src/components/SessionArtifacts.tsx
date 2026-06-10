@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, FolderOutput } from "lucide-react";
 import type { Item } from "../lib/useController";
 import { fileRemarkFor, type FileReference } from "../lib/fileRemarks";
+import { useT } from "../lib/i18n";
 import { FileReferenceStrip } from "./FileReferenceStrip";
 
 // 「本次产出」:把会话里 write_file / edit_file / multi_edit 成功写过的文件
@@ -25,6 +26,7 @@ export function SessionArtifacts({
   items: Item[];
   onOpenFile: (path: string) => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
 
   const files = useMemo<FileReference[]>(() => {
@@ -55,10 +57,10 @@ export function SessionArtifacts({
         type="button"
         className="session-artifacts__pill"
         onClick={() => setOpen((o) => !o)}
-        title="本次会话生成/修改过的文件"
+        title={t("artifacts.tooltip")}
       >
         <FolderOutput size={13} />
-        <span>本次产出</span>
+        <span>{t("artifacts.title")}</span>
         <small>{files.length}</small>
         {open ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
       </button>

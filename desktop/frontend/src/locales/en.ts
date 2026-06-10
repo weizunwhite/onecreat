@@ -60,6 +60,44 @@ export const en = {
   "sidebar.resize": "Resize sidebar",
   "drawer.resize": "Resize drawer",
 
+  // Sidebar: folder groups / pinning / notes / multi-task
+  "sidebar.unlinkedFolder": "Unlinked folder",
+  "sidebar.inProgress": "In progress",
+  "sidebar.pinSession": "Pin conversation",
+  "sidebar.unpin": "Unpin",
+  "sidebar.pinFolder": "Pin project",
+  "sidebar.noteName": "Note (student name)",
+  "sidebar.notePlaceholder": "Note (e.g. student name)",
+  "sidebar.openInFolder": "Reveal in folder",
+  "sidebar.deleteFolderSessions": "Delete conversations",
+  "sidebar.noRemovable": "No deletable conversations in this project (the active one can't be deleted)",
+  "sidebar.deleteFolderConfirm": "Delete {count} conversation(s) under \"{name}\"?",
+  "sidebar.deleteSessionConfirm": "Delete session \"{title}\"?",
+  "sidebar.hardware": "Hardware studio",
+  "sidebar.hardwareTitle": "Hardware workbench — pick board, port and toolchain; compile & flash directly",
+  "tabs.chat": "Chat",
+  "tabs.hardware": "Hardware",
+
+  // Session artifacts (files written during this session)
+  "artifacts.title": "Outputs",
+  "artifacts.tooltip": "Files created or modified in this session",
+
+  // Welcome vertical launch cards
+  "welcome.v.hardware.title": "Hardware project",
+  "welcome.v.hardware.desc": "Pick board, compile, flash, serial — open the hardware workbench",
+  "welcome.v.proposal.title": "Tech proposal",
+  "welcome.v.proposal.desc": "Hardware selection / system architecture / software flow",
+  "welcome.v.paper.title": "Competition paper",
+  "welcome.v.paper.desc": "Research report / paper for youth science competitions",
+  "welcome.v.lesson.title": "Lesson plan",
+  "welcome.v.lesson.desc": "Lesson plans for science-innovation project courses",
+  "welcome.v.tutorial.title": "Teacher manual",
+  "welcome.v.tutorial.desc": "Project tutoring manual teachers use in class",
+  "welcome.v.log.title": "Research log",
+  "welcome.v.log.desc": "Organize the project research log by timeline",
+  "welcome.v.jinpeng.title": "Jinpeng package",
+  "welcome.v.jinpeng.desc": "Jinpeng forum submission package (with anonymization)",
+
   // workspace panel
   "workspace.title": "Workspace",
   "workspace.open": "Open workspace panel",

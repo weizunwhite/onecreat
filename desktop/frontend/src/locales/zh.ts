@@ -61,6 +61,44 @@ export const zh: Record<DictKey, string> = {
   "sidebar.resize": "调整侧边栏宽度",
   "drawer.resize": "调整抽屉宽度",
 
+  // 侧边栏:文件夹分组 / 置顶 / 备注 / 多任务
+  "sidebar.unlinkedFolder": "未关联文件夹",
+  "sidebar.inProgress": "进行中",
+  "sidebar.pinSession": "置顶对话",
+  "sidebar.unpin": "取消置顶",
+  "sidebar.pinFolder": "置顶项目",
+  "sidebar.noteName": "备注名（学生）",
+  "sidebar.notePlaceholder": "备注名（如学生名）",
+  "sidebar.openInFolder": "在文件夹中打开",
+  "sidebar.deleteFolderSessions": "删除对话",
+  "sidebar.noRemovable": "该项目没有可删除的对话（正在用的那个不能删）",
+  "sidebar.deleteFolderConfirm": "删除「{name}」下的 {count} 个对话?",
+  "sidebar.deleteSessionConfirm": "删除会话「{title}」?",
+  "sidebar.hardware": "硬件编程",
+  "sidebar.hardwareTitle": "硬件编程工作台 — 选板卡、串口、开发环境,直接编译/烧录",
+  "tabs.chat": "对话",
+  "tabs.hardware": "硬件",
+
+  // 本次产出(会话写过的文件清单)
+  "artifacts.title": "本次产出",
+  "artifacts.tooltip": "本次会话生成/修改过的文件",
+
+  // 首页垂直启动卡
+  "welcome.v.hardware.title": "硬件项目",
+  "welcome.v.hardware.desc": "选板卡、编译、烧录、看串口 — 打开硬件工作台",
+  "welcome.v.proposal.title": "技术方案",
+  "welcome.v.proposal.desc": "硬件选型 / 系统架构 / 软件流程",
+  "welcome.v.paper.title": "竞赛论文",
+  "welcome.v.paper.desc": "生成青创赛研究报告 / 论文",
+  "welcome.v.lesson.title": "课程教案",
+  "welcome.v.lesson.desc": "科创项目课程的教案",
+  "welcome.v.tutorial.title": "教师辅导手册",
+  "welcome.v.tutorial.desc": "老师上课用的项目辅导手册",
+  "welcome.v.log.title": "研究日志",
+  "welcome.v.log.desc": "按时间线整理项目研究日志",
+  "welcome.v.jinpeng.title": "金鹏材料",
+  "welcome.v.jinpeng.desc": "金鹏论坛参赛包（含匿名化）",
+
   // 工作区面板
   "workspace.title": "工作区",
   "workspace.open": "打开工作区面板",
