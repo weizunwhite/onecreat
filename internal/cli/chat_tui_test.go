@@ -260,6 +260,10 @@ func isolateUserConfig(t *testing.T) {
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("AppData", filepath.Join(root, "AppData")) // os.UserConfigDir reads AppData on Windows
+	// REASONIX_CONFIG_DIR 优先于 HOME/XDG(见 config.userConfigPath);若外层环境
+	// (CI/包级 TestMain)设了它,这里必须一并按测试重定向,否则全包共享一个目录,
+	// 「不该写配置」类断言会被前面测试写的文件误伤。
+	t.Setenv("REASONIX_CONFIG_DIR", filepath.Join(root, "reasonix-config"))
 	t.Chdir(root)
 }
 

@@ -147,11 +147,6 @@ export const en = {
   "welcome.hintCommands": "commands",
   "welcome.hintFiles": "reference files",
   "welcome.hintSend": "send",
-  "welcome.exampleFile": "Starter file",
-  "welcome.exampleRemark": "Example task draft",
-  "welcome.ex1": "Explain this codebase's architecture",
-  "welcome.ex2": "Summarize the recent git changes",
-  "welcome.ex3": "Where is the agent run loop, and what does it do?",
 
   // composer
   "composer.placeholder": "Message onecreat…  ( / commands · @ files )",

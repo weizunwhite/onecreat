@@ -1666,47 +1666,92 @@ type moduleSpecMirror struct {
 //   - hardware_module_spec（板卡名当 module 查）：冷门平台 API 的正确 import、
 //     gotchas、最小示例（ESP32 LEDC / 行空板 pinpong / MaixCAM K230 maix.*）——
 //     这正是 flash 最容易编错库名和 API 的地方。
+// boardFactsCache 缓存按板卡查到的事实。catalog 内嵌在 MCP 二进制里、运行期不变,
+// 同一板卡反复点「写代码」没必要反复拉起 MCP 子进程(每次两个调用、各 15s 超时,
+// MCP 卡顿时按钮会冻很久)。只缓存「两个调用都成功」的结果——MCP 暂时性失败
+// 不能被记成永久没有事实。
+var (
+	boardFactsMu    sync.Mutex
+	boardFactsCache = map[string]HardwareBoardFactsView{}
+)
+
 func (a *App) HardwareBoardFacts(board, platform string) HardwareBoardFactsView {
 	board = strings.TrimSpace(board)
 	// 自定义板和「检测到的裸板」没有 catalog 事实，直接跳过
 	if board == "" || strings.EqualFold(board, "custom") || strings.HasPrefix(board, "detected:") {
 		return HardwareBoardFactsView{}
 	}
+	if strings.TrimSpace(platform) == "" {
+		platform = "auto"
+	}
+	cacheKey := strings.ToLower(board) + "|" + strings.ToLower(platform)
+	boardFactsMu.Lock()
+	if v, ok := boardFactsCache[cacheKey]; ok {
+		boardFactsMu.Unlock()
+		return v
+	}
+	boardFactsMu.Unlock()
+
 	command, _, err := resolveHardwareMCP()
 	if err != nil {
 		return HardwareBoardFactsView{}
 	}
-	if strings.TrimSpace(platform) == "" {
-		platform = "auto"
-	}
-	sections := make([]string, 0, 2)
 
-	// 1) 板卡 profile：电平 / 引脚 / 协议 / 常见失败
-	if text, e := callHardwareMCPTool(command, "hardware_board_profile",
-		map[string]any{"board": board, "platform": platform}, 15*time.Second); e == nil {
+	// 两个 MCP 调用互不依赖,并行跑:最坏等待从 30s 降到 15s。
+	var (
+		profileSection, apiSection string
+		profileErr, apiErr         error
+		wg                         sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		// 板卡 profile：电平 / 引脚 / 协议 / 常见失败
+		text, e := callHardwareMCPTool(command, "hardware_board_profile",
+			map[string]any{"board": board, "platform": platform}, 15*time.Second)
+		profileErr = e
+		if e != nil {
+			return
+		}
 		var bp boardProfileMirror
 		if json.Unmarshal([]byte(text), &bp) == nil && bp.Profile != nil {
-			if s := renderBoardProfileFacts(bp); s != "" {
-				sections = append(sections, s)
-			}
+			profileSection = renderBoardProfileFacts(bp)
 		}
-	}
-
-	// 2) 平台 API：把板卡名当 module 查，命中 platform_api 就拿到正确 import/坑/示例
-	if text, e := callHardwareMCPTool(command, "hardware_module_spec",
-		map[string]any{"modules": []string{board}, "board": board, "platform": platform}, 15*time.Second); e == nil {
+	}()
+	go func() {
+		defer wg.Done()
+		// 平台 API：把板卡名当 module 查，命中 platform_api 就拿到正确 import/坑/示例
+		text, e := callHardwareMCPTool(command, "hardware_module_spec",
+			map[string]any{"modules": []string{board}, "board": board, "platform": platform}, 15*time.Second)
+		apiErr = e
+		if e != nil {
+			return
+		}
 		var ms moduleSpecMirror
 		if json.Unmarshal([]byte(text), &ms) == nil {
-			if s := renderPlatformAPIFacts(ms); s != "" {
-				sections = append(sections, s)
-			}
+			apiSection = renderPlatformAPIFacts(ms)
 		}
-	}
+	}()
+	wg.Wait()
 
-	if len(sections) == 0 {
-		return HardwareBoardFactsView{}
+	sections := make([]string, 0, 2)
+	if profileSection != "" {
+		sections = append(sections, profileSection)
 	}
-	return HardwareBoardFactsView{Found: true, Facts: strings.Join(sections, "\n")}
+	if apiSection != "" {
+		sections = append(sections, apiSection)
+	}
+	view := HardwareBoardFactsView{}
+	if len(sections) > 0 {
+		view = HardwareBoardFactsView{Found: true, Facts: strings.Join(sections, "\n")}
+	}
+	// 两个调用都成功才缓存(含「确实没有该板事实」的合法空结果)
+	if profileErr == nil && apiErr == nil {
+		boardFactsMu.Lock()
+		boardFactsCache[cacheKey] = view
+		boardFactsMu.Unlock()
+	}
+	return view
 }
 
 // renderBoardProfileFacts 把板卡 profile 渲染成紧凑、学生可读的中文事实块。

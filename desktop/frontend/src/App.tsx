@@ -29,6 +29,7 @@ import logo from "./assets/onecreat-logo.png";
 import { useT } from "./lib/i18n";
 import { useController } from "./lib/useController";
 import { Transcript } from "./components/Transcript";
+import { SessionArtifacts } from "./components/SessionArtifacts";
 import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
@@ -1435,6 +1436,8 @@ export default function App() {
                     onRewind={rewind}
                     onOpenHardware={() => setMainView("hardware")}
                   />
+                  {/* 本次产出:聚合会话写过的文件,右下角浮条,点条目在工作区面板打开 */}
+                  <SessionArtifacts items={state.items} onOpenFile={openWorkspaceFile} />
                 </div>
                 <div className="main__view main__view--hardware" style={{ display: mainView === "hardware" ? undefined : "none" }}>
                   <HardwarePanel

@@ -782,7 +782,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		a.hooks.PostToolUse(ctx, call.Name, json.RawMessage(call.Arguments), result)
 	}
 	if err != nil {
-		body, truncMsg := truncateToolOutput(fmt.Sprintf("error: %v\n%s", err, result))
+		body, truncMsg := truncateToolOutput(fmt.Sprintf("error: %v\n%s", err, result), toolOutputLimit(call.Name))
 		return toolOutcome{output: body, errMsg: firstLine(err.Error()), truncated: truncMsg != "", truncMsg: truncMsg}
 	}
 	// A foreground `task` sub-agent just finished — its result is the final answer.
@@ -791,7 +791,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	if a.hooks != nil && call.Name == "task" && !isBackgroundTaskCall(call.Arguments) {
 		a.hooks.SubagentStop(ctx, result)
 	}
-	body, truncMsg := truncateToolOutput(result)
+	body, truncMsg := truncateToolOutput(result, toolOutputLimit(call.Name))
 	return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
 }
 
@@ -821,15 +821,32 @@ func firstLine(s string) string {
 	return s
 }
 
-// truncateToolOutput head+tails s when it exceeds maxToolOutputBytes, slicing
+// skillToolOutputBytes 是 run_skill 单独的输出上限。run_skill 的结果是技能正文
+// (用户本地的可信指令),教案/竞赛论文这类大技能 70KB+ 很常见;按通用 32KB 头尾
+// 截断会把技能方法论拦腰砍掉,模型只看到半套指令、执行残缺。放宽到 256KB——
+// 仍保留上限防病态技能,但完整覆盖现有最大技能。
+const skillToolOutputBytes = 256 * 1024
+
+// toolOutputLimit returns the per-tool result cap fed to truncateToolOutput.
+func toolOutputLimit(name string) int {
+	if name == "run_skill" {
+		return skillToolOutputBytes
+	}
+	return maxToolOutputBytes
+}
+
+// truncateToolOutput head+tails s when it exceeds limit, slicing
 // on rune boundaries so we never split a multibyte glyph. Returns the possibly
 // trimmed body plus a one-line user-facing notice when truncation happened
 // (empty when it didn't, without the "· " display prefix).
-func truncateToolOutput(s string) (string, string) {
-	if len(s) <= maxToolOutputBytes {
+func truncateToolOutput(s string, limit int) (string, string) {
+	if limit <= 0 {
+		limit = maxToolOutputBytes
+	}
+	if len(s) <= limit {
 		return s, ""
 	}
-	keep := maxToolOutputBytes / 2
+	keep := limit / 2
 	head := snapToRuneBoundary(s, 0, keep)
 	tail := snapToRuneBoundary(s, len(s)-keep, len(s))
 	omitted := len(s) - len(head) - len(tail)

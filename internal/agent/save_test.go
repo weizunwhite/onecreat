@@ -125,6 +125,27 @@ func TestListSessionsOrdersByMTime(t *testing.T) {
 	}
 }
 
+// TestPreviewStripsPlanModeMarker 钉死「(空会话)」回归:计划模式把一整段
+// "[Plan mode — …]" 标记注入用户消息开头,预览只取前 80 字会全被标记占满,
+// 侧栏显示成空会话。预览必须剥掉标记、露出用户真正的问题。
+func TestPreviewStripsPlanModeMarker(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("")
+	marker := "[Plan mode — read-only. Explore the codebase first (read_file, ls, grep, glob, web_fetch, task are available; writers are refused by the harness), then present a LAYERED plan as your reply and stop.]"
+	s.Add(provider.Message{Role: provider.RoleUser, Content: marker + "\n\n讲讲这个代码库的架构"})
+	path := filepath.Join(dir, "plan.jsonl")
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	preview, turns := previewSession(path)
+	if turns != 1 {
+		t.Fatalf("turns = %d, want 1", turns)
+	}
+	if preview != "讲讲这个代码库的架构" {
+		t.Fatalf("preview = %q, want 用户真实问题(标记应被剥掉)", preview)
+	}
+}
+
 func TestListSessionsOrdersByLastActivityMeta(t *testing.T) {
 	dir := t.TempDir()
 	aPath := filepath.Join(dir, "a.jsonl")

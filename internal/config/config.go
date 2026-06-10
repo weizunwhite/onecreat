@@ -566,6 +566,12 @@ func mergeFile(cfg *Config, path string) error {
 }
 
 func userConfigPath() string {
+	// REASONIX_CONFIG_DIR 覆盖平台默认位置:测试用它隔离到临时目录
+	// (否则 config.Load 会读真实的用户全局配置,测试结果随开发机配置漂移),
+	// 便携部署也可用它把配置固定到自带目录。
+	if dir := strings.TrimSpace(os.Getenv("REASONIX_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, "config.toml")
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""

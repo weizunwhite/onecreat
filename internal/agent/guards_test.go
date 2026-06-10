@@ -21,7 +21,7 @@ import (
 // never rewrite content that already fits.
 func TestTruncateToolOutputUnderCap(t *testing.T) {
 	in := strings.Repeat("a", maxToolOutputBytes)
-	got, notice := truncateToolOutput(in)
+	got, notice := truncateToolOutput(in, maxToolOutputBytes)
 	if got != in {
 		t.Errorf("payload at exactly the cap was rewritten")
 	}
@@ -36,7 +36,7 @@ func TestTruncateToolOutputHeadTail(t *testing.T) {
 	head := strings.Repeat("H", maxToolOutputBytes)
 	tail := strings.Repeat("T", maxToolOutputBytes)
 	in := head + tail
-	out, notice := truncateToolOutput(in)
+	out, notice := truncateToolOutput(in, maxToolOutputBytes)
 	if !strings.HasPrefix(out, "H") || !strings.HasSuffix(out, "T") {
 		t.Errorf("head/tail not preserved at the edges: %q…%q", out[:20], out[len(out)-20:])
 	}
@@ -55,9 +55,23 @@ func TestTruncateToolOutputHeadTail(t *testing.T) {
 // head and tail cut points; the result must still be valid UTF-8.
 func TestTruncateToolOutputRuneBoundaries(t *testing.T) {
 	in := strings.Repeat("中", maxToolOutputBytes) // 3 bytes each — guarantees a cut inside a rune
-	out, _ := truncateToolOutput(in)
+	out, _ := truncateToolOutput(in, maxToolOutputBytes)
 	if !utf8.ValidString(out) {
 		t.Errorf("truncated output is not valid UTF-8")
+	}
+}
+
+// TestRunSkillOutputLimitFitsLargeSkills 钉死「大技能不被砍」:教案/竞赛论文这类
+// 技能正文 70KB+(实测 76KB 被 32KB 通用上限拦腰截断过),run_skill 的专属上限
+// 必须完整放过它们;普通工具仍维持 32KB 防爆窗。
+func TestRunSkillOutputLimitFitsLargeSkills(t *testing.T) {
+	if toolOutputLimit("read_file") != maxToolOutputBytes {
+		t.Errorf("普通工具上限应保持 %d", maxToolOutputBytes)
+	}
+	skillBody := strings.Repeat("课堂教学方法论。", 10*1024) // ~80KB,超过通用 32KB 上限
+	out, notice := truncateToolOutput(skillBody, toolOutputLimit("run_skill"))
+	if out != skillBody || notice != "" {
+		t.Errorf("80KB 技能正文不应被截断(notice=%q)", notice)
 	}
 }
 

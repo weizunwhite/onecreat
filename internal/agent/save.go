@@ -168,6 +168,14 @@ func previewSession(path string) (string, int) {
 			turns++
 			if first == "" {
 				s := strings.TrimSpace(m.Content)
+				// 计划模式会在用户消息前注入一整段 "[Plan mode — …]" 标记;预览只取
+				// 前 80 字时全被标记占满,侧栏会显示成「(空会话)」。先剥掉这个前缀
+				// 再截断,让预览露出用户真正的问题。
+				if strings.HasPrefix(s, "[Plan mode") {
+					if i := strings.IndexByte(s, ']'); i >= 0 {
+						s = strings.TrimSpace(s[i+1:])
+					}
+				}
 				if r := []rune(s); len(r) > 80 {
 					s = string(r[:77]) + "…"
 				}

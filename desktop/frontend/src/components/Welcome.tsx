@@ -68,6 +68,11 @@ const VERTICALS: Vertical[] = [
   },
 ];
 
+// 产出归属约定:内容类垂直生成的文档统一进 产出/ 子目录,
+// 不混进代码目录——老师在一个固定地方就能找到所有材料。
+const OUTPUT_DIR_NOTE =
+  "\n\n约定:本任务生成的所有文档(docx/pptx/xlsx/图表/Markdown 等)统一保存到当前项目的 产出/ 子目录(例如 产出/研究报告.docx),不要散落在项目根目录或代码目录里;如目录不存在请先创建。";
+
 export function Welcome({
   onPrompt,
   onOpenHardware,
@@ -79,7 +84,7 @@ export function Welcome({
 
   const launch = (v: Vertical) => {
     if (v.openHardware) onOpenHardware?.();
-    else if (v.prompt) onPrompt(v.prompt);
+    else if (v.prompt) onPrompt(v.prompt + OUTPUT_DIR_NOTE);
   };
 
   return (

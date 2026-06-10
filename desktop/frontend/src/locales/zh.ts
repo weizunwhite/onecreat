@@ -148,11 +148,6 @@ export const zh: Record<DictKey, string> = {
   "welcome.hintCommands": "命令",
   "welcome.hintFiles": "引用文件",
   "welcome.hintSend": "发送",
-  "welcome.exampleFile": "起始文件",
-  "welcome.exampleRemark": "示例任务草稿",
-  "welcome.ex1": "讲讲这个代码库的架构",
-  "welcome.ex2": "总结最近的 git 改动",
-  "welcome.ex3": "智能体的运行主循环在哪，它做了什么？",
 
   // 输入框
   "composer.placeholder": "给 onecreat 发消息…  ( / 命令 · @ 文件 )",
