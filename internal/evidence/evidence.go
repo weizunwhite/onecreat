@@ -165,6 +165,25 @@ func (l *Ledger) HasSuccessfulReadOrWrite(paths []string) bool {
 	return l.hasSuccessfulPaths(paths, func(r Receipt) bool { return r.Read || r.Write })
 }
 
+// LatestTodos returns the todo list from this turn's most recent successful
+// todo_write receipt. ok is false when the turn recorded none — the turn-end
+// reconcile in agent.Run treats that as "nothing to reconcile" (a stale list
+// from an earlier turn is not this turn's claim, so it is never nagged about).
+func (l *Ledger) LatestTodos() (todos []TodoItem, ok bool) {
+	if l == nil {
+		return nil, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := len(l.receipts) - 1; i >= 0; i-- {
+		r := l.receipts[i]
+		if r.Success && r.ToolName == "todo_write" {
+			return r.Todos, true
+		}
+	}
+	return nil, false
+}
+
 func (l *Ledger) MatchLatestTodoStep(step string) (TodoStepMatch, bool) {
 	step = strings.TrimSpace(step)
 	if l == nil || step == "" {
