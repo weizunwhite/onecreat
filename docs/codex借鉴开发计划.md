@@ -67,16 +67,20 @@
 - **测试**:TestComposeCoachMode(默认原样 / 注入在尾部 / 每轮持续 / 清空复位);
   既有 previewSession 测试 + 新剥离逻辑覆盖预览干净。root 40 包 + desktop + tsc 全绿。
 
-### 4. 系统提示措辞借鉴(纯文案)
+### 4. 系统提示措辞借鉴(纯文案)✅ 已完成
 
-**参考**:`codex-rs/core/gpt_5_codex_prompt.md`(69 行)。值得抄的点:
-- "不要以'总结/Summary'开头,直接进入正文";
-- "不要复述命令输出,用户看得到";
-- 文件引用统一 `path:line` 格式(前端可点击);
-- 最终回答:简洁、分组清晰、不嵌套项目符号。
+**参考**:`codex-rs/core/gpt_5_codex_prompt.md`。
 
-**设计**:把以上 3~4 条揉进 onecreat 默认 system prompt(internal/config 的 DefaultSystemPrompt)与硬件 prompt 的输出要求段;中文表述。不改结构,只改文案。
-- **验证**:tsc/go 编译即可(纯文案),人工抽查一轮回答风格。
+**实际改动**:`internal/config/config.go` 的 `DefaultSystemPrompt` 新增一段
+`Responding`(保持英文,缓存稳定 + 与现有一致;flag 模型双语可读),精炼 4 条:
+- 解释改动直接进正文,别以 "summary" 开头(原 "briefly summarize" 易诱导套话);
+- 不复述命令/工具输出(用户看得到),只提炼关键结果;
+- 引用文件用 inline-code 包裹的 `path:line`(前端 extractFileReferences 能提取成
+  可点击文件条),不用 file://、vscode://、https:// 链接;
+- 扁平项目符号、简单确认不堆格式。
+- 范围:只改全局默认 prompt(ROI 最高);硬件 prompt 已很长很细、主出接线图/代码,
+  不顺手膨胀。注意 raw string 内不能放字面反引号,示例用文字"(backticks)"表达。
+- **验证**:root 40 包 + desktop 全绿(无测试 hard-code prompt 内容);纯文案。
 
 ### 5. 底部状态条增强(/status 思想)
 
