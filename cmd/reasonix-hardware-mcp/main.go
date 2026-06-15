@@ -325,6 +325,16 @@ var tools = []toolDef{
 		run: runArduinoCompile,
 	},
 	{
+		name:        "arduino_core_install",
+		description: "Install an arduino-cli board core (runs core update-index + core install). 用于修复『arduino-cli 已装但开发板 core 未安装』的首次编译失败。core 取值：arduino:avr(UNO/Nano/Mega)、esp32:esp32(ESP32 全系)、esp8266:esp8266、rp2040:rp2040。ESP32/ESP8266/RP2040 的第三方 board manager URL 已内置，会联网下载（可能几分钟）。",
+		readOnly:    false,
+		schema: objectSchema(map[string]any{
+			"core":            map[string]any{"type": "string", "description": "Core id, e.g. arduino:avr / esp32:esp32 / esp8266:esp8266 / rp2040:rp2040."},
+			"timeout_seconds": map[string]any{"type": "number", "description": "Command timeout. Defaults to 600 (core 下载较慢)."},
+		}, []string{"core"}),
+		run: runArduinoCoreInstall,
+	},
+	{
 		name:        "arduino_upload",
 		description: "Upload a previously compiled or buildable Arduino sketch with arduino-cli. arduino-cli upload does not compile by itself.",
 		readOnly:    false,
@@ -2942,6 +2952,56 @@ func runArduinoCompile(args map[string]any) (string, error) {
 	return runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", defaultTimeout))
 }
 
+// arduinoCoreURLs 返回第三方 core 需要的 board manager URL(esp32/esp8266/rp2040);官方
+// arduino:avr 不需要,返回空。
+func arduinoCoreURLs(core string) string {
+	switch {
+	case strings.HasPrefix(core, "esp32"):
+		return "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
+	case strings.HasPrefix(core, "esp8266"):
+		return "https://arduino.esp8266.com/stable/package_esp8266com_index.json"
+	case strings.HasPrefix(core, "rp2040"):
+		return "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
+	default:
+		return ""
+	}
+}
+
+// runArduinoCoreInstall 安装一个 arduino-cli 开发板 core(先 update-index 再 install),
+// 修复"工具已装但 core 未装"的首次编译墙。第三方 core 自动带上 board manager URL。
+func runArduinoCoreInstall(args map[string]any) (string, error) {
+	core := strings.TrimSpace(strArg(args, "core", ""))
+	if core == "" {
+		return "", errors.New("core 必填(如 arduino:avr / esp32:esp32 / esp8266:esp8266 / rp2040:rp2040)")
+	}
+	timeout := timeoutArg(args, "timeout_seconds", 600*time.Second)
+	urls := arduinoCoreURLs(core)
+	var b strings.Builder
+
+	idxArgs := []string{"core", "update-index"}
+	if urls != "" {
+		idxArgs = append(idxArgs, "--additional-urls", urls)
+	}
+	idxOut, err := runCommandText("arduino-cli", idxArgs, "", timeout)
+	b.WriteString(idxOut)
+	if err != nil {
+		return b.String(), fmt.Errorf("core update-index 失败: %w", err)
+	}
+
+	instArgs := []string{"core", "install", core}
+	if urls != "" {
+		instArgs = append(instArgs, "--additional-urls", urls)
+	}
+	instOut, err := runCommandText("arduino-cli", instArgs, "", timeout)
+	b.WriteString("\n")
+	b.WriteString(instOut)
+	if err != nil {
+		return b.String(), fmt.Errorf("core install %s 失败: %w", core, err)
+	}
+	b.WriteString("\n\n✅ core 安装完成,现在重新调用 arduino_compile(FQBN 不变)即可。")
+	return b.String(), nil
+}
+
 func runArduinoUpload(args map[string]any) (string, error) {
 	sketch, err := requirePath(args, "sketch_dir")
 	if err != nil {
@@ -3388,6 +3448,11 @@ func runCommandText(name string, args []string, dir string, timeout time.Duratio
 	}
 	bin, err := exec.LookPath(name)
 	if err != nil {
+		// 带上安装指引:弱模型可能跳过 hardware_detect 直接调动作工具,撞到 not-found 时
+		// 也要能自愈,而不是只有一句干瘪报错(#3)。
+		if hint := toolInstallHint(name); hint != "" {
+			return "", fmt.Errorf("%s 不在 PATH 上(未安装或未配置)。%s", name, hint)
+		}
 		return "", fmt.Errorf("%s not found on PATH", name)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -3610,6 +3675,34 @@ func detectEIMToolchain() toolchainReport {
 		report.Version = firstLine(strings.TrimSpace(string(out)))
 	}
 	return report
+}
+
+// toolInstallHint 给常见硬件工具链一句按 OS 区分的安装指引。过去安装提示偏 macOS/brew,
+// Windows 老师照着会报错;这里按当前 OS 给对应命令(#3)。
+func toolInstallHint(name string) string {
+	mac, win, linux := "", "", ""
+	switch name {
+	case "arduino-cli":
+		mac, win, linux = "brew install arduino-cli", "winget install ArduinoSA.CLI(或 choco install arduino-cli)", "见 arduino.github.io/arduino-cli 安装脚本"
+	case "pio", "platformio":
+		mac, win, linux = "brew install platformio(或 pip install platformio)", "pip install platformio(需先装 Python)", "pip install platformio"
+	case "idf.py":
+		mac, win, linux = "按 ESP-IDF 官方 get-started 安装并 source export.sh", "用 ESP-IDF Windows Installer(含 idf.py)", "ESP-IDF install.sh 后 source export.sh"
+	case "mpremote":
+		mac, win, linux = "pip install mpremote", "pip install mpremote", "pip install mpremote"
+	case "sshpass":
+		mac, win, linux = "brew install esolitos/ipa/sshpass", "Windows 无 sshpass:改用 ssh 密钥免密,或在 WSL 里运行", "apt install sshpass"
+	default:
+		return ""
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return "安装方式(Windows):" + win
+	case "linux":
+		return "安装方式(Linux):" + linux
+	default:
+		return "安装方式(macOS):" + mac
+	}
 }
 
 func detectToolchain(label string, versionCmd []string, hint string) toolchainReport {
@@ -3974,7 +4067,7 @@ func coreFromFQBN(fqbn string) string {
 
 func listSerialPorts() []string {
 	if runtime.GOOS == "windows" {
-		return []string{}
+		return listWindowsSerialPorts()
 	}
 	patterns := []string{
 		"/dev/cu.usb*", "/dev/cu.SLAB*", "/dev/cu.wchusb*", "/dev/cu.Bluetooth*",
@@ -3996,6 +4089,50 @@ func listSerialPorts() []string {
 	}
 	sort.Strings(ports)
 	return ports
+}
+
+// listWindowsSerialPorts 枚举 Windows 上的 COM 口。以前这里直接返回空,Windows 老师在装好
+// arduino-cli/pio 之前根本看不到串口、烧录键锁死(国内机房绝大多数是 Windows)。用
+// PowerShell 的 SerialPort.GetPortNames()——不依赖第三方库、最可靠;回退到注册表
+// SERIALCOMM(reg query)。返回如 ["COM3","COM5"](#3a)。
+func listWindowsSerialPorts() []string {
+	if out, err := runCommandText("powershell", []string{"-NoProfile", "-Command", "[System.IO.Ports.SerialPort]::GetPortNames()"}, "", 8*time.Second); err == nil {
+		if ports := parseWindowsCOMPorts(out); len(ports) > 0 {
+			return ports
+		}
+	}
+	if out, err := runCommandText("reg", []string{"query", `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`}, "", 8*time.Second); err == nil {
+		if ports := parseWindowsCOMPorts(out); len(ports) > 0 {
+			return ports
+		}
+	}
+	return []string{}
+}
+
+// parseWindowsCOMPorts 从命令输出里抽出形如 COM<数字> 的端口名(去重排序)。
+func parseWindowsCOMPorts(output string) []string {
+	seen := map[string]bool{}
+	var ports []string
+	for _, tok := range strings.Fields(strings.ReplaceAll(output, "\r", " ")) {
+		if isWindowsCOMPort(tok) && !seen[tok] {
+			seen[tok] = true
+			ports = append(ports, tok)
+		}
+	}
+	sort.Strings(ports)
+	return ports
+}
+
+func isWindowsCOMPort(s string) bool {
+	if len(s) < 4 || !strings.EqualFold(s[:3], "COM") {
+		return false
+	}
+	for _, c := range s[3:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func isLikelyHardwareSerialPort(path string) bool {
@@ -5184,6 +5321,21 @@ func builtInRepairRules() []repairRule {
 			AutoRepairTool:   "hardware_project_context",
 			ManualSteps:      []string{"调用 hardware_project_context 补齐缺失上下文", "读取 docs/board_profile.md 再出接线方案", "更新真实引脚和外设后重新 audit"},
 			EvidenceRequired: []string{"audit"},
+		},
+		{
+			Code:           "arduino_core_not_installed",
+			Title:          "编译失败：arduino-cli 已装但开发板 core 未安装（全新环境首次编译最常见）",
+			Platforms:      []string{"arduino"}, // 仅 arduino-cli 路径;PlatformIO 自管 core,不适用
+
+			DetectedBy:     []string{"Platform .* not found", "Platform .* not installed", "platform is not installed", "Error during build: Platform", "Unknown FQBN", "core .* not installed", "no instance of FQBN"},
+			AutoRepairTool: "arduino_core_install",
+			ManualSteps: []string{
+				"这不是代码问题：arduino-cli 在 PATH 里，但对应开发板的 core 没装。先用 arduino-cli core list 看已装的 core。",
+				"直接调用 mcp__hardware__arduino_core_install core=<对应core>，它会自动 update-index 并安装（联网下载，几分钟）。对应关系：Arduino UNO/Nano/Mega → arduino:avr；ESP32 全系 → esp32:esp32；ESP8266 → esp8266:esp8266；树莓派 Pico/RP2040 → rp2040:rp2040。",
+				"ESP32/ESP8266/RP2040 的 core 需要第三方 board manager URL，arduino_core_install 已内置这些 URL，不必手动配。",
+				"core 装好后重新调用 arduino_compile（FQBN 不变），编译应能通过；再继续 upload/monitor。",
+			},
+			EvidenceRequired: []string{"compile"},
 		},
 		{
 			Code:             "missing_library_dependency",

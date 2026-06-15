@@ -84,6 +84,37 @@ func TestRepairCatalogListsAutoAndManualRules(t *testing.T) {
 	}
 }
 
+// #3b 回归:arduino 平台的修复目录必须包含"core 未安装"规则,并指向 arduino_core_install
+// 自动修复工具(这是全新环境首次编译最常见、过去无规则可循的墙)。
+func TestRepairCatalogHasCoreNotInstalledRule(t *testing.T) {
+	out, err := runRepairCatalog(map[string]any{"platform": "arduino"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"arduino_core_not_installed", "arduino_core_install", "core 未安装"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("arduino repair catalog missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// #3a 回归:Windows COM 口解析能从 PowerShell GetPortNames / reg query 输出里抽出端口。
+func TestParseWindowsCOMPorts(t *testing.T) {
+	psOut := "$ powershell ...\nCOM3\r\nCOM10\r\nCOM3\r\n"
+	got := parseWindowsCOMPorts(psOut)
+	if len(got) != 2 || got[0] != "COM10" || got[1] != "COM3" {
+		t.Fatalf("powershell parse = %v, want [COM10 COM3] (去重排序)", got)
+	}
+	regOut := "HKEY_LOCAL_MACHINE\\HARDWARE\\DEVICEMAP\\SERIALCOMM\n    \\Device\\Serial0    REG_SZ    COM4\n    \\Device\\USBSER000    REG_SZ    COM7\n"
+	got = parseWindowsCOMPorts(regOut)
+	if len(got) != 2 || got[0] != "COM4" || got[1] != "COM7" {
+		t.Fatalf("reg parse = %v, want [COM4 COM7]", got)
+	}
+	if len(parseWindowsCOMPorts("no ports here\nCOMMENT something")) != 0 {
+		t.Fatal("must not match COMMENT or non-COM tokens")
+	}
+}
+
 func TestScaffoldPlatformIOMapsESP32S3Board(t *testing.T) {
 	dir := t.TempDir()
 	oldWD, err := os.Getwd()
