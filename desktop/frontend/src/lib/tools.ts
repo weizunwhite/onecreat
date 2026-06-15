@@ -54,6 +54,86 @@ export function subjectOf(name: string, args: string): string {
   }
 }
 
+// friendlyLabel 把工具调用翻译成一句「人话」动作短语,给非技术用户看(简洁模式标题)。
+// 例:bash 跑 `pio run -t upload` → 「烧录到开发板」。返回空串表示没有对应人话,
+// 调用方回退到原始工具名。覆盖内置工具 + 硬件 MCP 工具(mcp__hardware__*)。
+export function friendlyLabel(name: string, args: string): string {
+  const a = parse(args);
+  // 先按工具名里的关键词归类(硬件 MCP 工具名形如 mcp__hardware__arduino_upload)
+  const n = name.toLowerCase();
+  if (/upload|flash|烧录/.test(n)) return t("tool.do.upload");
+  if (/compile|build/.test(n)) return t("tool.do.compile");
+  if (/monitor|serial/.test(n)) return t("tool.do.monitor");
+  if (/detect/.test(n)) return t("tool.do.detectHw");
+  if (/scaffold/.test(n)) return t("tool.do.scaffold");
+  if (/install/.test(n)) return t("tool.do.install");
+  if (n.includes("mcp__hardware__") || n.startsWith("arduino_") || n.startsWith("esp_")) {
+    return t("tool.do.hardware");
+  }
+  switch (name) {
+    case "read_file":
+      return t("tool.do.read");
+    case "write_file":
+      return t("tool.do.write");
+    case "edit_file":
+    case "multi_edit":
+      return t("tool.do.edit");
+    case "grep":
+    case "glob":
+      return t("tool.do.search");
+    case "ls":
+      return t("tool.do.list");
+    case "web_fetch":
+      return t("tool.do.web");
+    case "task":
+      return t("tool.do.task");
+    case "remember":
+      return t("tool.do.remember");
+    case "bash":
+      return bashLabel(str(a, "command"));
+  }
+  return "";
+}
+
+// bashLabel 看 bash 命令内容,归到具体动作(编译/烧录/安装/Git/找板子/跑命令)。
+function bashLabel(cmd: string): string {
+  const c = cmd.toLowerCase();
+  if (/(-t\s+upload|arduino-cli\s+upload|esptool|write_flash|idf\.py.*flash|\bupload\b)/.test(c)) {
+    return t("tool.do.upload");
+  }
+  if (/(pio\s+run|arduino-cli\s+compile|idf\.py\s+build|\bcmake\b|\bmake\b|\bcompile\b)/.test(c)) {
+    return t("tool.do.compile");
+  }
+  if (/(pip\s+install|lib\s+install|core\s+install|npm\s+install|pnpm\s+(install|add)|brew\s+install|apt(-get)?\s+install)/.test(c)) {
+    return t("tool.do.install");
+  }
+  if (/(^|\s)git(\s|$)/.test(c)) return t("tool.do.git");
+  if (/(\/dev\/cu\.|\/dev\/tty|monitor|\bscreen\b|usbserial)/.test(c)) return t("tool.do.findBoard");
+  return t("tool.do.bash");
+}
+
+// friendlySubject 给简洁模式用:文件类工具显示文件名(去路径),搜索显示关键词,
+// bash/硬件等返回空串(原始命令藏进「详情」,不在标题暴露看不懂的命令)。
+export function friendlySubject(name: string, args: string): string {
+  const a = parse(args);
+  switch (name) {
+    case "read_file":
+    case "write_file":
+    case "edit_file":
+    case "multi_edit": {
+      const p = str(a, "path") || str(a, "file_path");
+      if (!p) return "";
+      const base = p.split("/").pop();
+      return base || p;
+    }
+    case "grep":
+    case "glob":
+      return str(a, "pattern");
+    default:
+      return "";
+  }
+}
+
 // diffsFor returns the before/after pairs a writer tool's card renders inline:
 // edit_file is one pair, write_file is an all-add (empty original), multi_edit is
 // one pair per step. Returns [] for non-writers, so the card folds args/output

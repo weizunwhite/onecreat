@@ -3,6 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 import { useT } from "../lib/i18n";
+import { useDetailMode } from "../lib/detailMode";
 import type { Item } from "../lib/useController";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -63,10 +64,12 @@ export const AssistantMessage = memo(function AssistantMessage({
   onOpenFile?: (path: string) => void;
 }) {
   const t = useT();
+  const detail = useDetailMode();
   const [open, setOpen] = useState(false);
   return (
     <div className="msg msg--assistant">
-      {item.reasoning && (
+      {/* 思考过程只在「详细模式」显示;简洁模式下对学生/老师隐藏,减少噪音 */}
+      {detail && item.reasoning && (
         <div className="reasoning">
           <button className="reasoning__toggle" onClick={() => setOpen((v) => !v)}>
             <ChevronRight

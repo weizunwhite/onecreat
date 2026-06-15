@@ -6,6 +6,7 @@ import {
   Brain,
   Blocks,
   Cpu,
+  Eye,
   FolderClosed,
   FolderOpen,
   ChevronDown,
@@ -66,6 +67,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
 import { app, onEvent } from "./lib/bridge";
 import { parseTodos } from "./lib/tools";
+import { useDetailMode, toggleDetailMode } from "./lib/detailMode";
 import { sessionActivityTime } from "./lib/session";
 import type { MemoryView, Mode, SessionMeta, TabMeta } from "./lib/types";
 import { loadLayoutSize, saveLayoutSize } from "./lib/layoutPreferences";
@@ -359,6 +361,7 @@ export default function App() {
     saveDoc,
   } = useController(activeTabId);
   const t = useT();
+  const detailMode = useDetailMode(); // 简洁(默认) vs 详细 显示开关
   const [mode, setMode] = useState<Mode>("normal");
   // 协作模式 persona key(""=默认)。setCoach 作用于「活动 tab」的 controller,
   // 所以换模式或切 tab 时都重新注入,让新 tab 也续上当前 persona。
@@ -1444,6 +1447,14 @@ export default function App() {
               {workspacePanelOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
             </button>
             <div className="topbar__actions">
+              <button
+                className={detailMode ? "chip chip--on topbar__detail-toggle" : "chip topbar__detail-toggle"}
+                onClick={() => toggleDetailMode()}
+                title={t("detail.toggleTitle")}
+              >
+                <Eye size={13} />
+                <span>{detailMode ? t("detail.detailed") : t("detail.simple")}</span>
+              </button>
               <button className="chip chip--icon" onClick={() => void openHistory()} title={t("topbar.history")}>
                 <History size={13} />
               </button>

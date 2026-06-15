@@ -3,14 +3,19 @@ import {
   Ban,
   Check,
   ChevronRight,
+  Cpu,
+  Download,
+  Eye,
   FilePen,
   FileText,
   FolderOpen,
   Globe,
+  Hammer,
   Loader2,
   ListTree,
   Search,
   SquareTerminal,
+  Upload,
   Wrench,
   X,
   type LucideIcon,
@@ -18,7 +23,8 @@ import {
 import { CodeViewer } from "./CodeViewer";
 import { DiffView } from "./DiffView";
 import { useT } from "../lib/i18n";
-import { diffsFor, subjectOf, summarize } from "../lib/tools";
+import { diffsFor, friendlyLabel, friendlySubject, subjectOf, summarize } from "../lib/tools";
+import { useDetailMode } from "../lib/detailMode";
 import type { Item } from "../lib/useController";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -35,6 +41,26 @@ const ICONS: Record<string, LucideIcon> = {
   web_fetch: Globe,
   task: ListTree,
 };
+
+// pickIcon 给硬件/编译/烧录这类工具配更贴切的图标(简洁模式下尤其有用),
+// 内置文件工具仍走 ICONS。bash 按命令内容猜图标。
+function pickIcon(name: string, args: string): LucideIcon {
+  if (ICONS[name]) return ICONS[name];
+  const n = name.toLowerCase();
+  if (/upload|flash/.test(n)) return Upload;
+  if (/compile|build/.test(n)) return Hammer;
+  if (/monitor|serial/.test(n)) return Eye;
+  if (/install/.test(n)) return Download;
+  if (/detect|hardware|arduino_|esp_|mcp__hardware__/.test(n)) return Cpu;
+  if (name === "bash") {
+    const c = subjectOf("bash", args).toLowerCase();
+    if (/(-t\s+upload|esptool|write_flash|\bupload\b)/.test(c)) return Upload;
+    if (/(pio\s+run|arduino-cli\s+compile|\bmake\b|cmake|\bcompile\b)/.test(c)) return Hammer;
+    if (/install/.test(c)) return Download;
+    if (/(\/dev\/cu\.|usbserial|monitor)/.test(c)) return Cpu;
+  }
+  return Wrench;
+}
 
 function pretty(json: string): string {
   try {
@@ -63,11 +89,19 @@ export const ToolCard = memo(function ToolCard({
   onOpenFile?: (path: string) => void;
 }) {
   const t = useT();
+  const detail = useDetailMode();
   const diffs = diffsFor(item.name, item.args);
   const subject = subjectOf(item.name, item.args);
-  const Icon = ICONS[item.name] ?? Wrench;
+  const Icon = pickIcon(item.name, item.args);
   const nested = subcalls ?? [];
   const hasNested = nested.length > 0;
+
+  // 简洁模式:标题显示「人话」动作(如「烧录到开发板」),subject 只留文件名、
+  // 原始命令藏进可展开的「详情」(教学价值:想学的能展开看真命令)。
+  // 详细模式:显示原始工具名 + 完整命令(给老师/高年级)。
+  const friendly = friendlyLabel(item.name, item.args);
+  const displayName = detail || !friendly ? item.name : friendly;
+  const displaySubject = detail ? subject : friendlySubject(item.name, item.args);
 
   // A task's summary is its step count; everything else derives from the result.
   const summary =
@@ -102,8 +136,8 @@ export const ToolCard = memo(function ToolCard({
           <span className="tool__chevron tool__chevron--placeholder" />
         )}
         <Icon className="tool__icon" size={14} />
-        <span className="tool__name">{item.name}</span>
-        {subject && <span className="tool__subject">{subject}</span>}
+        <span className="tool__name">{displayName}</span>
+        {displaySubject && <span className="tool__subject">{displaySubject}</span>}
         <span className="tool__meta">
           <StatusGlyph status={item.status} />
         </span>
