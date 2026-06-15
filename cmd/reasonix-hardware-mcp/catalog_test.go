@@ -107,6 +107,25 @@ func TestRaspberryPiPlatformAPI(t *testing.T) {
 	}
 }
 
+// K230(嘉楠官方板,CanMV)和 MaixCAM(Sipeed 板,MaixPy v4)是两套 API,
+// "K230" 不能再被 maixcam 平台 API 劫持,否则 CanMV 用户拿到错的 MaixPy 写法。
+func TestK230NotHijackedByMaixCAMAPI(t *testing.T) {
+	k := resolveModule("K230", "", "")
+	if !k.Matched {
+		t.Fatalf("K230 应能匹配到目录条目,got %+v", k)
+	}
+	if k.Kind == "platform_api" {
+		t.Fatalf("K230(CanMV 开发板)不应解析成 MaixCAM 的 MaixPy platform_api,got kind=%q name=%q", k.Kind, k.Name)
+	}
+	// MaixCAM / maixpy 仍然走 MaixPy 平台 API。
+	for _, q := range []string{"MaixCAM", "maixpy"} {
+		r := resolveModule(q, "", "")
+		if r.Kind != "platform_api" {
+			t.Errorf("%q 仍应解析成 MaixPy platform_api,got kind=%q", q, r.Kind)
+		}
+	}
+}
+
 // 行空板:GPIO 来自 pinpong,不是 unihiker —— P5-pro 正是错在这。
 func TestUnihikerPlatformAPI(t *testing.T) {
 	r := resolveModule("unihiker", "", "")

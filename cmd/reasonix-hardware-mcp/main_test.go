@@ -614,6 +614,22 @@ func planHasTool(steps []deviceVerifyPlanStep, tool string) bool {
 	return false
 }
 
+// 知识库一致性自检:每个支持的平台都必须有一个在注册表里真实存在、平台匹配的
+// defaultBoard;否则脚手架/board_profile 注入会静默落空,弱模型拿不到板卡事实。
+func TestPlatformDefaultBoardsExist(t *testing.T) {
+	platforms := []string{"arduino", "platformio", "esp_idf", "micropython", "unihiker_python", "maixcam_python", "raspberry_pi_python"}
+	for _, p := range platforms {
+		db := defaultBoard(p)
+		if db == "" {
+			t.Errorf("平台 %q 没有 defaultBoard", p)
+			continue
+		}
+		if _, ok := findBoardProfile(db, p); !ok {
+			t.Errorf("平台 %q 的 defaultBoard=%q 在注册表里找不到匹配 profile", p, db)
+		}
+	}
+}
+
 func findDeployStep(steps []deviceVerifyPlanStep) *deviceVerifyPlanStep {
 	for i := range steps {
 		if steps[i].Tool == "ssh_deploy_run" {

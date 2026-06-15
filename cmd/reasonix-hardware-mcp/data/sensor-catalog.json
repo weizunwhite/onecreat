@@ -1724,7 +1724,7 @@
         "platformio": []
       },
       "voltage": "5V",
-      "notes": "性能强于K210; 自带摄像头; 支持人体检测/人脸识别; CanMV框架",
+      "notes": "嘉楠官方K230开发板,用CanMV框架(MicroPython风格,与Sipeed MaixCAM的MaixPy v4不是一套API,别混用); 自带摄像头; 支持人体检测/人脸识别; 性能强于K210",
       "difficulty": "advanced",
       "used_in_projects": [
         "智能语音垃圾桶"
