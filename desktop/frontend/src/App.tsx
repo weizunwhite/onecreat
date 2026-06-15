@@ -1041,7 +1041,12 @@ export default function App() {
           disabled={state.running || session.current}
           title={session.path}
         >
-          <span className="sidebar-session__title">{sessionTitle(session, t("history.emptySession"))}</span>
+          <span className="sidebar-session__title">
+            {session.kind === "hardware" && (
+              <Cpu size={11} className="sidebar-session__kind" aria-label="硬件项目" />
+            )}
+            {sessionTitle(session, t("history.emptySession"))}
+          </span>
           <span className="sidebar-session__meta">
             {session.current ? t("history.current") : relativeTime(sessionActivityTime(session))}
           </span>

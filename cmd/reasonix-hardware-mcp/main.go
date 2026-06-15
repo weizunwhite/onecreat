@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"reasonix/internal/hardware/boards"
 )
 
 var version = "dev"
@@ -485,15 +488,16 @@ func textResult(text string, isError bool) map[string]any {
 // --- tool handlers ---
 
 type detectReport struct {
-	Workspace       string            `json:"workspace"`
-	ProjectDir      string            `json:"projectDir"`
-	ProjectTypes    []string          `json:"projectTypes"`
-	SerialPorts     []string          `json:"serialPorts"`
-	Boards          []boardReport     `json:"boards"`
-	Devices         []deviceReport    `json:"devices"`
-	Toolchains      []toolchainReport `json:"toolchains"`
-	Recommendations []string          `json:"recommendations"`
-	ESPIDFOfficial  map[string]string `json:"espIdfOfficialMcp"`
+	Workspace       string               `json:"workspace"`
+	ProjectDir      string               `json:"projectDir"`
+	ProjectTypes    []string             `json:"projectTypes"`
+	SerialPorts     []string             `json:"serialPorts"`
+	Boards          []boardReport        `json:"boards"`
+	Devices         []deviceReport       `json:"devices"`
+	Toolchains      []toolchainReport    `json:"toolchains"`
+	NetworkBoards   []networkBoardReport `json:"networkBoards"`
+	Recommendations []string             `json:"recommendations"`
+	ESPIDFOfficial  map[string]string    `json:"espIdfOfficialMcp"`
 }
 
 type boardReport struct {
@@ -538,38 +542,10 @@ type boardProfileSummary struct {
 	Aliases          []string `json:"aliases,omitempty"`
 }
 
-type boardProfile struct {
-	ID                   string         `json:"id"`
-	Label                string         `json:"label"`
-	Platform             string         `json:"platform"`
-	Board                string         `json:"board"`
-	DefaultFramework     string         `json:"defaultFramework"`
-	ArduinoFQBN          string         `json:"arduinoFqbn,omitempty"`
-	PlatformIOEnv        string         `json:"platformioEnv,omitempty"`
-	PlatformIOBoard      string         `json:"platformioBoard,omitempty"`
-	ESPIDFTarget         string         `json:"espIdfTarget,omitempty"`
-	UploadMethod         string         `json:"uploadMethod"`
-	DefaultBaud          int            `json:"defaultBaud"`
-	LogicVoltage         string         `json:"logicVoltage"`
-	PowerNotes           string         `json:"powerNotes"`
-	RecommendedProtocols []string       `json:"recommendedProtocols"`
-	DefaultPins          []boardPinRule `json:"defaultPins"`
-	RiskyPins            []boardPinRule `json:"riskyPins"`
-	Toolchains           []string       `json:"toolchains"`
-	ValidationFlow       []string       `json:"validationFlow"`
-	CommonFailures       []string       `json:"commonFailures"`
-	TeachingNotes        []string       `json:"teachingNotes"`
-	Aliases              []string       `json:"aliases,omitempty"`
-}
-
-type boardPinRule struct {
-	Name      string   `json:"name"`
-	Pins      []string `json:"pins"`
-	Protocol  string   `json:"protocol"`
-	Direction string   `json:"direction,omitempty"`
-	Voltage   string   `json:"voltage"`
-	Notes     string   `json:"notes"`
-}
+// boardProfile / boardPinRule 现在是共享数据驱动注册表 internal/hardware/boards 的
+// 类型别名:板卡事实统一长在 boards.json,桌面端与 MCP 走同一份,扩板=改 JSON。
+type boardProfile = boards.Board
+type boardPinRule = boards.PinRule
 
 func runHardwareDetect(args map[string]any) (string, error) {
 	cwd, _ := os.Getwd()
@@ -596,6 +572,7 @@ func runHardwareDetect(args map[string]any) (string, error) {
 			detectToolchain("scp", []string{"scp"}, "Install OpenSSH client."),
 		},
 	}
+	report.NetworkBoards = detectNetworkBoards()
 	report.ESPIDFOfficial = espIDFMCPHint(absProject, "esp-idf-tools", hasEIM() && !resolveLocalESPIDF().Available)
 	report.Recommendations = recommendations(report)
 	return prettyJSON(report), nil
@@ -4132,13 +4109,47 @@ func firstLineWithPrefix(output, prefix string) string {
 	return ""
 }
 
+// networkBoardReport 描述"不走串口"的网络型板卡(行空板等):它们通过 USB 网络
+// 或 WiFi 以 SSH 方式连接,串口列表永远是空的——必须单独探测并明示,否则用户
+// (实测连创始人本人)会误以为板子没连上。
+type networkBoardReport struct {
+	Name      string `json:"name"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	Reachable bool   `json:"reachable"`
+	Notes     string `json:"notes,omitempty"`
+}
+
+// detectNetworkBoards 只探已知出厂地址(TCP 拨 SSH 端口,800ms 超时),
+// 不广播、不扫网段;只返回可达的,避免面板挂一排灰色噪音。
+func detectNetworkBoards() []networkBoardReport {
+	known := []networkBoardReport{
+		{Name: "Unihiker 行空板", Host: "10.1.2.3", Port: 22,
+			Notes: "USB 网络模式出厂地址;SSH 默认 root/dfrobot,部署运行用 ssh_deploy_run"},
+	}
+	out := []networkBoardReport{}
+	for _, b := range known {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(b.Host, strconv.Itoa(b.Port)), 800*time.Millisecond)
+		if err != nil {
+			continue
+		}
+		conn.Close()
+		b.Reachable = true
+		out = append(out, b)
+	}
+	return out
+}
+
 func recommendations(r detectReport) []string {
 	rec := []string{}
 	tool := map[string]bool{}
 	for _, t := range r.Toolchains {
 		tool[t.Name] = t.Available
 	}
-	if len(r.SerialPorts) == 0 {
+	for _, nb := range r.NetworkBoards {
+		rec = append(rec, "检测到 "+nb.Name+"（网络连接 "+nb.Host+"，SSH 可达）——该板卡不走串口，「串口无设备」属正常；"+nb.Notes+"。")
+	}
+	if len(r.SerialPorts) == 0 && len(r.NetworkBoards) == 0 {
 		rec = append(rec, "未发现常见 USB 串口；请检查数据线、驱动、开发板供电，或手动指定端口。")
 	}
 	if len(r.Boards) > 0 {
@@ -4825,190 +4836,8 @@ func defaultHardwareConnections(platform, board string) []hardwareConnection {
 	}
 }
 
-func builtInBoardProfiles() []boardProfile {
-	return []boardProfile{
-		{
-			ID:                   "arduino_uno",
-			Label:                "Arduino UNO",
-			Platform:             "arduino",
-			Board:                "uno",
-			DefaultFramework:     "Arduino IDE / Arduino CLI",
-			ArduinoFQBN:          "arduino:avr:uno",
-			UploadMethod:         "USB serial bootloader",
-			DefaultBaud:          115200,
-			LogicVoltage:         "5V",
-			PowerNotes:           "USB 5V 供电；电机、舵机和大电流负载必须独立供电并共地。",
-			RecommendedProtocols: []string{"GPIO", "ADC", "I2C", "SPI", "UART"},
-			DefaultPins: []boardPinRule{
-				{Name: "板载 LED", Pins: []string{"D13"}, Protocol: "GPIO", Direction: "output", Voltage: "5V", Notes: "最小验证输出，不需要外接 LED。"},
-				{Name: "I2C", Pins: []string{"A4/SDA", "A5/SCL"}, Protocol: "I2C", Direction: "bidirectional", Voltage: "5V", Notes: "多个 I2C 设备可共享，但地址不能冲突。"},
-				{Name: "UART", Pins: []string{"D0/RX", "D1/TX"}, Protocol: "UART", Direction: "bidirectional", Voltage: "5V", Notes: "与 USB 串口共用，调试时避免接外部 UART。"},
-			},
-			RiskyPins: []boardPinRule{
-				{Name: "USB 串口占用", Pins: []string{"D0", "D1"}, Protocol: "UART", Voltage: "5V", Notes: "烧录和 Serial 调试时不要同时接外设。"},
-				{Name: "电流限制", Pins: []string{"任意 IO"}, Protocol: "GPIO", Voltage: "5V", Notes: "不要直接驱动电机、继电器线圈或大功率 LED。"},
-			},
-			Toolchains:     []string{"arduino-cli", "Arduino IDE"},
-			ValidationFlow: []string{"arduino_compile", "arduino_upload", "arduino_monitor_sample", "hardware_evidence_record"},
-			CommonFailures: []string{"fqbn 不匹配", "D0/D1 串口被占用", "库未安装", "执行器未独立供电"},
-			TeachingNotes:  []string{"UNO RAM 只有 2KB，避免大数组和大字符串。", "先用 D13 板载 LED 验证上传链路，再接外设。"},
-			Aliases:        []string{"arduino", "uno", "arduino_uno"},
-		},
-		{
-			ID:                   "arduino_nano",
-			Label:                "Arduino Nano",
-			Platform:             "arduino",
-			Board:                "nano",
-			DefaultFramework:     "Arduino IDE / Arduino CLI",
-			ArduinoFQBN:          "arduino:avr:nano",
-			UploadMethod:         "USB serial bootloader",
-			DefaultBaud:          115200,
-			LogicVoltage:         "5V",
-			PowerNotes:           "Nano 供电和 UNO 类似；电机/舵机必须独立供电并共地。",
-			RecommendedProtocols: []string{"GPIO", "ADC", "I2C", "SPI", "UART"},
-			DefaultPins: []boardPinRule{
-				{Name: "板载 LED", Pins: []string{"D13"}, Protocol: "GPIO", Direction: "output", Voltage: "5V", Notes: "最小验证输出。"},
-				{Name: "I2C", Pins: []string{"A4/SDA", "A5/SCL"}, Protocol: "I2C", Direction: "bidirectional", Voltage: "5V", Notes: "传感器总线优先选择。"},
-			},
-			RiskyPins: []boardPinRule{
-				{Name: "USB 串口占用", Pins: []string{"D0", "D1"}, Protocol: "UART", Voltage: "5V", Notes: "烧录和 Serial 调试时避免外接 UART。"},
-			},
-			Toolchains:     []string{"arduino-cli", "Arduino IDE"},
-			ValidationFlow: []string{"arduino_compile", "arduino_upload", "arduino_monitor_sample", "hardware_evidence_record"},
-			CommonFailures: []string{"bootloader 版本不匹配", "串口芯片驱动缺失", "库未安装", "执行器供电不足"},
-			TeachingNotes:  []string{"Nano 常见 CH340 串口芯片，Windows 客户端要准备驱动。"},
-			Aliases:        []string{"nano", "arduino_nano"},
-		},
-		{
-			ID:                   "esp32_arduino",
-			Label:                "ESP32 Dev Module",
-			Platform:             "platformio",
-			Board:                "esp32dev",
-			DefaultFramework:     "Arduino / PlatformIO",
-			ArduinoFQBN:          "esp32:esp32:esp32",
-			PlatformIOEnv:        "esp32dev",
-			PlatformIOBoard:      "esp32dev",
-			ESPIDFTarget:         "esp32",
-			UploadMethod:         "USB serial bootloader, sometimes requires BOOT button",
-			DefaultBaud:          115200,
-			LogicVoltage:         "3.3V",
-			PowerNotes:           "USB 5V 供电，IO 逻辑 3.3V；5V 传感器信号接入前必须确认电平转换。",
-			RecommendedProtocols: []string{"UART", "I2C", "SPI", "WiFi/HTTP", "WiFi/MQTT", "BLE"},
-			DefaultPins: []boardPinRule{
-				{Name: "板载 LED", Pins: []string{"GPIO2"}, Protocol: "GPIO", Direction: "output", Voltage: "3.3V", Notes: "很多 ESP32 DevKit 可用；部分板卡没有板载 LED，需确认。"},
-				{Name: "I2C 默认", Pins: []string{"GPIO21/SDA", "GPIO22/SCL"}, Protocol: "I2C", Direction: "bidirectional", Voltage: "3.3V", Notes: "适合多个传感器共线。"},
-				{Name: "板间 UART", Pins: []string{"GPIO16/RX2", "GPIO17/TX2", "GND"}, Protocol: "UART", Direction: "bidirectional", Voltage: "3.3V", Notes: "推荐用于 ESP32 与 Arduino/MaixCAM/Unihiker 通信。"},
-			},
-			RiskyPins: []boardPinRule{
-				{Name: "启动绑带脚", Pins: []string{"GPIO0", "GPIO2", "GPIO12", "GPIO15"}, Protocol: "BOOT_STRAP", Voltage: "3.3V", Notes: "上电状态会影响启动；接外设前确认不会拉错电平。"},
-				{Name: "Flash 占用", Pins: []string{"GPIO6", "GPIO7", "GPIO8", "GPIO9", "GPIO10", "GPIO11"}, Protocol: "FLASH", Voltage: "3.3V", Notes: "通常连接片上 Flash，不要作为普通 IO。"},
-				{Name: "输入限定", Pins: []string{"GPIO34", "GPIO35", "GPIO36", "GPIO39"}, Protocol: "INPUT_ONLY", Voltage: "3.3V", Notes: "只能输入，不能驱动 LED/继电器/蜂鸣器。"},
-			},
-			Toolchains:     []string{"PlatformIO", "arduino-cli"},
-			ValidationFlow: []string{"hardware_project_audit", "hardware_project_validate", "platformio_run upload", "platformio_run monitor", "hardware_evidence_record"},
-			CommonFailures: []string{"PlatformIO 根目录 .ino 不参与构建", "端口不存在或被占用", "上传时需要按 BOOT", "5V 模块直接接 3.3V IO", "WiFi AP 启动但手机连错网络"},
-			TeachingNotes:  []string{"先验证 Serial 日志和最小 WiFi/AP，再接传感器和执行器。", "网页项目要明确 ESP32 负责服务页面，游戏逻辑可运行在手机浏览器。"},
-			Aliases:        []string{"esp32", "esp32dev", "esp32_dev", "esp32_arduino", "esp32_dev_module", "ESP32 Dev Module"},
-		},
-		{
-			ID:                   "esp32_idf",
-			Label:                "ESP32 ESP-IDF",
-			Platform:             "esp_idf",
-			Board:                "esp32",
-			DefaultFramework:     "ESP-IDF",
-			ESPIDFTarget:         "esp32",
-			UploadMethod:         "idf.py flash monitor",
-			DefaultBaud:          115200,
-			LogicVoltage:         "3.3V",
-			PowerNotes:           "ESP-IDF 项目先确认 target 和 sdkconfig，再连接外设。",
-			RecommendedProtocols: []string{"UART", "I2C", "SPI", "WiFi", "BLE", "FreeRTOS task"},
-			DefaultPins: []boardPinRule{
-				{Name: "日志串口", Pins: []string{"USB"}, Protocol: "USB_SERIAL", Direction: "debug", Voltage: "3.3V", Notes: "先用 monitor 验证 app_main 持续运行。"},
-			},
-			RiskyPins: []boardPinRule{
-				{Name: "启动/Flash 风险脚", Pins: []string{"GPIO0", "GPIO2", "GPIO6-GPIO11", "GPIO12", "GPIO15"}, Protocol: "BOOT_OR_FLASH", Voltage: "3.3V", Notes: "同 ESP32 Arduino，真实接线前必须确认。"},
-			},
-			Toolchains:     []string{"ESP-IDF", "EIM", "esp-idf-tools MCP"},
-			ValidationFlow: []string{"esp_idf_mcp_config", "esp_idf_run build", "esp_idf_run flash", "esp_idf_run monitor", "hardware_evidence_record"},
-			CommonFailures: []string{"IDF_PATH 未激活", "target 与芯片不一致", "sdkconfig 缺配置", "官方 ESP-IDF MCP 未配置"},
-			TeachingNotes:  []string{"ESP-IDF 更适合底层和 FreeRTOS 教学，不建议一开始给低龄学生直接上复杂组件。"},
-			Aliases:        []string{"esp32_idf", "esp_idf", "esp32-espidf", "esp32_espidf"},
-		},
-		{
-			ID:                   "unihiker",
-			Label:                "Unihiker 行空板",
-			Platform:             "unihiker_python",
-			Board:                "unihiker",
-			DefaultFramework:     "Python / SSH",
-			UploadMethod:         "scp + ssh",
-			DefaultBaud:          115200,
-			LogicVoltage:         "3.3V",
-			PowerNotes:           "通常 USB 供电；外接执行器仍需独立供电。",
-			RecommendedProtocols: []string{"UART", "I2C", "WiFi/HTTP", "Python API"},
-			DefaultPins: []boardPinRule{
-				{Name: "屏幕/触控", Pins: []string{"internal display"}, Protocol: "INTERNAL", Direction: "ui", Voltage: "3.3V", Notes: "适合课堂可视化和状态反馈。"},
-				{Name: "板间 UART", Pins: []string{"TX", "RX", "GND"}, Protocol: "UART", Direction: "bidirectional", Voltage: "3.3V", Notes: "推荐和 ESP32/Arduino 做主控协调。"},
-			},
-			RiskyPins: []boardPinRule{
-				{Name: "SSH 地址", Pins: []string{"10.1.2.3"}, Protocol: "SSH", Voltage: "N/A", Notes: "默认地址需要现场确认，不要硬编码给客户。"},
-			},
-			Toolchains:     []string{"python3", "ssh", "scp"},
-			ValidationFlow: []string{"hardware_project_validate", "hardware_device_verify_plan", "ssh_deploy_run", "hardware_evidence_record"},
-			CommonFailures: []string{"SSH 密码认证未配置：行空板出厂默认 root/dfrobot，给 ssh_deploy_run 传 password=\"dfrobot\"（内部走 sshpass），不要用 bash 裸试 ssh", "SSH host 未确认", "Python 依赖未安装", "串口方向 TX/RX 接反", "客户网络隔离导致无法连接"},
-			TeachingNotes:  []string{"行空板 SSH 默认凭据 root/dfrobot（出厂热点模式地址 10.1.2.3）；部署运行统一用 ssh_deploy_run 并传 password，比手写 ssh 命令稳定。", "Unihiker 适合做 UI 和协调逻辑，不要把所有底层电机控制都塞到 Python 主循环里。"},
-			Aliases:        []string{"unihiker", "行空板"},
-		},
-		{
-			ID:                   "maixcam",
-			Label:                "MaixCAM K230",
-			Platform:             "maixcam_python",
-			Board:                "maixcam",
-			DefaultFramework:     "MaixPy",
-			UploadMethod:         "MaixVision or scp + ssh",
-			DefaultBaud:          115200,
-			LogicVoltage:         "3.3V",
-			PowerNotes:           "USB 供电；视觉任务需要稳定供电和光照。",
-			RecommendedProtocols: []string{"Camera/CSI", "UART", "I2C", "Python API"},
-			DefaultPins: []boardPinRule{
-				{Name: "内置摄像头", Pins: []string{"CSI camera"}, Protocol: "CSI", Direction: "input", Voltage: "3.3V", Notes: "先确认画面稳定，再调识别。"},
-				{Name: "识别结果 UART", Pins: []string{"TX", "RX", "GND"}, Protocol: "UART", Direction: "output", Voltage: "3.3V", Notes: "向 ESP32/Arduino 发送分类结果。"},
-			},
-			RiskyPins: []boardPinRule{
-				{Name: "光照/帧率", Pins: []string{"camera"}, Protocol: "VISION", Voltage: "N/A", Notes: "识别失败常常不是代码问题，而是画面、光照或模型文件问题。"},
-			},
-			Toolchains:     []string{"MaixVision", "python syntax", "ssh", "scp"},
-			ValidationFlow: []string{"hardware_project_validate", "ssh_deploy_run", "screen/camera evidence", "hardware_evidence_record"},
-			CommonFailures: []string{"MaixPy API 版本差异", "模型文件缺失", "摄像头画面不稳定", "UART 协议未定义"},
-			TeachingNotes:  []string{"视觉模块先输出识别结果，不要直接驱动高风险执行器。"},
-			Aliases:        []string{"maixcam", "k230", "maixcam_k230"},
-		},
-		{
-			ID:                   "raspberry_pi",
-			Label:                "Raspberry Pi",
-			Platform:             "raspberry_pi_python",
-			Board:                "raspberry_pi",
-			DefaultFramework:     "Python / SSH",
-			UploadMethod:         "scp + ssh",
-			DefaultBaud:          115200,
-			LogicVoltage:         "3.3V",
-			PowerNotes:           "需要稳定 5V 供电；GPIO 只能承受 3.3V 逻辑。",
-			RecommendedProtocols: []string{"I2C", "SPI", "UART", "Camera", "Python API"},
-			DefaultPins: []boardPinRule{
-				{Name: "I2C", Pins: []string{"GPIO2/SDA", "GPIO3/SCL"}, Protocol: "I2C", Direction: "bidirectional", Voltage: "3.3V", Notes: "适合传感器总线。"},
-				{Name: "UART", Pins: []string{"GPIO14/TX", "GPIO15/RX", "GND"}, Protocol: "UART", Direction: "bidirectional", Voltage: "3.3V", Notes: "板间通信前确认系统串口配置。"},
-			},
-			RiskyPins: []boardPinRule{
-				{Name: "5V 损坏风险", Pins: []string{"all GPIO"}, Protocol: "GPIO", Voltage: "3.3V", Notes: "任何 GPIO 都不能直接接 5V 信号。"},
-				{Name: "电源不足", Pins: []string{"USB-C"}, Protocol: "POWER", Voltage: "5V", Notes: "视觉/YOLO 项目对供电和散热更敏感。"},
-			},
-			Toolchains:     []string{"python3", "ssh", "scp"},
-			ValidationFlow: []string{"hardware_project_validate", "hardware_device_verify_plan", "ssh_deploy_run", "hardware_evidence_record"},
-			CommonFailures: []string{"SSH host 未确认", "Python 依赖未安装", "摄像头权限/接口未启用", "GPIO 5V 电平风险"},
-			TeachingNotes:  []string{"Raspberry Pi 适合复杂计算和视觉，底层实时电机控制建议交给 Arduino/ESP32。"},
-			Aliases:        []string{"raspberry_pi", "raspberrypi", "rpi", "pi"},
-		},
-	}
-}
+// builtInBoardProfiles 现在从共享数据驱动注册表读取(boards.json),不再硬编码。
+func builtInBoardProfiles() []boardProfile { return boards.Profiles() }
 
 func filterBoardProfiles(platform string) []boardProfile {
 	profiles := builtInBoardProfiles()
@@ -5061,23 +4890,11 @@ func findBoardProfile(board, platform string) (boardProfile, bool) {
 }
 
 func boardProfileMatches(profile boardProfile, boardKey string) bool {
-	if boardKey == "" {
-		return false
-	}
-	candidates := []string{profile.ID, profile.Label, profile.Board, profile.Platform, profile.ArduinoFQBN, profile.PlatformIOEnv, profile.PlatformIOBoard, profile.ESPIDFTarget}
-	candidates = append(candidates, profile.Aliases...)
-	for _, candidate := range candidates {
-		if normalizeBoardProfileKey(candidate) == boardKey {
-			return true
-		}
-	}
-	return false
+	return boards.Matches(profile, boardKey)
 }
 
 func normalizeBoardProfileKey(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	replacer := strings.NewReplacer(" ", "", "_", "", "-", "", "/", "", ":", "")
-	return replacer.Replace(value)
+	return boards.Normalize(value)
 }
 
 func boardProfileMarkdown(profile boardProfile) string {
@@ -5611,86 +5428,13 @@ func cleanProjectName(name string) string {
 	return b.String()
 }
 
-func defaultBoard(platform string) string {
-	switch platform {
-	case "arduino":
-		return "uno"
-	case "platformio":
-		return "esp32dev"
-	case "esp_idf":
-		return "esp32"
-	case "micropython":
-		return "esp32"
-	case "unihiker_python":
-		return "unihiker"
-	case "maixcam_python":
-		return "maixcam"
-	case "raspberry_pi_python":
-		return "raspberry_pi"
-	default:
-		return "unknown"
-	}
-}
-
-func platformIOEnv(board string) string {
-	switch strings.ToLower(board) {
-	case "esp32-s3", "esp32s3", "esp32-s3-devkitc-1":
-		return "esp32s3"
-	case "arduino_nano", "nano", "nanoatmega328":
-		return "nano"
-	default:
-		return "esp32dev"
-	}
-}
-
-func platformIOBoardID(board string) string {
-	switch strings.ToLower(board) {
-	case "esp32-s3", "esp32s3", "esp32-s3-devkitc-1":
-		return "esp32-s3-devkitc-1"
-	case "arduino_nano", "nano", "nanoatmega328":
-		return "nanoatmega328"
-	case "esp32dev", "esp32", "":
-		return "esp32dev"
-	default:
-		return board
-	}
-}
-
-func arduinoFQBN(board string) string {
-	// 把前端/UI 用的板卡 id 映射成 arduino-cli 认识的 FQBN。
-	// 覆盖范围要与桌面端 arduinoFQBNFromBoard 保持一致，否则同一块
-	// ESP32，烧录走对的映射、编译走这里却拿不到 FQBN，第一步就报错。
-	switch strings.ToLower(strings.TrimSpace(board)) {
-	case "nano", "arduino_nano", "nanoatmega328":
-		return "arduino:avr:nano"
-	case "uno", "arduino_uno", "":
-		return "arduino:avr:uno"
-	case "mega", "mega2560", "arduino_mega":
-		return "arduino:avr:mega"
-	case "esp32", "esp32dev", "esp32_devkit", "esp32_arduino":
-		return "esp32:esp32:esp32"
-	case "esp32s3", "esp32_s3":
-		return "esp32:esp32:esp32s3"
-	case "esp32c3", "esp32_c3":
-		return "esp32:esp32:esp32c3"
-	default:
-		// 已经是完整 FQBN（如检测到的真实板 esp32:esp32:esp32）原样透传
-		return board
-	}
-}
-
-func espIDFTarget(board string) string {
-	switch strings.ToLower(board) {
-	case "esp32s3", "esp32-s3", "esp32-s3-devkitc-1":
-		return "esp32s3"
-	case "esp32c3", "esp32-c3":
-		return "esp32c3"
-	case "esp32c6", "esp32-c6":
-		return "esp32c6"
-	default:
-		return "esp32"
-	}
-}
+// 以下板卡→工具链映射全部委托给共享数据驱动注册表(boards.json)。新增/改板只改
+// JSON,这五个函数和桌面端孪生函数都自动跟上,不再需要手工对齐多处 switch。
+func defaultBoard(platform string) string   { return boards.DefaultBoard(platform) }
+func platformIOEnv(board string) string     { return boards.PlatformIOEnv(board) }
+func platformIOBoardID(board string) string { return boards.PlatformIOBoard(board) }
+func arduinoFQBN(board string) string       { return boards.ArduinoFQBN(board) }
+func espIDFTarget(board string) string      { return boards.ESPIDFTarget(board) }
 
 func exists(path string) bool {
 	_, err := os.Stat(path)

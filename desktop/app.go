@@ -25,6 +25,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	fileenc "reasonix/internal/fileutil/encoding"
+	"reasonix/internal/hardware/boards"
 	"reasonix/internal/i18n"
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
@@ -661,7 +662,8 @@ type SessionMeta struct {
 	LastActivityAt int64  `json:"lastActivityAt"` // unix milliseconds
 	ModTime        int64  `json:"modTime"`        // compatibility alias for lastActivityAt
 	Current        bool   `json:"current"`
-	Cwd            string `json:"cwd,omitempty"` // workspace path at session creation, for sidebar grouping
+	Cwd            string `json:"cwd,omitempty"`  // workspace path at session creation, for sidebar grouping
+	Kind           string `json:"kind,omitempty"` // 会话类型(如 "hardware");空=普通对话。历史侧栏据此区分垂直
 }
 
 type WorkspaceMeta struct {
@@ -681,6 +683,7 @@ func (a *App) ListSessions() []SessionMeta {
 	}
 	titles := loadSessionTitles(dir)
 	cwds := loadSessionCwds(dir)
+	kinds := loadSessionKinds(dir)
 	a.mu.RLock()
 	ctrl := a.ctrl
 	a.mu.RUnlock()
@@ -700,9 +703,23 @@ func (a *App) ListSessions() []SessionMeta {
 			ModTime:        s.LastActivityAt.UnixMilli(),
 			Current:        s.Path == cur,
 			Cwd:            cwds[filepath.Base(s.Path)],
+			Kind:           kinds[filepath.Base(s.Path)],
 		})
 	}
 	return out
+}
+
+// MarkSessionKind 给当前活动会话打类型标(写入一次即定),供历史侧栏区分垂直。前端在真正
+// 进入某垂直定制流程时调用(如硬件面板跑编译/烧录/生成代码)——硬件视图是切 mainView、
+// 不换 tab,所以只能由前端显式标记,后端无法从 tab 类型推断(Phase 1 收尾)。
+func (a *App) MarkSessionKind(kind string) {
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
+		return
+	}
+	_ = rememberSessionKind(config.SessionDir(), ctrl.SessionPath(), kind)
 }
 
 // sessionPathsInUse 返回所有标签 controller 当前正在写的 session 路径 → 标签 id 映射;
@@ -1495,6 +1512,27 @@ type HardwareMCPView struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// HardwareBoardSummary is one selectable board for the hardware panel's board
+// picker, sourced from the shared data-driven registry (internal/hardware/boards)
+// so adding a board to boards.json automatically surfaces it in the UI.
+type HardwareBoardSummary struct {
+	Value     string `json:"value"` // 板卡 id(传给 MCP 工具)
+	Label     string `json:"label"`
+	Framework string `json:"framework"`
+	Platform  string `json:"platform"`
+}
+
+// HardwareBoardList returns every board the registry knows, for the panel's board
+// dropdown. No IPC: the desktop links the same boards package the MCP uses.
+func (a *App) HardwareBoardList() []HardwareBoardSummary {
+	profiles := boards.Profiles()
+	out := make([]HardwareBoardSummary, 0, len(profiles))
+	for _, b := range profiles {
+		out = append(out, HardwareBoardSummary{Value: b.ID, Label: b.Label, Framework: b.DefaultFramework, Platform: b.Platform})
+	}
+	return out
+}
+
 // HardwareDetectView is a desktop-friendly projection of the hardware_detect MCP
 // tool output. The drawer can show real local readiness before the user asks the
 // agent to build or flash anything.
@@ -1838,6 +1876,7 @@ type moduleSpecMirror struct {
 //   - hardware_module_spec（板卡名当 module 查）：冷门平台 API 的正确 import、
 //     gotchas、最小示例（ESP32 LEDC / 行空板 pinpong / MaixCAM K230 maix.*）——
 //     这正是 flash 最容易编错库名和 API 的地方。
+//
 // boardFactsCache 缓存按板卡查到的事实。catalog 内嵌在 MCP 二进制里、运行期不变,
 // 同一板卡反复点「写代码」没必要反复拉起 MCP 子进程(每次两个调用、各 15s 超时,
 // MCP 卡顿时按钮会冻很久)。只缓存「两个调用都成功」的结果——MCP 暂时性失败
@@ -2284,25 +2323,10 @@ func runHardwareSimple(command, tool string, args map[string]any, timeout time.D
 }
 
 // arduinoFQBNFromBoard maps short board ids the frontend uses to arduino-cli FQBNs.
-// 覆盖范围必须与 hardware MCP 的 arduinoFQBN 保持一致：前端预设板传的是
-// 「arduino_uno」「arduino_nano」这种带前缀的 value，validate 走 MCP 的 arduinoFQBN、
-// upload 走这里——少一个别名就会出现「编译能过但烧录拿到非法 FQBN」的撕裂。
+// 委托给共享数据驱动注册表(internal/hardware/boards),与 MCP 的 arduinoFQBN 同源,
+// 彻底消除「编译走一处映射、烧录走另一处」的孪生漂移——以前要手工对齐两份 switch。
 func arduinoFQBNFromBoard(board string) string {
-	switch strings.ToLower(strings.TrimSpace(board)) {
-	case "uno", "arduino_uno":
-		return "arduino:avr:uno"
-	case "nano", "arduino_nano", "nanoatmega328":
-		return "arduino:avr:nano"
-	case "mega", "mega2560", "arduino_mega":
-		return "arduino:avr:mega"
-	case "esp32", "esp32dev", "esp32_devkit", "esp32_arduino":
-		return "esp32:esp32:esp32"
-	case "esp32s3", "esp32_s3":
-		return "esp32:esp32:esp32s3"
-	case "esp32c3", "esp32_c3":
-		return "esp32:esp32:esp32c3"
-	}
-	return board
+	return boards.ArduinoFQBN(board)
 }
 
 // AddHardwareMCPServer connects the first available hardware MCP binary and

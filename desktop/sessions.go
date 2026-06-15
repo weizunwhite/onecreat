@@ -30,11 +30,13 @@ var sidecarMu sync.Mutex
 
 const sessionTitlesFile = ".titles.json"
 const sessionDisplayFile = ".display.json"
-const sessionCwdsFile = ".cwds.json" // basename -> 这条会话创建时的 workspace 路径,用于侧栏按文件夹分组
+const sessionCwdsFile = ".cwds.json"   // basename -> 这条会话创建时的 workspace 路径,用于侧栏按文件夹分组
+const sessionKindsFile = ".kinds.json" // basename -> 会话类型(如 "hardware"),用于历史侧栏区分垂直
 
 func sessionTitlesPath(dir string) string  { return filepath.Join(dir, sessionTitlesFile) }
 func sessionDisplayPath(dir string) string { return filepath.Join(dir, sessionDisplayFile) }
 func sessionCwdsPath(dir string) string    { return filepath.Join(dir, sessionCwdsFile) }
+func sessionKindsPath(dir string) string   { return filepath.Join(dir, sessionKindsFile) }
 
 // loadSessionCwds 读取 basename→cwd 的映射(类似 loadSessionTitles)。
 func loadSessionCwds(dir string) map[string]string {
@@ -87,6 +89,61 @@ func rememberSessionCwd(dir, sessionPath, cwd string) error {
 	}
 	m[key] = cwd
 	return saveSessionCwds(dir, m)
+}
+
+// loadSessionKinds 读取 basename→kind 的映射(如 "hardware")。会话默认是普通对话(无条目),
+// 只有真正用过某垂直定制表面(如硬件工作台跑了编译/烧录/生成代码)才打标,供历史侧栏区分
+// "硬件项目 / 普通对话"。打开硬件视图是切 mainView(同一 tab),tab.kind 仍是 chat,所以
+// 必须由前端在真正干活时显式 MarkSessionKind,不能靠 tab 类型推断。
+func loadSessionKinds(dir string) map[string]string {
+	m := map[string]string{}
+	b, err := os.ReadFile(sessionKindsPath(dir))
+	if err != nil {
+		return m
+	}
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+func saveSessionKinds(dir string, m map[string]string) error {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".kinds.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return fileutil.ReplaceFile(tmpPath, sessionKindsPath(dir))
+}
+
+// rememberSessionKind 给某会话打类型标(写入一次即定,后续不覆盖)。
+func rememberSessionKind(dir, sessionPath, kind string) error {
+	if strings.TrimSpace(sessionPath) == "" || strings.TrimSpace(kind) == "" {
+		return nil
+	}
+	sidecarMu.Lock()
+	defer sidecarMu.Unlock()
+	m := loadSessionKinds(dir)
+	key := filepath.Base(sessionPath)
+	if _, ok := m[key]; ok {
+		return nil // 已有记录,保持不变
+	}
+	m[key] = kind
+	return saveSessionKinds(dir, m)
 }
 
 // loadSessionTitles reads the basename→title map (missing/corrupt → empty).
@@ -163,6 +220,12 @@ func deleteSessionFile(dir, sessionPath string) error {
 	if cm := loadSessionCwds(dir); cm[filepath.Base(sessionPath)] != "" {
 		delete(cm, filepath.Base(sessionPath))
 		if err := saveSessionCwds(dir, cm); err != nil {
+			return err
+		}
+	}
+	if km := loadSessionKinds(dir); km[filepath.Base(sessionPath)] != "" {
+		delete(km, filepath.Base(sessionPath))
+		if err := saveSessionKinds(dir, km); err != nil {
 			return err
 		}
 	}

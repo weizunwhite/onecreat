@@ -1,0 +1,851 @@
+[
+  {
+    "id": "arduino_uno",
+    "label": "Arduino UNO",
+    "platform": "arduino",
+    "board": "uno",
+    "defaultFramework": "Arduino IDE / Arduino CLI",
+    "arduinoFqbn": "arduino:avr:uno",
+    "platformioEnv": "uno",
+    "platformioBoard": "uno",
+    "uploadMethod": "USB serial bootloader",
+    "defaultBaud": 115200,
+    "logicVoltage": "5V",
+    "powerNotes": "USB 5V 供电；电机、舵机和大电流负载必须独立供电并共地。",
+    "recommendedProtocols": [
+      "GPIO",
+      "ADC",
+      "I2C",
+      "SPI",
+      "UART"
+    ],
+    "defaultPins": [
+      {
+        "name": "板载 LED",
+        "pins": [
+          "D13"
+        ],
+        "protocol": "GPIO",
+        "direction": "output",
+        "voltage": "5V",
+        "notes": "最小验证输出，不需要外接 LED。"
+      },
+      {
+        "name": "I2C",
+        "pins": [
+          "A4/SDA",
+          "A5/SCL"
+        ],
+        "protocol": "I2C",
+        "direction": "bidirectional",
+        "voltage": "5V",
+        "notes": "多个 I2C 设备可共享，但地址不能冲突。"
+      },
+      {
+        "name": "UART",
+        "pins": [
+          "D0/RX",
+          "D1/TX"
+        ],
+        "protocol": "UART",
+        "direction": "bidirectional",
+        "voltage": "5V",
+        "notes": "与 USB 串口共用，调试时避免接外部 UART。"
+      }
+    ],
+    "riskyPins": [
+      {
+        "name": "USB 串口占用",
+        "pins": [
+          "D0",
+          "D1"
+        ],
+        "protocol": "UART",
+        "voltage": "5V",
+        "notes": "烧录和 Serial 调试时不要同时接外设。"
+      },
+      {
+        "name": "电流限制",
+        "pins": [
+          "任意 IO"
+        ],
+        "protocol": "GPIO",
+        "voltage": "5V",
+        "notes": "不要直接驱动电机、继电器线圈或大功率 LED。"
+      }
+    ],
+    "toolchains": [
+      "arduino-cli",
+      "Arduino IDE"
+    ],
+    "validationFlow": [
+      "arduino_compile",
+      "arduino_upload",
+      "arduino_monitor_sample",
+      "hardware_evidence_record"
+    ],
+    "commonFailures": [
+      "fqbn 不匹配",
+      "D0/D1 串口被占用",
+      "库未安装",
+      "执行器未独立供电"
+    ],
+    "teachingNotes": [
+      "UNO RAM 只有 2KB，避免大数组和大字符串。",
+      "先用 D13 板载 LED 验证上传链路，再接外设。"
+    ],
+    "aliases": [
+      "arduino",
+      "uno",
+      "arduino_uno"
+    ]
+  },
+  {
+    "id": "arduino_nano",
+    "label": "Arduino Nano",
+    "platform": "arduino",
+    "board": "nano",
+    "defaultFramework": "Arduino IDE / Arduino CLI",
+    "arduinoFqbn": "arduino:avr:nano",
+    "platformioEnv": "nano",
+    "platformioBoard": "nanoatmega328",
+    "uploadMethod": "USB serial bootloader",
+    "defaultBaud": 115200,
+    "logicVoltage": "5V",
+    "powerNotes": "Nano 供电和 UNO 类似；电机/舵机必须独立供电并共地。",
+    "recommendedProtocols": [
+      "GPIO",
+      "ADC",
+      "I2C",
+      "SPI",
+      "UART"
+    ],
+    "defaultPins": [
+      {
+        "name": "板载 LED",
+        "pins": [
+          "D13"
+        ],
+        "protocol": "GPIO",
+        "direction": "output",
+        "voltage": "5V",
+        "notes": "最小验证输出。"
+      },
+      {
+        "name": "I2C",
+        "pins": [
+          "A4/SDA",
+          "A5/SCL"
+        ],
+        "protocol": "I2C",
+        "direction": "bidirectional",
+        "voltage": "5V",
+        "notes": "传感器总线优先选择。"
+      }
+    ],
+    "riskyPins": [
+      {
+        "name": "USB 串口占用",
+        "pins": [
+          "D0",
+          "D1"
+        ],
+        "protocol": "UART",
+        "voltage": "5V",
+        "notes": "烧录和 Serial 调试时避免外接 UART。"
+      }
+    ],
+    "toolchains": [
+      "arduino-cli",
+      "Arduino IDE"
+    ],
+    "validationFlow": [
+      "arduino_compile",
+      "arduino_upload",
+      "arduino_monitor_sample",
+      "hardware_evidence_record"
+    ],
+    "commonFailures": [
+      "bootloader 版本不匹配",
+      "串口芯片驱动缺失",
+      "库未安装",
+      "执行器供电不足"
+    ],
+    "teachingNotes": [
+      "Nano 常见 CH340 串口芯片，Windows 客户端要准备驱动。"
+    ],
+    "aliases": [
+      "nano",
+      "arduino_nano"
+    ]
+  },
+  {
+    "id": "esp32_arduino",
+    "label": "ESP32 Dev Module",
+    "platform": "platformio",
+    "board": "esp32dev",
+    "defaultFramework": "Arduino / PlatformIO",
+    "arduinoFqbn": "esp32:esp32:esp32",
+    "platformioEnv": "esp32dev",
+    "platformioBoard": "esp32dev",
+    "espIdfTarget": "esp32",
+    "uploadMethod": "USB serial bootloader, sometimes requires BOOT button",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "USB 5V 供电，IO 逻辑 3.3V；5V 传感器信号接入前必须确认电平转换。",
+    "recommendedProtocols": [
+      "UART",
+      "I2C",
+      "SPI",
+      "WiFi/HTTP",
+      "WiFi/MQTT",
+      "BLE"
+    ],
+    "defaultPins": [
+      {
+        "name": "板载 LED",
+        "pins": [
+          "GPIO2"
+        ],
+        "protocol": "GPIO",
+        "direction": "output",
+        "voltage": "3.3V",
+        "notes": "很多 ESP32 DevKit 可用；部分板卡没有板载 LED，需确认。"
+      },
+      {
+        "name": "I2C 默认",
+        "pins": [
+          "GPIO21/SDA",
+          "GPIO22/SCL"
+        ],
+        "protocol": "I2C",
+        "direction": "bidirectional",
+        "voltage": "3.3V",
+        "notes": "适合多个传感器共线。"
+      },
+      {
+        "name": "板间 UART",
+        "pins": [
+          "GPIO16/RX2",
+          "GPIO17/TX2",
+          "GND"
+        ],
+        "protocol": "UART",
+        "direction": "bidirectional",
+        "voltage": "3.3V",
+        "notes": "推荐用于 ESP32 与 Arduino/MaixCAM/Unihiker 通信。"
+      }
+    ],
+    "riskyPins": [
+      {
+        "name": "启动绑带脚",
+        "pins": [
+          "GPIO0",
+          "GPIO2",
+          "GPIO12",
+          "GPIO15"
+        ],
+        "protocol": "BOOT_STRAP",
+        "voltage": "3.3V",
+        "notes": "上电状态会影响启动；接外设前确认不会拉错电平。"
+      },
+      {
+        "name": "Flash 占用",
+        "pins": [
+          "GPIO6",
+          "GPIO7",
+          "GPIO8",
+          "GPIO9",
+          "GPIO10",
+          "GPIO11"
+        ],
+        "protocol": "FLASH",
+        "voltage": "3.3V",
+        "notes": "通常连接片上 Flash，不要作为普通 IO。"
+      },
+      {
+        "name": "输入限定",
+        "pins": [
+          "GPIO34",
+          "GPIO35",
+          "GPIO36",
+          "GPIO39"
+        ],
+        "protocol": "INPUT_ONLY",
+        "voltage": "3.3V",
+        "notes": "只能输入，不能驱动 LED/继电器/蜂鸣器。"
+      }
+    ],
+    "toolchains": [
+      "PlatformIO",
+      "arduino-cli"
+    ],
+    "validationFlow": [
+      "hardware_project_audit",
+      "hardware_project_validate",
+      "platformio_run upload",
+      "platformio_run monitor",
+      "hardware_evidence_record"
+    ],
+    "commonFailures": [
+      "PlatformIO 根目录 .ino 不参与构建",
+      "端口不存在或被占用",
+      "上传时需要按 BOOT",
+      "5V 模块直接接 3.3V IO",
+      "WiFi AP 启动但手机连错网络"
+    ],
+    "teachingNotes": [
+      "先验证 Serial 日志和最小 WiFi/AP，再接传感器和执行器。",
+      "网页项目要明确 ESP32 负责服务页面，游戏逻辑可运行在手机浏览器。"
+    ],
+    "aliases": [
+      "esp32",
+      "esp32dev",
+      "esp32_dev",
+      "esp32_arduino",
+      "esp32_dev_module",
+      "ESP32 Dev Module"
+    ]
+  },
+  {
+    "id": "esp32_idf",
+    "label": "ESP32 ESP-IDF",
+    "platform": "esp_idf",
+    "board": "esp32",
+    "defaultFramework": "ESP-IDF",
+    "espIdfTarget": "esp32",
+    "uploadMethod": "idf.py flash monitor",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "ESP-IDF 项目先确认 target 和 sdkconfig，再连接外设。",
+    "recommendedProtocols": [
+      "UART",
+      "I2C",
+      "SPI",
+      "WiFi",
+      "BLE",
+      "FreeRTOS task"
+    ],
+    "defaultPins": [
+      {
+        "name": "日志串口",
+        "pins": [
+          "USB"
+        ],
+        "protocol": "USB_SERIAL",
+        "direction": "debug",
+        "voltage": "3.3V",
+        "notes": "先用 monitor 验证 app_main 持续运行。"
+      }
+    ],
+    "riskyPins": [
+      {
+        "name": "启动/Flash 风险脚",
+        "pins": [
+          "GPIO0",
+          "GPIO2",
+          "GPIO6-GPIO11",
+          "GPIO12",
+          "GPIO15"
+        ],
+        "protocol": "BOOT_OR_FLASH",
+        "voltage": "3.3V",
+        "notes": "同 ESP32 Arduino，真实接线前必须确认。"
+      }
+    ],
+    "toolchains": [
+      "ESP-IDF",
+      "EIM",
+      "esp-idf-tools MCP"
+    ],
+    "validationFlow": [
+      "esp_idf_mcp_config",
+      "esp_idf_run build",
+      "esp_idf_run flash",
+      "esp_idf_run monitor",
+      "hardware_evidence_record"
+    ],
+    "commonFailures": [
+      "IDF_PATH 未激活",
+      "target 与芯片不一致",
+      "sdkconfig 缺配置",
+      "官方 ESP-IDF MCP 未配置"
+    ],
+    "teachingNotes": [
+      "ESP-IDF 更适合底层和 FreeRTOS 教学，不建议一开始给低龄学生直接上复杂组件。"
+    ],
+    "aliases": [
+      "esp32_idf",
+      "esp_idf",
+      "esp32-espidf",
+      "esp32_espidf"
+    ]
+  },
+  {
+    "id": "unihiker",
+    "label": "Unihiker 行空板",
+    "platform": "unihiker_python",
+    "board": "unihiker",
+    "defaultFramework": "Python / SSH",
+    "uploadMethod": "scp + ssh",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "通常 USB 供电；外接执行器仍需独立供电。",
+    "recommendedProtocols": [
+      "UART",
+      "I2C",
+      "WiFi/HTTP",
+      "Python API"
+    ],
+    "defaultPins": [
+      {
+        "name": "屏幕/触控",
+        "pins": [
+          "internal display"
+        ],
+        "protocol": "INTERNAL",
+        "direction": "ui",
+        "voltage": "3.3V",
+        "notes": "适合课堂可视化和状态反馈。"
+      },
+      {
+        "name": "板间 UART",
+        "pins": [
+          "TX",
+          "RX",
+          "GND"
+        ],
+        "protocol": "UART",
+        "direction": "bidirectional",
+        "voltage": "3.3V",
+        "notes": "推荐和 ESP32/Arduino 做主控协调。"
+      }
+    ],
+    "riskyPins": [
+      {
+        "name": "SSH 地址",
+        "pins": [
+          "10.1.2.3"
+        ],
+        "protocol": "SSH",
+        "voltage": "N/A",
+        "notes": "默认地址需要现场确认，不要硬编码给客户。"
+      }
+    ],
+    "toolchains": [
+      "python3",
+      "ssh",
+      "scp"
+    ],
+    "validationFlow": [
+      "hardware_project_validate",
+      "hardware_device_verify_plan",
+      "ssh_deploy_run",
+      "hardware_evidence_record"
+    ],
+    "commonFailures": [
+      "SSH 密码认证未配置：行空板出厂默认 root/dfrobot，给 ssh_deploy_run 传 password=\"dfrobot\"（内部走 sshpass），不要用 bash 裸试 ssh",
+      "SSH host 未确认",
+      "Python 依赖未安装",
+      "串口方向 TX/RX 接反",
+      "客户网络隔离导致无法连接"
+    ],
+    "teachingNotes": [
+      "行空板 SSH 默认凭据 root/dfrobot（出厂热点模式地址 10.1.2.3）；部署运行统一用 ssh_deploy_run 并传 password，比手写 ssh 命令稳定。",
+      "Unihiker 适合做 UI 和协调逻辑，不要把所有底层电机控制都塞到 Python 主循环里。"
+    ],
+    "aliases": [
+      "unihiker",
+      "行空板"
+    ]
+  },
+  {
+    "id": "maixcam",
+    "label": "MaixCAM K230",
+    "platform": "maixcam_python",
+    "board": "maixcam",
+    "defaultFramework": "MaixPy",
+    "uploadMethod": "MaixVision or scp + ssh",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "USB 供电；视觉任务需要稳定供电和光照。",
+    "recommendedProtocols": [
+      "Camera/CSI",
+      "UART",
+      "I2C",
+      "Python API"
+    ],
+    "defaultPins": [
+      {
+        "name": "内置摄像头",
+        "pins": [
+          "CSI camera"
+        ],
+        "protocol": "CSI",
+        "direction": "input",
+        "voltage": "3.3V",
+        "notes": "先确认画面稳定，再调识别。"
+      },
+      {
+        "name": "识别结果 UART",
+        "pins": [
+          "TX",
+          "RX",
+          "GND"
+        ],
+        "protocol": "UART",
+        "direction": "output",
+        "voltage": "3.3V",
+        "notes": "向 ESP32/Arduino 发送分类结果。"
+      }
+    ],
+    "riskyPins": [
+      {
+        "name": "光照/帧率",
+        "pins": [
+          "camera"
+        ],
+        "protocol": "VISION",
+        "voltage": "N/A",
+        "notes": "识别失败常常不是代码问题，而是画面、光照或模型文件问题。"
+      }
+    ],
+    "toolchains": [
+      "MaixVision",
+      "python syntax",
+      "ssh",
+      "scp"
+    ],
+    "validationFlow": [
+      "hardware_project_validate",
+      "ssh_deploy_run",
+      "screen/camera evidence",
+      "hardware_evidence_record"
+    ],
+    "commonFailures": [
+      "MaixPy API 版本差异",
+      "模型文件缺失",
+      "摄像头画面不稳定",
+      "UART 协议未定义"
+    ],
+    "teachingNotes": [
+      "视觉模块先输出识别结果，不要直接驱动高风险执行器。"
+    ],
+    "aliases": [
+      "maixcam",
+      "k230",
+      "maixcam_k230"
+    ]
+  },
+  {
+    "id": "raspberry_pi",
+    "label": "Raspberry Pi",
+    "platform": "raspberry_pi_python",
+    "board": "raspberry_pi",
+    "defaultFramework": "Python / SSH",
+    "uploadMethod": "scp + ssh",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "需要稳定 5V 供电；GPIO 只能承受 3.3V 逻辑。",
+    "recommendedProtocols": [
+      "I2C",
+      "SPI",
+      "UART",
+      "Camera",
+      "Python API"
+    ],
+    "defaultPins": [
+      {
+        "name": "I2C",
+        "pins": [
+          "GPIO2/SDA",
+          "GPIO3/SCL"
+        ],
+        "protocol": "I2C",
+        "direction": "bidirectional",
+        "voltage": "3.3V",
+        "notes": "适合传感器总线。"
+      },
+      {
+        "name": "UART",
+        "pins": [
+          "GPIO14/TX",
+          "GPIO15/RX",
+          "GND"
+        ],
+        "protocol": "UART",
+        "direction": "bidirectional",
+        "voltage": "3.3V",
+        "notes": "板间通信前确认系统串口配置。"
+      }
+    ],
+    "riskyPins": [
+      {
+        "name": "5V 损坏风险",
+        "pins": [
+          "all GPIO"
+        ],
+        "protocol": "GPIO",
+        "voltage": "3.3V",
+        "notes": "任何 GPIO 都不能直接接 5V 信号。"
+      },
+      {
+        "name": "电源不足",
+        "pins": [
+          "USB-C"
+        ],
+        "protocol": "POWER",
+        "voltage": "5V",
+        "notes": "视觉/YOLO 项目对供电和散热更敏感。"
+      }
+    ],
+    "toolchains": [
+      "python3",
+      "ssh",
+      "scp"
+    ],
+    "validationFlow": [
+      "hardware_project_validate",
+      "hardware_device_verify_plan",
+      "ssh_deploy_run",
+      "hardware_evidence_record"
+    ],
+    "commonFailures": [
+      "SSH host 未确认",
+      "Python 依赖未安装",
+      "摄像头权限/接口未启用",
+      "GPIO 5V 电平风险"
+    ],
+    "teachingNotes": [
+      "Raspberry Pi 适合复杂计算和视觉，底层实时电机控制建议交给 Arduino/ESP32。"
+    ],
+    "aliases": [
+      "raspberry_pi",
+      "raspberrypi",
+      "rpi",
+      "pi"
+    ]
+  },
+  {
+    "id": "arduino_mega",
+    "label": "Arduino Mega 2560",
+    "platform": "arduino",
+    "board": "mega",
+    "defaultFramework": "Arduino IDE / Arduino CLI",
+    "arduinoFqbn": "arduino:avr:mega",
+    "uploadMethod": "USB serial bootloader",
+    "defaultBaud": 115200,
+    "logicVoltage": "5V",
+    "powerNotes": "USB 5V 供电；Mega 引脚多但单脚电流仍有限，电机/舵机必须独立供电并共地。",
+    "recommendedProtocols": ["GPIO", "ADC", "I2C", "SPI", "UART"],
+    "defaultPins": [
+      {"name": "板载 LED", "pins": ["D13"], "protocol": "GPIO", "direction": "output", "voltage": "5V", "notes": "最小验证输出。"},
+      {"name": "I2C", "pins": ["D20/SDA", "D21/SCL"], "protocol": "I2C", "direction": "bidirectional", "voltage": "5V", "notes": "注意：Mega 的 I2C 在 D20/D21，不是 UNO/Nano 的 A4/A5。"},
+      {"name": "硬件串口", "pins": ["Serial1=D18/D19", "Serial2=D16/D17", "Serial3=D14/D15"], "protocol": "UART", "direction": "bidirectional", "voltage": "5V", "notes": "Mega 有 4 路硬件串口，适合多板通信。"}
+    ],
+    "riskyPins": [
+      {"name": "USB 串口占用", "pins": ["D0", "D1"], "protocol": "UART", "voltage": "5V", "notes": "Serial0 与 USB 共用，调试时不要接外部 UART。"}
+    ],
+    "toolchains": ["arduino-cli", "Arduino IDE"],
+    "validationFlow": ["arduino_compile", "arduino_upload", "arduino_monitor_sample", "hardware_evidence_record"],
+    "commonFailures": ["把 I2C 接到 A4/A5(那是 UNO 的位置，Mega 在 D20/D21)", "库未安装", "执行器未独立供电"],
+    "teachingNotes": ["Mega 引脚布局与 UNO 不同：I2C 在 D20/D21，多路硬件串口，先用 D13 验证上传链路。"],
+    "aliases": ["mega", "mega2560", "arduino_mega", "arduinomega"]
+  },
+  {
+    "id": "esp32_s3",
+    "label": "ESP32-S3 DevKitC",
+    "platform": "platformio",
+    "board": "esp32-s3-devkitc-1",
+    "defaultFramework": "Arduino / PlatformIO",
+    "arduinoFqbn": "esp32:esp32:esp32s3",
+    "platformioEnv": "esp32s3",
+    "platformioBoard": "esp32-s3-devkitc-1",
+    "espIdfTarget": "esp32s3",
+    "catalogPinKey": "esp32_s3",
+    "uploadMethod": "USB serial (内置 USB-OTG，部分型号需按 BOOT)",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "USB 5V 供电，IO 逻辑 3.3V；S3 与经典 ESP32 引脚布局不同，接线前必须按 S3 数据手册确认。",
+    "recommendedProtocols": ["UART", "I2C", "SPI", "WiFi", "BLE", "USB"],
+    "defaultPins": [
+      {"name": "板载 RGB LED", "pins": ["GPIO48"], "protocol": "GPIO", "direction": "output", "voltage": "3.3V", "notes": "多数 S3 DevKitC 板载 WS2812 RGB 在 GPIO48；部分型号不同，需确认。"},
+      {"name": "原生 USB", "pins": ["GPIO19/D-", "GPIO20/D+"], "protocol": "USB", "direction": "bidirectional", "voltage": "3.3V", "notes": "S3 有原生 USB，可做 USB-CDC 串口或 HID。"}
+    ],
+    "riskyPins": [
+      {"name": "启动绑带脚", "pins": ["GPIO0", "GPIO3", "GPIO45", "GPIO46"], "protocol": "BOOT_STRAP", "voltage": "3.3V", "notes": "S3 的 strapping 脚与经典 ESP32 不同，接外设前确认电平。"},
+      {"name": "Flash/PSRAM 占用", "pins": ["GPIO26-GPIO37"], "protocol": "FLASH", "voltage": "3.3V", "notes": "带 Octal Flash/PSRAM 的 S3 会占用 GPIO33-37(或 26-32)，不要作普通 IO；具体看模组。"}
+    ],
+    "toolchains": ["PlatformIO", "arduino-cli", "ESP-IDF"],
+    "validationFlow": ["hardware_project_audit", "hardware_project_validate", "platformio_run upload", "platformio_run monitor", "hardware_evidence_record"],
+    "commonFailures": ["照经典 ESP32 引脚接线(S3 没有 GPIO34-39 input-only，flash 脚也不同)", "Octal PSRAM 型号误用被占用的 GPIO", "原生 USB 与 UART0 串口混淆"],
+    "teachingNotes": ["ESP32-S3 不是经典 ESP32：没有 input-only 脚(GPIO34-39)，flash/psram 脚不同，板载 LED 常在 GPIO48。务必按 S3 引脚事实接线，不要套用 ESP32 Dev Module。"],
+    "aliases": ["esp32s3", "esp32_s3", "esp32-s3", "esp32s3dev", "esp32-s3-devkitc-1"]
+  },
+  {
+    "id": "esp32_c3",
+    "label": "ESP32-C3 DevKitM",
+    "platform": "platformio",
+    "board": "esp32-c3-devkitm-1",
+    "defaultFramework": "Arduino / PlatformIO",
+    "arduinoFqbn": "esp32:esp32:esp32c3",
+    "platformioEnv": "esp32c3",
+    "platformioBoard": "esp32-c3-devkitm-1",
+    "espIdfTarget": "esp32c3",
+    "uploadMethod": "USB serial (内置 USB-Serial-JTAG)",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "RISC-V 单核，仅约 22 个 GPIO(GPIO0-21)，引脚布局与经典 ESP32 完全不同。",
+    "recommendedProtocols": ["UART", "I2C", "SPI", "WiFi", "BLE"],
+    "defaultPins": [
+      {"name": "板载 RGB LED", "pins": ["GPIO8"], "protocol": "GPIO", "direction": "output", "voltage": "3.3V", "notes": "多数 C3 DevKitM 板载 WS2812 在 GPIO8(同时是 strapping 脚)。"},
+      {"name": "USB-Serial-JTAG", "pins": ["GPIO18/D-", "GPIO19/D+"], "protocol": "USB", "direction": "bidirectional", "voltage": "3.3V", "notes": "C3 内置 USB-Serial-JTAG，直接 USB 烧录/调试。"}
+    ],
+    "riskyPins": [
+      {"name": "启动绑带脚", "pins": ["GPIO2", "GPIO8", "GPIO9"], "protocol": "BOOT_STRAP", "voltage": "3.3V", "notes": "C3 strapping 脚为 GPIO2/8/9；GPIO9 接下拉进下载模式。"}
+    ],
+    "toolchains": ["PlatformIO", "arduino-cli", "ESP-IDF"],
+    "validationFlow": ["hardware_project_audit", "hardware_project_validate", "platformio_run upload", "platformio_run monitor", "hardware_evidence_record"],
+    "commonFailures": ["照经典 ESP32 引脚(GPIO21/22 I2C、GPIO34-39)接线 — C3 只有 GPIO0-21", "GPIO8/9 作普通 IO 影响启动"],
+    "teachingNotes": ["ESP32-C3 是 RISC-V、只有 GPIO0-21，没有经典 ESP32 的 input-only 脚和默认 I2C(21/22)。引脚必须按 C3 数据手册定，不要套用 Dev Module。"],
+    "aliases": ["esp32c3", "esp32_c3", "esp32-c3", "esp32-c3-devkitm-1"]
+  },
+  {
+    "id": "esp32_c6",
+    "label": "ESP32-C6 DevKitC",
+    "platform": "platformio",
+    "board": "esp32-c6-devkitc-1",
+    "defaultFramework": "Arduino / PlatformIO",
+    "arduinoFqbn": "esp32:esp32:esp32c6",
+    "platformioEnv": "esp32c6",
+    "platformioBoard": "esp32-c6-devkitc-1",
+    "espIdfTarget": "esp32c6",
+    "uploadMethod": "USB serial (内置 USB-Serial-JTAG)",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "RISC-V，支持 WiFi6 / Thread / Zigbee；引脚布局与经典 ESP32 不同，需查 C6 数据手册。",
+    "recommendedProtocols": ["UART", "I2C", "SPI", "WiFi6", "BLE", "Thread/Zigbee"],
+    "defaultPins": [
+      {"name": "板载 RGB LED", "pins": ["GPIO8"], "protocol": "GPIO", "direction": "output", "voltage": "3.3V", "notes": "多数 C6 DevKitC 板载 WS2812 在 GPIO8，具体确认。"}
+    ],
+    "riskyPins": [
+      {"name": "启动绑带脚", "pins": ["GPIO4", "GPIO5", "GPIO8", "GPIO9", "GPIO15"], "protocol": "BOOT_STRAP", "voltage": "3.3V", "notes": "C6 strapping 脚需按数据手册确认后再接外设。"}
+    ],
+    "toolchains": ["PlatformIO", "arduino-cli", "ESP-IDF"],
+    "validationFlow": ["hardware_project_audit", "hardware_project_validate", "platformio_run upload", "platformio_run monitor", "hardware_evidence_record"],
+    "commonFailures": ["arduino-cli/esp32 core 版本过旧不支持 C6", "照经典 ESP32 引脚接线"],
+    "teachingNotes": ["ESP32-C6 需要较新的 esp32 Arduino core(>=3.0)或 ESP-IDF v5.1+；引脚按 C6 数据手册，不要套用经典 ESP32。"],
+    "aliases": ["esp32c6", "esp32_c6", "esp32-c6", "esp32-c6-devkitc-1"]
+  },
+  {
+    "id": "esp8266",
+    "label": "ESP8266 (NodeMCU / Wemos D1 mini)",
+    "platform": "platformio",
+    "board": "nodemcuv2",
+    "defaultFramework": "Arduino / PlatformIO",
+    "arduinoFqbn": "esp8266:esp8266:nodemcuv2",
+    "platformioEnv": "nodemcuv2",
+    "platformioBoard": "nodemcuv2",
+    "uploadMethod": "USB serial bootloader",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "3.3V 逻辑，5V 供电经板载稳压；可用 IO 少，多脚有启动约束。",
+    "recommendedProtocols": ["GPIO", "ADC(单路)", "I2C", "SPI", "WiFi/HTTP", "WiFi/MQTT"],
+    "defaultPins": [
+      {"name": "板载 LED", "pins": ["GPIO2/D4"], "protocol": "GPIO", "direction": "output", "voltage": "3.3V", "notes": "板载 LED 在 GPIO2，低电平点亮(反逻辑)。"},
+      {"name": "I2C 常用", "pins": ["GPIO4/D2/SDA", "GPIO5/D1/SCL"], "protocol": "I2C", "direction": "bidirectional", "voltage": "3.3V", "notes": "ESP8266 I2C 软件实现，常用 D2/D1。"},
+      {"name": "唯一 ADC", "pins": ["A0"], "protocol": "ADC", "direction": "input", "voltage": "0-1.0V(NodeMCU 板载分压到 3.3V)", "notes": "只有一路 ADC，且量程受限。"}
+    ],
+    "riskyPins": [
+      {"name": "启动约束脚", "pins": ["GPIO0/D3", "GPIO2/D4", "GPIO15/D8"], "protocol": "BOOT_STRAP", "voltage": "3.3V", "notes": "GPIO0/2 上拉、GPIO15 下拉才能正常启动；接外设不要拉错。"},
+      {"name": "Flash 占用", "pins": ["GPIO6-GPIO11"], "protocol": "FLASH", "voltage": "3.3V", "notes": "连接 SPI Flash，不可作普通 IO。"}
+    ],
+    "toolchains": ["PlatformIO", "arduino-cli"],
+    "validationFlow": ["hardware_project_audit", "hardware_project_validate", "platformio_run upload", "platformio_run monitor", "hardware_evidence_record"],
+    "commonFailures": ["arduino-cli 未装 esp8266 core", "GPIO0/2/15 接外设导致无法启动", "把 5V 信号接进 3.3V IO", "只有一路 ADC 却接多个模拟传感器"],
+    "teachingNotes": ["ESP8266 可用 IO 少、启动约束多(GPIO0/2/15)，只有 1 路 ADC。先用板载 LED(GPIO2，反逻辑)验证。需 arduino-cli 装 esp8266 core。"],
+    "aliases": ["esp8266", "nodemcu", "nodemcuv2", "wemos", "d1mini", "wemos_d1_mini"]
+  },
+  {
+    "id": "rp2040_pico",
+    "label": "Raspberry Pi Pico (RP2040)",
+    "platform": "platformio",
+    "board": "pico",
+    "defaultFramework": "Arduino (arduino-pico) / PlatformIO / MicroPython",
+    "arduinoFqbn": "rp2040:rp2040:rpipico",
+    "platformioEnv": "pico",
+    "platformioBoard": "pico",
+    "uploadMethod": "UF2 拖拽(按住 BOOTSEL 插 USB) 或 USB serial",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "3.3V 逻辑，VSYS 1.8-5.5V 供电；GPIO 不耐 5V。",
+    "recommendedProtocols": ["GPIO", "ADC", "I2C", "SPI", "UART", "PIO"],
+    "defaultPins": [
+      {"name": "板载 LED", "pins": ["GPIO25"], "protocol": "GPIO", "direction": "output", "voltage": "3.3V", "notes": "Pico 板载 LED 在 GPIO25(Pico W 不同，由 WiFi 芯片控制)。"},
+      {"name": "I2C0 默认", "pins": ["GPIO4/SDA", "GPIO5/SCL"], "protocol": "I2C", "direction": "bidirectional", "voltage": "3.3V", "notes": "I2C 引脚可重映射，默认常用 GP4/GP5。"},
+      {"name": "ADC", "pins": ["GPIO26", "GPIO27", "GPIO28"], "protocol": "ADC", "direction": "input", "voltage": "0-3.3V", "notes": "3 路 ADC(GP26-28)。"}
+    ],
+    "riskyPins": [
+      {"name": "5V 损坏风险", "pins": ["所有 GPIO"], "protocol": "GPIO", "voltage": "3.3V", "notes": "RP2040 GPIO 不耐 5V，5V 传感器信号必须电平转换。"}
+    ],
+    "toolchains": ["PlatformIO", "arduino-cli (arduino-pico core)", "MicroPython"],
+    "validationFlow": ["hardware_project_audit", "hardware_project_validate", "platformio_run upload", "platformio_run monitor", "hardware_evidence_record"],
+    "commonFailures": ["未装 arduino-pico(earlephilhower) core 或 PlatformIO raspberrypi 平台", "Pico W 误用 GPIO25 控制 LED", "把 5V 信号接进 GPIO"],
+    "teachingNotes": ["Pico 常见两条产线：MicroPython(拖 .uf2 固件 + Thonny) 和 Arduino(arduino-pico core)。烧录用 BOOTSEL 拖拽 .uf2。GPIO 不耐 5V。"],
+    "aliases": ["pico", "rp2040", "raspberry_pi_pico", "rpipico", "pico_w", "picow"]
+  },
+  {
+    "id": "stm32_bluepill",
+    "label": "STM32 Blue Pill (STM32F103C8)",
+    "platform": "platformio",
+    "board": "bluepill_f103c8",
+    "defaultFramework": "Arduino (STM32duino) / PlatformIO",
+    "platformioEnv": "bluepill_f103c8",
+    "platformioBoard": "bluepill_f103c8",
+    "uploadMethod": "ST-Link / USB-TTL(串口) / DFU；首次常需 ST-Link",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "3.3V 逻辑(部分脚 5V 容忍)；用 ST-Link 烧录最稳，板载 USB 常需先烧 bootloader。",
+    "recommendedProtocols": ["GPIO", "ADC", "I2C", "SPI", "UART", "PWM", "Timer"],
+    "defaultPins": [
+      {"name": "板载 LED", "pins": ["PC13"], "protocol": "GPIO", "direction": "output", "voltage": "3.3V", "notes": "Blue Pill 板载 LED 在 PC13，低电平点亮。"},
+      {"name": "I2C1", "pins": ["PB6/SCL", "PB7/SDA"], "protocol": "I2C", "direction": "bidirectional", "voltage": "3.3V", "notes": "默认 I2C1 在 PB6/PB7。"},
+      {"name": "USART1", "pins": ["PA9/TX", "PA10/RX"], "protocol": "UART", "direction": "bidirectional", "voltage": "3.3V", "notes": "USB-TTL 串口烧录常接 USART1。"}
+    ],
+    "riskyPins": [
+      {"name": "BOOT 跳线", "pins": ["BOOT0", "BOOT1"], "protocol": "BOOT_STRAP", "voltage": "3.3V", "notes": "串口/DFU 烧录需把 BOOT0 跳到 1，烧完跳回 0。"},
+      {"name": "调试脚", "pins": ["PA13/SWDIO", "PA14/SWCLK"], "protocol": "SWD", "voltage": "3.3V", "notes": "SWD 调试占用，作普通 IO 会断 ST-Link 连接。"}
+    ],
+    "toolchains": ["PlatformIO", "STM32CubeProgrammer", "st-flash", "Arduino STM32duino"],
+    "validationFlow": ["hardware_project_audit", "hardware_project_validate", "platformio_run upload", "platformio_run monitor", "hardware_evidence_record"],
+    "commonFailures": ["没有 ST-Link 又没烧 USB bootloader 导致无法上传", "BOOT0 跳线没切回", "把 PA13/PA14(SWD)当普通 IO"],
+    "teachingNotes": ["STM32 Blue Pill 用 PlatformIO(framework=arduino, board=bluepill_f103c8)最省心；首次上传建议用 ST-Link。LED 在 PC13。不建议给低龄学生直接上 STM32。"],
+    "aliases": ["stm32", "bluepill", "blue_pill", "stm32f103", "stm32f103c8", "bluepill_f103c8"]
+  },
+  {
+    "id": "microbit_v2",
+    "label": "BBC micro:bit v2",
+    "platform": "platformio",
+    "board": "bbcmicrobit_v2",
+    "defaultFramework": "MakeCode / MicroPython / PlatformIO(Arduino-nRF5)",
+    "platformioEnv": "bbcmicrobit_v2",
+    "platformioBoard": "bbcmicrobit_v2",
+    "uploadMethod": "拖拽 .hex 到 MICROBIT 盘 (MakeCode/MicroPython)；PlatformIO 走 DAPLink",
+    "defaultBaud": 115200,
+    "logicVoltage": "3.3V",
+    "powerNotes": "3.3V 逻辑；金手指 P0-P2 大焊盘可接鳄鱼夹，板载 LED 矩阵/按键/传感器。",
+    "recommendedProtocols": ["GPIO", "ADC", "I2C(内部)", "Radio(2.4G)", "LED 矩阵"],
+    "defaultPins": [
+      {"name": "大焊盘(鳄鱼夹)", "pins": ["P0", "P1", "P2"], "protocol": "GPIO/ADC", "direction": "bidirectional", "voltage": "3.3V", "notes": "P0/P1/P2 是大焊盘，最适合鳄鱼夹接外设；可做模拟输入。"},
+      {"name": "板载外设", "pins": ["5x5 LED 矩阵", "按键 A/B", "加速度计", "磁力计", "麦克风(v2)"], "protocol": "INTERNAL", "direction": "io", "voltage": "3.3V", "notes": "v2 比 v1 多了麦克风和扬声器；优先用板载外设教学。"}
+    ],
+    "riskyPins": [
+      {"name": "边缘小脚复用", "pins": ["P3", "P4", "P6", "P7", "P10"], "protocol": "GPIO", "voltage": "3.3V", "notes": "这些脚与板载 LED 矩阵复用，单独用会影响显示。"}
+    ],
+    "toolchains": ["MakeCode", "MicroPython (uflash/Thonny)", "PlatformIO (nordicnrf52)"],
+    "validationFlow": ["hardware_project_validate", "拖拽 .hex 部署", "板载 LED/串口 验证", "hardware_evidence_record"],
+    "commonFailures": ["把 P3-P10 当自由 IO(与 LED 矩阵复用)", "v1/v2 处理器不同(v2 是 nRF52833)导致固件不兼容", "拖拽 .hex 到错误盘符"],
+    "teachingNotes": ["micro:bit 低龄首选 MakeCode(图形化)或 MicroPython，部署是拖拽 .hex 到 MICROBIT 盘，不走 arduino-cli。优先用板载 LED 矩阵/按键/传感器和 P0/P1/P2 大焊盘。"],
+    "aliases": ["microbit", "micro:bit", "microbit_v2", "bbcmicrobit", "bbcmicrobit_v2"]
+  }
+]

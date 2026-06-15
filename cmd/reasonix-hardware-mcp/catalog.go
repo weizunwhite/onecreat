@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"reasonix/internal/hardware/boards"
 )
 
 //go:embed data/sensor-catalog.json
@@ -82,7 +84,7 @@ type platformAPIFile struct {
 
 var (
 	catalogModules   []catalogModule
-	catalogIndex     = map[string]int{}    // 归一化模块名 -> catalogModules 下标
+	catalogIndex     = map[string]int{} // 归一化模块名 -> catalogModules 下标
 	platformAPIs     map[string]platformAPIEntry
 	platformAPIAlias = map[string]string{} // 归一化别名 -> api key
 	catalogLoadErr   error
@@ -90,12 +92,12 @@ var (
 
 // 常见口语名 -> 目录里的标准键(只为确证存在的模块写别名)
 var moduleAlias = map[string]string{
-	"servo":       "SG90",
-	"舵机":          "SG90",
-	"oled":        "OLED_SSD1306",
-	"ssd1306":     "OLED_SSD1306",
-	"dht":         "DHT11",
-	"温湿度":         "DHT11",
+	"servo":   "SG90",
+	"舵机":      "SG90",
+	"oled":    "OLED_SSD1306",
+	"ssd1306": "OLED_SSD1306",
+	"dht":     "DHT11",
+	"温湿度":     "DHT11",
 }
 
 // 库名 -> Arduino 头文件(覆盖最常用的几个,够模型起步)
@@ -188,20 +190,10 @@ func findCatalogModule(query string) (catalogModule, bool) {
 }
 
 // board 字符串 -> 目录里的板键(default_pins 的 key)
+// catalogBoardKey 委托给共享注册表;它在子串兜底上比旧版多了 ESP32-C3/C6/H2/S2 → ""
+// (不再注入经典 ESP32 的错引脚)。
 func catalogBoardKey(board string) string {
-	b := normalizeModuleName(board)
-	switch {
-	case b == "":
-		return ""
-	case strings.Contains(b, "esp32s3") || strings.Contains(b, "s3"):
-		return "esp32_s3"
-	case strings.Contains(b, "esp32"):
-		return "esp32_devkit"
-	case strings.Contains(b, "nano"), strings.Contains(b, "uno"), strings.Contains(b, "avr"):
-		return "arduino_nano"
-	default:
-		return ""
-	}
+	return boards.CatalogPinKey(board)
 }
 
 // 按平台选 arduino / platformio 库,再按板裁掉不适用的(ESP32 vs AVR 舵机库)

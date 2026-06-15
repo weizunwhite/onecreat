@@ -39,7 +39,12 @@ type BoardPreset = {
 // (helper 组件 HardwarePathSummary / HardwareCommandSummary / HardwareFieldFile / FlowStep timeline /
 //  HardwareFileHint 列表已删除 — 都是抽屉版的装饰元素,全屏 IDE 视图改用 toolbar + 精简卡片。)
 
-const boardPresets: BoardPreset[] = [
+// 「自定义板卡」是纯 UI 选项(不在注册表里),始终追加在板卡列表末尾。
+const CUSTOM_BOARD: BoardPreset = { value: "custom", label: "自定义板卡", framework: "按用户说明" };
+
+// 板卡选项现在从后端共享注册表(boards.json,经 HardwareBoardList)动态拉取——加一块板
+// 只改 JSON,这里自动多一项。下面这份静态表只在后端不可用时兜底。
+const FALLBACK_BOARD_PRESETS: BoardPreset[] = [
   { value: "arduino_uno", label: "Arduino UNO", framework: "Arduino IDE / Arduino CLI" },
   { value: "arduino_nano", label: "Arduino Nano", framework: "Arduino IDE / Arduino CLI" },
   { value: "esp32_arduino", label: "ESP32 Dev Module", framework: "Arduino / PlatformIO" },
@@ -47,7 +52,7 @@ const boardPresets: BoardPreset[] = [
   { value: "unihiker", label: "Unihiker 行空板", framework: "Python / SSH" },
   { value: "maixcam", label: "MaixCAM K230", framework: "MaixPy" },
   { value: "raspberry_pi", label: "Raspberry Pi", framework: "Python / SSH" },
-  { value: "custom", label: "自定义板卡", framework: "按用户说明" },
+  CUSTOM_BOARD,
 ];
 
 const actions: HardwareAction[] = [
@@ -315,6 +320,18 @@ export function HardwarePanel({
   const [err, setErr] = useState<string | null>(null);
   // 项目条上「工具就绪 X/Y」点开后,列出具体每个工具是否就绪。
   const [toolchainsOpen, setToolchainsOpen] = useState(false);
+  // 板卡选项:来自后端共享注册表,加板=改 JSON 即自动多一项;失败兜底静态表。
+  const [boardPresets, setBoardPresets] = useState<BoardPreset[]>(FALLBACK_BOARD_PRESETS);
+  useEffect(() => {
+    app
+      .HardwareBoardList()
+      .then((list) => {
+        if (list && list.length) {
+          setBoardPresets([...list.map((b) => ({ value: b.value, label: b.label, framework: b.framework })), CUSTOM_BOARD]);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const reload = useCallback(async () => {
     const [capabilities, hardware, detected, evidenceStatus] = await Promise.all([
@@ -374,7 +391,7 @@ export function HardwarePanel({
       }))
       .filter((item) => item.label);
     return [...boardPresets, ...detected];
-  }, [detect]);
+  }, [detect, boardPresets]);
   const selectedBoard = boardOptions.find((item) => item.value === board);
   const evidenceTone =
     evidence?.status === "hardware_verified" ? "ok" : evidence?.status === "no_evidence" || evidence?.status === "unavailable" ? "warn" : "pending";
@@ -395,6 +412,8 @@ export function HardwarePanel({
   const runOneTouch = useCallback(
     async (kind: "validate" | "upload" | "monitor") => {
       if (!detectedPlatform || !detect?.projectDir) return;
+      app.MarkSessionKind("hardware").catch(() => {}); // 真正跑硬件动作 → 标记会话为硬件项目
+
       // SSH 平台（行空板/MaixCAM/树莓派）的「烧录/看串口」没法本地一键完成：
       // 必须知道设备 IP 和用户名才能 scp + ssh。不再返回死的「skipped」，
       // 而是把带好工程路径和运行命令的 SSH 部署提示直接交给对话，
@@ -510,6 +529,7 @@ export function HardwarePanel({
       setErr("请先说明要编写什么程序。");
       return;
     }
+    app.MarkSessionKind("hardware").catch(() => {}); // 生成硬件代码 → 标记会话为硬件项目
     setBusy(true);
     setErr(null);
     try {
@@ -556,6 +576,7 @@ export function HardwarePanel({
       setErr("请先说明要编写什么程序。");
       return;
     }
+    app.MarkSessionKind("hardware").catch(() => {}); // 直接生成硬件代码 → 标记会话为硬件项目
     setBusy(true);
     setErr(null);
     try {

@@ -41,6 +41,37 @@ func TestBoardProfileReturnsESP32Constraints(t *testing.T) {
 	}
 }
 
+// 数据驱动注册表(#1)回归:新加的板卡家族必须能被 findBoardProfile 命中并注入事实,
+// 且工具链映射(FQBN/target)正确——否则编译第一步就因非法 FQBN 报错。
+func TestNewBoardFamiliesResolveAndMapToolchains(t *testing.T) {
+	cases := []struct {
+		board, wantFQBN, wantInProfile string
+	}{
+		{"esp32s3", "esp32:esp32:esp32s3", "没有 input-only"},
+		{"esp32c3", "esp32:esp32:esp32c3", "RISC-V"},
+		{"esp8266", "esp8266:esp8266:nodemcuv2", "启动约束"},
+		{"pico", "rp2040:rp2040:rpipico", "BOOTSEL"},
+		{"stm32", "stm32", "PC13"},
+		{"microbit", "microbit", "MakeCode"},
+		{"mega", "arduino:avr:mega", "D20/D21"},
+	}
+	for _, c := range cases {
+		if got := arduinoFQBN(c.board); got != c.wantFQBN {
+			t.Errorf("arduinoFQBN(%q) = %q, want %q", c.board, got, c.wantFQBN)
+		}
+		if _, ok := findBoardProfile(c.board, ""); !ok {
+			t.Errorf("findBoardProfile(%q) did not match a profile — new board not in registry", c.board)
+		}
+		out, err := runBoardProfile(map[string]any{"board": c.board})
+		if err != nil {
+			t.Fatalf("runBoardProfile(%q): %v", c.board, err)
+		}
+		if !strings.Contains(out, c.wantInProfile) {
+			t.Errorf("board profile for %q missing %q", c.board, c.wantInProfile)
+		}
+	}
+}
+
 func TestRepairCatalogListsAutoAndManualRules(t *testing.T) {
 	out, err := runRepairCatalog(map[string]any{"platform": "platformio"})
 	if err != nil {

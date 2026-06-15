@@ -765,6 +765,14 @@ body {
   font-size: 13px;
   line-height: 1.3;
 }
+/* 历史会话行的硬件项目标:小 Cpu 图标内联在标题前 */
+.sidebar-session__kind {
+  display: inline-block;
+  vertical-align: -1px;
+  margin-right: 4px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
 .sidebar-session__meta {
   display: block;
   overflow: hidden;

@@ -18,6 +18,7 @@ import type {
   HardwareBoardFactsView,
   HardwareDetectView,
   HardwareEvidenceStatusView,
+  HardwareBoardSummary,
   HardwareMCPView,
   HardwareRunInput,
   HardwareRunResult,
@@ -88,6 +89,8 @@ export interface AppBindings {
   PreviewSession(path: string): Promise<HistoryMessage[]>;
   DeleteSession(path: string): Promise<void>;
   RenameSession(path: string, title: string): Promise<void>;
+  // 给当前活动会话打类型标(如 "hardware"),供历史侧栏区分垂直;写一次即定。
+  MarkSessionKind(kind: string): Promise<void>;
   // Workspace: open a folder chooser and switch to that project (fresh session);
   // returns the chosen path, or "" if cancelled.
   ListWorkspaces(): Promise<WorkspaceView[]>;
@@ -108,6 +111,8 @@ export interface AppBindings {
   Capabilities(): Promise<CapabilitiesView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   HardwareMCP(): Promise<HardwareMCPView>;
+  // 板卡选择器的可选项,来自共享数据驱动注册表(boards.json)。
+  HardwareBoardList(): Promise<HardwareBoardSummary[]>;
   HardwareDetect(): Promise<HardwareDetectView>;
   HardwareEvidenceStatus(): Promise<HardwareEvidenceStatusView>;
   // 把 tests/hardware_evidence.jsonl 的真机验证记录汇总成可粘进竞赛材料的 Markdown（无记录返回空串）。
@@ -595,6 +600,7 @@ function makeMockApp(): AppBindings {
       const s = sessions.find((x) => x.path === path);
       if (s) s.title = title.trim() || undefined;
     },
+    async MarkSessionKind() {},
     async ListWorkspaces() {
       return workspaces.map((path) => ({
         path,
@@ -676,6 +682,12 @@ function makeMockApp(): AppBindings {
         connected: server?.status === "connected",
         error: server?.error,
       };
+    },
+    async HardwareBoardList() {
+      return [
+        { value: "arduino_uno", label: "Arduino UNO", framework: "Arduino IDE / Arduino CLI", platform: "arduino" },
+        { value: "esp32_arduino", label: "ESP32 Dev Module", framework: "Arduino / PlatformIO", platform: "platformio" },
+      ];
     },
     async HardwareDetect() {
       return {

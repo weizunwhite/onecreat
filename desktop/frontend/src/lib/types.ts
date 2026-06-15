@@ -120,6 +120,7 @@ export interface SessionMeta {
   modTime: number; // compatibility alias for lastActivityAt
   current: boolean;
   cwd?: string; // workspace path at session creation (for sidebar folder grouping)
+  kind?: string; // 会话类型(如 "hardware");空=普通对话。历史侧栏据此区分垂直
 }
 
 export interface WorkspaceView {
@@ -230,6 +231,14 @@ export interface HardwareMCPView {
   configured: boolean;
   connected: boolean;
   error?: string;
+}
+// HardwareBoardSummary 是板卡选择器的一项,来自共享数据驱动注册表(boards.json);
+// 加一块板=改 JSON,UI 下拉自动多一项。
+export interface HardwareBoardSummary {
+  value: string;
+  label: string;
+  framework: string;
+  platform: string;
 }
 export interface HardwareToolchainView {
   name: string;
