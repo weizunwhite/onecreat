@@ -1682,7 +1682,7 @@
   "vision_modules": {
     "MaixCAM": {
       "category": "视觉/AI",
-      "function": "嘉楠K210 AI视觉模块",
+      "function": "嘉楠K230 AI视觉模块",
       "protocol": "UART/SPI",
       "pins_required": {
         "TX": 1,
@@ -1699,7 +1699,7 @@
         "platformio": []
       },
       "voltage": "5V",
-      "notes": "自带摄像头+屏幕; 支持YOLOv8目标检测; MicroPython编程; 通过串口与ESP32通信",
+      "notes": "K230 芯片(不是 K210); 自带摄像头+屏幕; 支持YOLOv8目标检测; 用 MaixPy v4 的 maix.* API 编程(不是 K210 老 API,也不是通用 MicroPython); 通过串口与ESP32通信",
       "difficulty": "advanced",
       "used_in_projects": [
         "智能垃圾桶(宠物垃圾清理)"

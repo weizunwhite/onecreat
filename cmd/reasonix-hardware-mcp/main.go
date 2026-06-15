@@ -1756,13 +1756,55 @@ func realDevicePlanSteps(platform, projectDir, board string, resolved map[string
 		return []deviceVerifyPlanStep{
 			{Stage: "mpremote", Tool: "mpremote_run", Arguments: map[string]any{"script": pythonScriptForPlan(projectDir), "device": resolved["device"]}, Notes: "如果 device=auto 选错板，请改成具体串口。"},
 		}
-	case "unihiker_python", "maixcam_python", "raspberry_pi_python":
+	case "unihiker_python":
+		// 行空板:GPIO 用 pinpong、UI 用 unihiker;默认 root 登录,只需部署 src。
+		host := placeholderIfEmpty(resolved["host"], "DEVICE_HOST")
+		user := deployUser(platform, resolved["user"])
+		remoteDir := remoteDeployDir(user, projectDir)
 		return []deviceVerifyPlanStep{
-			{Stage: "deploy", Tool: "ssh_deploy_run", Arguments: map[string]any{"host": placeholderIfEmpty(resolved["host"], "DEVICE_HOST"), "user": placeholderIfEmpty(resolved["user"], "root"), "local_path": filepath.Join(projectDir, "src"), "remote_path": "/root/reasonix/" + filepath.Base(projectDir), "recursive": true, "command": "python3 /root/reasonix/" + filepath.Base(projectDir) + "/main.py"}, Notes: "第一次运行前确认 SSH 地址、用户名和远端 Python 环境。密码登录设备（行空板默认 root/dfrobot）记得传 password 参数。"},
+			{Stage: "deploy", Tool: "ssh_deploy_run", Arguments: map[string]any{"host": host, "user": user, "local_path": filepath.Join(projectDir, "src"), "remote_path": remoteDir, "recursive": true, "command": "python3 " + remoteDir + "/main.py"}, Notes: "行空板多为密码登录(默认 root/dfrobot),传 password 参数;GPIO 用 pinpong、屏幕 UI 用 unihiker,部署前确认设备已装这两个库。"},
+		}
+	case "maixcam_python":
+		// MaixCAM(K230):视觉项目的模型(models/*.mud/.onnx)和素材(assets/)必须一起上板,
+		// 只传 src 会让推理时找不到模型文件 —— 所以部署整个项目目录,命令指向 src/main.py。
+		host := placeholderIfEmpty(resolved["host"], "DEVICE_HOST")
+		user := deployUser(platform, resolved["user"])
+		remoteDir := remoteDeployDir(user, projectDir)
+		return []deviceVerifyPlanStep{
+			{Stage: "deploy", Tool: "ssh_deploy_run", Arguments: map[string]any{"host": host, "user": user, "local_path": projectDir, "remote_path": remoteDir, "recursive": true, "command": "python3 " + remoteDir + "/src/main.py"}, Notes: "MaixCAM(K230)要连 models/(.mud/.onnx)和 assets/ 一起部署,只传 src 上板会缺模型;默认 root 登录,代码用 MaixPy v4 的 maix.* API(不是 K210 老 API)。"},
+		}
+	case "raspberry_pi_python":
+		// 树莓派默认 pi 用户,家目录 /home/pi(写不进 /root);部署 src 即可。
+		host := placeholderIfEmpty(resolved["host"], "DEVICE_HOST")
+		user := deployUser(platform, resolved["user"])
+		remoteDir := remoteDeployDir(user, projectDir)
+		return []deviceVerifyPlanStep{
+			{Stage: "deploy", Tool: "ssh_deploy_run", Arguments: map[string]any{"host": host, "user": user, "local_path": filepath.Join(projectDir, "src"), "remote_path": remoteDir, "recursive": true, "command": "python3 " + remoteDir + "/main.py"}, Notes: "树莓派默认 pi 用户(家目录 /home/pi),不是 root;先确认设备已装依赖(gpiozero / opencv-python / picamera2);CSI 排线摄像头用 picamera2,USB 摄像头才用 cv2.VideoCapture(0)。"},
 		}
 	default:
 		return nil
 	}
+}
+
+// deployUser 选定 SSH 部署用户:优先用已解析的用户,空则回退到该平台默认(树莓派=pi、其余=root)。
+func deployUser(platform, resolvedUser string) string {
+	if u := strings.TrimSpace(resolvedUser); u != "" {
+		return u
+	}
+	if u, _ := defaultSSHTarget(platform); u != "" {
+		return u
+	}
+	return "root"
+}
+
+// remoteDeployDir 按登录用户推断远端部署目录:root 用 /root,其它用户(如树莓派的 pi)用 /home/<user>。
+// 避免把项目部署到 pi 用户写不进的 /root 导致权限失败。
+func remoteDeployDir(user, projectDir string) string {
+	base := "/root/reasonix"
+	if u := strings.TrimSpace(user); u != "" && u != "root" {
+		base = "/home/" + u + "/reasonix"
+	}
+	return base + "/" + filepath.Base(projectDir)
 }
 
 func arduinoSketchDirForPlan(projectDir string) string {
@@ -4155,6 +4197,13 @@ func detectProjectTypes(dir string) []string {
 		out = append(out, "arduino")
 	}
 	if hasPythonEntrypoint(dir) {
+		// 先按 import 把 Python 细分到具体子平台(行空板/MaixCAM/树莓派/真 MicroPython)。
+		// 同样是 .py,这几个平台用的库完全不同;只看到 .py 就一律当成 micropython,
+		// 会让弱模型走错脚手架和部署路径。识别得到就把具体平台排在前面,
+		// 仍保留 python_or_micropython 兜底,旧的匹配逻辑不受影响。
+		if specific := detectPythonPlatform(dir); specific != "" {
+			out = append(out, specific)
+		}
 		out = append(out, "python_or_micropython")
 	}
 	if len(out) == 0 {
@@ -4164,6 +4213,11 @@ func detectProjectTypes(dir string) []string {
 }
 
 func hasPythonEntrypoint(dir string) bool {
+	return pythonEntrypointPath(dir) != ""
+}
+
+// pythonEntrypointPath 返回项目里第一个存在的 Python 入口文件的绝对路径(没有则空串)。
+func pythonEntrypointPath(dir string) string {
 	for _, rel := range []string{
 		"boot.py",
 		"main.py",
@@ -4171,11 +4225,40 @@ func hasPythonEntrypoint(dir string) bool {
 		filepath.Join("src", "boot.py"),
 		filepath.Join("src", "app.py"),
 	} {
-		if exists(filepath.Join(dir, rel)) {
-			return true
+		full := filepath.Join(dir, rel)
+		if exists(full) {
+			return full
 		}
 	}
-	return false
+	return ""
+}
+
+// detectPythonPlatform 读取 Python 入口文件的 import,判断具体的 Python 子平台。
+// 命中返回 unihiker_python / maixcam_python / raspberry_pi_python / micropython,
+// 无法判断时返回空串(交给上层用 python_or_micropython 兜底)。
+func detectPythonPlatform(dir string) string {
+	entry := pythonEntrypointPath(dir)
+	if entry == "" {
+		return ""
+	}
+	data, err := os.ReadFile(entry)
+	if err != nil {
+		return ""
+	}
+	src := strings.ToLower(string(data))
+	switch {
+	case strings.Contains(src, "from maix import") || strings.Contains(src, "import maix"):
+		return "maixcam_python" // MaixCAM (K230) MaixPy v4
+	case strings.Contains(src, "pinpong") || strings.Contains(src, "from unihiker"):
+		return "unihiker_python" // 行空板:GPIO 用 pinpong,UI 用 unihiker
+	case strings.Contains(src, "rpi.gpio") ||
+		strings.Contains(src, "import gpiozero") || strings.Contains(src, "from gpiozero") ||
+		strings.Contains(src, "picamera") || strings.Contains(src, "import lgpio"):
+		return "raspberry_pi_python" // 树莓派:gpiozero/RPi.GPIO/picamera2
+	case strings.Contains(src, "from machine import") || strings.Contains(src, "import machine"):
+		return "micropython" // ESP32 等跑真 MicroPython(machine 模块)
+	}
+	return ""
 }
 
 func findArduinoSketchDirs(dir string) []string {

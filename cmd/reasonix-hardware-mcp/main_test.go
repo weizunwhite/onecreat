@@ -614,6 +614,99 @@ func planHasTool(steps []deviceVerifyPlanStep, tool string) bool {
 	return false
 }
 
+func findDeployStep(steps []deviceVerifyPlanStep) *deviceVerifyPlanStep {
+	for i := range steps {
+		if steps[i].Tool == "ssh_deploy_run" {
+			return &steps[i]
+		}
+	}
+	return nil
+}
+
+// Python 子平台必须按 import 细分:行空板/MaixCAM/树莓派/真 MicroPython 库完全不同,
+// 只看到 .py 就一律当 micropython 会让弱模型走错脚手架和部署。
+func TestDetectPythonPlatformFromImports(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"maixcam", "from maix import camera, display\n", "maixcam_python"},
+		{"unihiker_pinpong", "from pinpong.board import Board, Pin\n", "unihiker_python"},
+		{"unihiker_gui", "from unihiker import GUI\n", "unihiker_python"},
+		{"raspberry_gpiozero", "from gpiozero import LED, Button\n", "raspberry_pi_python"},
+		{"raspberry_rpigpio", "import RPi.GPIO as GPIO\n", "raspberry_pi_python"},
+		{"raspberry_picamera", "from picamera2 import Picamera2\n", "raspberry_pi_python"},
+		{"micropython_machine", "from machine import Pin\n", "micropython"},
+		{"ambiguous", "print('hello world')\n", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "src")
+			if err := os.MkdirAll(src, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(src, "main.py"), []byte(tc.source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := detectPythonPlatform(dir); got != tc.want {
+				t.Fatalf("detectPythonPlatform() = %q, want %q", got, tc.want)
+			}
+			if tc.want == "" {
+				return
+			}
+			// 具体平台要排在 python_or_micropython 之前,并被 audit 选中。
+			types := detectProjectTypes(dir)
+			if !contains(types, tc.want) {
+				t.Fatalf("detectProjectTypes() = %+v, want to contain %q", types, tc.want)
+			}
+			if got := auditExpectedPlatform("auto", "", types); got != tc.want {
+				t.Fatalf("auditExpectedPlatform(auto) = %q, want %q (detected=%+v)", got, tc.want, types)
+			}
+		})
+	}
+}
+
+// 三种 SSH 部署平台不能再共用一条命令:树莓派要 /home/pi 路径,
+// MaixCAM 要连模型/素材一起传,行空板保持 root+src。
+func TestRealDevicePlanStepsDifferentiatePythonDeploy(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "proj_demo")
+
+	rpi := findDeployStep(realDevicePlanSteps("raspberry_pi_python", projectDir, "raspberry_pi", map[string]string{"host": "pi.local", "user": "pi"}, 115200, 8))
+	if rpi == nil {
+		t.Fatal("raspberry_pi_python missing ssh_deploy_run step")
+	}
+	if got := rpi.Arguments["remote_path"].(string); !strings.HasPrefix(got, "/home/pi/") {
+		t.Errorf("RPi(pi 用户) remote_path 应在 /home/pi 下,got %q", got)
+	}
+	if got := rpi.Arguments["remote_path"].(string); strings.HasPrefix(got, "/root/") {
+		t.Errorf("RPi 不应部署到 pi 用户写不进的 /root,got %q", got)
+	}
+
+	maix := findDeployStep(realDevicePlanSteps("maixcam_python", projectDir, "maixcam", map[string]string{"host": "m.local", "user": "root"}, 115200, 8))
+	if maix == nil {
+		t.Fatal("maixcam_python missing ssh_deploy_run step")
+	}
+	if got := maix.Arguments["local_path"].(string); got != projectDir {
+		t.Errorf("MaixCAM 应部署整个项目目录(含 models/assets),got local_path=%q want %q", got, projectDir)
+	}
+	if got := maix.Arguments["command"].(string); !strings.Contains(got, "/src/main.py") {
+		t.Errorf("MaixCAM 部署整树后命令应指向 src/main.py,got %q", got)
+	}
+
+	uni := findDeployStep(realDevicePlanSteps("unihiker_python", projectDir, "unihiker", map[string]string{"host": "10.1.2.3", "user": "root"}, 115200, 8))
+	if uni == nil {
+		t.Fatal("unihiker_python missing ssh_deploy_run step")
+	}
+	if got := uni.Arguments["local_path"].(string); got != filepath.Join(projectDir, "src") {
+		t.Errorf("Unihiker 应只传 src,got local_path=%q", got)
+	}
+	if got := uni.Arguments["remote_path"].(string); !strings.HasPrefix(got, "/root/") {
+		t.Errorf("Unihiker(root 用户) remote_path 应在 /root 下,got %q", got)
+	}
+}
+
 func TestToolchainAvailableMatchesDetailedToolchainNames(t *testing.T) {
 	toolchains := []toolchainReport{
 		{Name: "ESP-IDF idf.py", Available: true},

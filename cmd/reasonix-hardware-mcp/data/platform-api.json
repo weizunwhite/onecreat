@@ -1,8 +1,8 @@
 {
   "_meta": {
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "冷门/易错平台的软件 API 地面真值。sensor-catalog.json 只有接线,这里补软件写法。重点覆盖模型最爱幻觉的国产生态(MaixCAM K230 / 行空板),以及跨平台库差异。",
-    "note": "imports 与 gotchas 已人工核对;snippet 为最小可用范式,细节(如 UART 设备节点、core 版本)以官方文档为准。0.2.0 据 DeepSeek 硬件能力边界实测补:esp32_arduino(LEDC PWM)、unihiker ADC、esp32_micropython PWM。"
+    "note": "imports 与 gotchas 已人工核对;snippet 为最小可用范式,细节(如 UART 设备节点、core 版本)以官方文档为准。0.2.0 据 DeepSeek 硬件能力边界实测补:esp32_arduino(LEDC PWM)、unihiker ADC、esp32_micropython PWM。0.3.0 补 raspberry_pi(gpiozero vs RPi.GPIO、CSI/picamera2 vs USB/cv2、MediaPipe/YOLOv8)——树莓派是 Python 主控里最常用却最易把摄像头/GPIO 库写错的平台。"
   },
   "apis": {
     "maixcam": {
@@ -56,6 +56,36 @@
         "数字温度模块(DHT11/DHT22/DS18B20)不是模拟量,不能用 read_analog,要用对应数字/OneWire 库。"
       ],
       "snippet": "from unihiker import GUI\nfrom pinpong.board import Board, Pin\nimport time\n\nBoard().begin()                       # 初始化行空板(必须)\ngui = GUI()                           # 屏幕 UI\nbutton = Pin(Pin.P21, Pin.IN)         # P21 数字输入(读按钮)\nadc = Pin(Pin.P22, Pin.ANALOG)        # P22 模拟输入(读电位器等),常量是 Pin.ANALOG\n\nlabel = gui.draw_text(x=120, y=140, text=\"松开\", font_size=24, origin=\"center\")\nvolt = gui.draw_text(x=120, y=190, text=\"\", font_size=18, origin=\"center\")\n\nlast = 1\nwhile True:\n    state = button.read_digital()     # 0=按下, 1=松开\n    if state != last:\n        label.config(text=\"按下\" if state == 0 else \"松开\")\n        last = state\n    raw = adc.read_analog()           # 0~4095(12 位 ADC)\n    voltage = raw * 3.3 / 4095        # 换算电压,分母用 4095\n    volt.config(text=\"%.2fV\" % voltage)\n    time.sleep(0.05)"
+    },
+    "raspberry_pi": {
+      "label": "Raspberry Pi (Linux + Python)",
+      "aliases": [
+        "raspberry_pi",
+        "raspberrypi",
+        "rpi",
+        "树莓派",
+        "raspberry_pi_python",
+        "raspberry pi"
+      ],
+      "language": "python",
+      "verified": "imports/gotchas 已对照 gpiozero/picamera2/ultralytics 官方文档与树莓派官方摄像头迁移说明(libcamera)",
+      "summary": "树莓派跑标准 Linux,用 CPython 直接 pip 装库。GPIO 优先用 gpiozero(高层好教学),视觉用 OpenCV/picamera2,姿态/手势用 MediaPipe,目标检测用 ultralytics YOLOv8。模型最常错在:摄像头(CSI vs USB)、GPIO 库选择、舵机 PWM。",
+      "imports": [
+        "from gpiozero import LED, Button, AngularServo   # GPIO(高层,推荐教学)",
+        "import cv2                                        # OpenCV(USB 摄像头/图像处理)",
+        "from picamera2 import Picamera2                   # CSI 排线摄像头(新系统 libcamera)"
+      ],
+      "gotchas": [
+        "GPIO 优先用 gpiozero(from gpiozero import LED, Button),高层、自动清理、最好教学。底层 RPi.GPIO 也能用但要手动 setmode/cleanup;树莓派 5 上老的 RPi.GPIO 会报错,改用 gpiozero 或 lgpio。",
+        "gpiozero/RPi.GPIO 的引脚号是 BCM 编号(GPIO17 写 17),不是排针的物理引脚号(物理第 11 脚才是 GPIO17)。别把物理引脚号当 BCM 号传。",
+        "摄像头分两种,别搞混:CSI 排线摄像头在新系统(Bullseye/Bookworm)走 libcamera,必须用 picamera2(from picamera2 import Picamera2),老的 import picamera 已废弃,cv2.VideoCapture(0) 也抓不到 CSI 摄像头。只有 USB 摄像头才用 cv2.VideoCapture(0)。",
+        "picamera2 抓的帧是 RGB,OpenCV 默认 BGR;送进 cv2 之前要 cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),否则红蓝颜色全反,inRange 阈值全错。",
+        "舵机不要用 RPi.GPIO 的软件 PWM(抖动严重、烧 CPU),用 gpiozero 的 AngularServo(pin, min_angle=-90, max_angle=90),或接到硬件 PWM 引脚(GPIO12/13/18/19)。",
+        "MediaPipe:pip install mediapipe,树莓派要 64 位系统(arm64),32 位系统装不上。手势/姿态直接用 mp.solutions.hands / mp.solutions.pose。",
+        "YOLOv8:pip install ultralytics。树莓派算力有限,用 yolov8n(nano)模型,并导出 ncnn 加速:model.export(format='ncnn');即便如此实时帧率也很低,别按 30fps 设计交互。",
+        "GPIO 是 3.3V 电平,不能直接接 5V 传感器输出(如 HC-SR04 的 Echo),要分压或电平转换,否则可能烧引脚。"
+      ],
+      "snippet": "# 树莓派 — gpiozero 控 LED/按钮 + OpenCV(USB 摄像头)颜色识别 最小范式\n# CSI 排线摄像头请把 cv2.VideoCapture 换成 picamera2(见文件末注释)。\nimport cv2\nimport numpy as np\nfrom gpiozero import LED, Button\n\nled = LED(17)          # BCM 17(物理第 11 脚),接 LED\nbutton = Button(2)     # BCM 2,接按钮(gpiozero 默认带上拉,按下为 0)\n\n# HSV 红色阈值(红色跨 0/180,分两段);现场光线不同可微调\nRED_LOW_1, RED_HIGH_1 = (0, 120, 70), (10, 255, 255)\nRED_LOW_2, RED_HIGH_2 = (170, 120, 70), (180, 255, 255)\n\ncap = cv2.VideoCapture(0)              # 0 = 第一个 USB 摄像头\n\ntry:\n    while True:\n        ok, frame = cap.read()         # USB 摄像头取一帧(BGR)\n        if not ok:\n            continue\n        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)\n        mask = cv2.inRange(hsv, RED_LOW_1, RED_HIGH_1) | cv2.inRange(hsv, RED_LOW_2, RED_HIGH_2)\n        red_ratio = cv2.countNonZero(mask) / mask.size\n        if red_ratio > 0.05:           # 红色占比超过 5% 就点亮 LED\n            led.on()\n        else:\n            led.off()\n        if button.is_pressed:          # 按钮按下退出\n            break\nfinally:\n    cap.release()\n    led.off()\n\n# CSI 排线摄像头改用 picamera2(cv2.VideoCapture 抓不到 CSI):\n#   from picamera2 import Picamera2\n#   picam = Picamera2(); picam.configure(picam.create_preview_configuration()); picam.start()\n#   frame = picam.capture_array()                 # RGB\n#   frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) # 转成 OpenCV 的 BGR 再处理"
     },
     "esp32_micropython": {
       "label": "ESP32 MicroPython",

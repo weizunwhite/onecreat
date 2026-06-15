@@ -91,6 +91,22 @@ func TestMaixCAMPlatformAPI(t *testing.T) {
 	}
 }
 
+// 树莓派:GPIO 优先 gpiozero,摄像头要分 CSI(picamera2)和 USB(cv2)。
+func TestRaspberryPiPlatformAPI(t *testing.T) {
+	for _, alias := range []string{"raspberry_pi", "树莓派", "rpi"} {
+		r := resolveModule(alias, "", "")
+		if !r.Matched || r.Kind != "platform_api" {
+			t.Fatalf("%q should resolve to a platform_api, got matched=%v kind=%q", alias, r.Matched, r.Kind)
+		}
+		if !hasString(r.Imports, "gpiozero") {
+			t.Errorf("%q expected a gpiozero import, got %v", alias, r.Imports)
+		}
+		if !hasString(r.Gotchas, "picamera2") {
+			t.Errorf("%q expected a picamera2/CSI 摄像头 gotcha, got %v", alias, r.Gotchas)
+		}
+	}
+}
+
 // 行空板:GPIO 来自 pinpong,不是 unihiker —— P5-pro 正是错在这。
 func TestUnihikerPlatformAPI(t *testing.T) {
 	r := resolveModule("unihiker", "", "")
