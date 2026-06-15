@@ -43,6 +43,7 @@ const (
 func main() {
 	log.SetPrefix("reasonix-hardware-mcp: ")
 	log.SetFlags(0)
+	ensureManagedToolsOnPath() // 让本应用一键安装到用户目录的 arduino-cli 等工具能被找到
 	if err := serve(os.Stdin, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
@@ -334,6 +335,16 @@ var tools = []toolDef{
 			"timeout_seconds": map[string]any{"type": "number", "description": "Command timeout. Defaults to 600 (core 下载较慢)."},
 		}, []string{"core"}),
 		run: runArduinoCoreInstall,
+	},
+	{
+		name:        "hardware_install_toolchain",
+		description: "一键安装核心硬件工具链(Phase 1)。若 arduino-cli 未安装，自动从官方下载单文件二进制到用户目录（免管理员、免 Python、Windows/macOS 通用），再安装板卡 core（默认 arduino:avr + esp32:esp32，覆盖 Arduino 全系与 ESP32 全系）。装完即可编译/烧录。给学生/老师打包后点一下就能从零备齐环境。可用 cores 参数自定义要装的 core；ESP-IDF / PlatformIO / USB 驱动不在本工具范围（见各自手动指引）。",
+		readOnly:    false,
+		schema: objectSchema(map[string]any{
+			"cores":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "要安装的 arduino-cli core 列表，默认 [arduino:avr, esp32:esp32]。"},
+			"timeout_seconds": map[string]any{"type": "number", "description": "每步超时秒数，默认 600（首次下载 core 较慢）。"},
+		}, nil),
+		run: runInstallToolchain,
 	},
 	{
 		name:        "arduino_upload",
