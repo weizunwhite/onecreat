@@ -672,6 +672,11 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 	}
 	defer os.Chdir(oldWD)
 
+	// #2-3:清空本进程的真实执行日志,避免跨测试污染;本测试自己模拟真实执行。
+	hostExecMu.Lock()
+	hostExecs = nil
+	hostExecMu.Unlock()
+
 	_, err = runScaffold(map[string]any{
 		"project_name": "status_demo",
 		"platform":     "arduino",
@@ -700,6 +705,8 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 		}
 	}
 
+	// #2-3:upload 证据要求"真发生过一次烧录执行"——模拟 arduino_upload 真跑过。
+	recordHostExecution("Writing at 0x00010000... (100 %)\nHash of data verified.\n", "upload")
 	_, err = runEvidenceRecord(map[string]any{
 		"project_dir": projectDir,
 		"stage":       "upload",
@@ -747,6 +754,29 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 			t.Fatalf("command-header-only monitor output should not verify runtime log, missing %q:\n%s", want, out)
 		}
 	}
+	// #2-3:伪造的串口输出(没有任何真实 monitor 执行支撑)即便有内容,也不能验证 runtime_log。
+	_, err = runEvidenceRecord(map[string]any{
+		"project_dir": projectDir,
+		"stage":       "monitor",
+		"status":      "passed",
+		"summary":     "fabricated serial output not backed by any real run",
+		"output":      "totally\nmade\nup\nserial\noutput\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = runEvidenceStatus(map[string]any{"project_dir": projectDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"status": "hardware_pending"`, `"runtime_log"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("fabricated serial output must not verify runtime log, missing %q:\n%s", want, out)
+		}
+	}
+
+	// 真实 monitor 执行 + 如实粘贴其输出 → runtime_log 验证通过 → hardware_verified。
+	recordHostExecution("ready\nled:on\nled:off\n", "monitor", "serial")
 	_, err = runEvidenceRecord(map[string]any{
 		"project_dir": projectDir,
 		"stage":       "monitor",
@@ -775,7 +805,7 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"status": "stale"`, `"currentRecordCount": 0`, `"staleRecordCount": 5`, "project fingerprint changed"} {
+	for _, want := range []string{`"status": "stale"`, `"currentRecordCount": 0`, `"staleRecordCount": 6`, "project fingerprint changed"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stale status missing %q:\n%s", want, out)
 		}
@@ -980,8 +1010,10 @@ func TestProjectValidateStopsOnPlatformIORootINOLayout(t *testing.T) {
 	}
 
 	out, err := runProjectValidate(map[string]any{"project_dir": dir, "platform": "platformio"})
-	if err != nil {
-		t.Fatal(err)
+	// #2-2:验证失败时必须返回 error(让 agent 把收据记为 Success=false,失败的验证不能被
+	// 当成成功签收);报告文本仍随 out 返回供模型看。
+	if err == nil {
+		t.Fatal("失败的 validate 应返回 error,否则编译失败会被吞成成功收据")
 	}
 	for _, want := range []string{`"kind": "platformio_layout"`, `"status": "failed"`, "Root .ino files found", "src/main.cpp", "重新运行 hardware_project_validate"} {
 		if !strings.Contains(out, want) {

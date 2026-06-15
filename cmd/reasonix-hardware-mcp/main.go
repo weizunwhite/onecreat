@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"reasonix/internal/hardware/boards"
@@ -262,7 +263,7 @@ var tools = []toolDef{
 	},
 	{
 		name:        "hardware_evidence_record",
-		description: "Record hardware verification evidence into tests/hardware_evidence.jsonl and tests/hardware_checklist.md after compile, upload, flash, monitor, mpremote, or SSH deployment.",
+		description: "Record hardware verification evidence into tests/hardware_evidence.jsonl and tests/hardware_checklist.md after compile, upload, flash, monitor, mpremote, or SSH deployment. 真机执行类阶段(upload/flash/monitor/serial/mpremote/ssh/deploy)的证据会与本会话里真实跑过的对应 MCP 工具核对:`output` 必须如实粘贴该工具的真实输出,凭空编造的串口/运行日志对不上真实执行,不会被算作 hardware_verified。先用 arduino_monitor_sample / ssh_deploy_run / mpremote_run 等真跑一次,再把它的输出原样填进 output。",
 		readOnly:    false,
 		schema: objectSchema(map[string]any{
 			"project_dir":             map[string]any{"type": "string", "description": "Hardware project directory. Defaults to current workspace."},
@@ -463,6 +464,9 @@ func callTool(params json.RawMessage) (any, *rpcError) {
 			continue
 		}
 		text, err := t.run(p.Arguments)
+		// 登记真实工具执行的输出到执行日志(无论成功/失败,真实输出都可作为后续证据的锚点),
+		// 供 hardware_evidence_record 核实模型填的 output 是否对应真实执行(#2-3)。
+		recordToolExecution(p.Name, p.Arguments, text)
 		if err != nil {
 			return textResult(errorTextWithOutput(text, err), true), nil
 		}
@@ -920,6 +924,7 @@ type evidenceRecord struct {
 	Port                 string `json:"port,omitempty"`
 	ArtifactPath         string `json:"artifactPath,omitempty"`
 	OutputExcerpt        string `json:"outputExcerpt,omitempty"`
+	HostObserved         bool   `json:"hostObserved,omitempty"` // 该证据的 output 对得上 MCP 真实跑过的工具执行(#2-3)
 }
 
 type evidenceStatusReport struct {
@@ -1027,7 +1032,25 @@ func runProjectValidate(args map[string]any) (string, error) {
 	report.Results = dedupeValidationResults(report.Results)
 	report.Summary = validationSummary(report.Results)
 	report.Recommendations = validationRecommendations(report.Results)
-	return prettyJSON(report), nil
+	out := prettyJSON(report)
+	// 有任何一项 failed(编译/构建失败)时返回 error,让 MCP 标 isError、agent 把收据记为
+	// Success=false——否则编译失败被吞成成功收据,弱模型用一次 validate 就把没编译过的项目
+	// 当成「已验证」签收(#2-2)。报告文本仍随 error 一并回给模型,它能看到失败详情。
+	if failed := countFailedValidations(report.Results); failed > 0 {
+		return out, fmt.Errorf("hardware_project_validate: %d 项验证失败(见上方报告);未通过编译/构建不能算验证通过", failed)
+	}
+	return out, nil
+}
+
+// countFailedValidations 统计 status=="failed" 的验证项(skipped/warning 不算失败)。
+func countFailedValidations(results []validationResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Status == "failed" {
+			n++
+		}
+	}
+	return n
 }
 
 func runProjectAudit(args map[string]any) (string, error) {
@@ -1260,6 +1283,10 @@ func runEvidenceRecord(args map[string]any) (string, error) {
 		Port:                 strArg(args, "port", ""),
 		ArtifactPath:         strArg(args, "artifact_path", ""),
 		OutputExcerpt:        truncateText(strArg(args, "output", ""), 4000),
+	}
+	// 真机执行类阶段:用本进程的真实执行日志核实证据是否有真实执行支撑(#2-3)。
+	if hardwareExecutionStage(stage) {
+		record.HostObserved = computeHostObserved(stage, strArg(args, "output", ""))
 	}
 
 	testsDir := filepath.Join(abs, "tests")
@@ -1934,7 +1961,147 @@ func evidenceGroupPassed(records []evidenceRecord, stages []string) bool {
 	return false
 }
 
+// --- 真实执行日志(#2-3:把"真机证据"绑定到 MCP 真实跑过的工具,防伪造)---
+//
+// MCP 是常驻进程:真正执行外部命令的动作工具(arduino_compile/upload/monitor、
+// platformio_run、esp_idf_run、mpremote_run、ssh_deploy_run、hardware_project_validate)
+// 把它们的【真实输出】登记到这里。hardware_evidence_record 记录"真机"阶段证据时,会拿
+// 模型填的 output 与这份日志比对——只有与某次覆盖该阶段的真实执行共享一行可辨识文本,
+// 才算 hostObserved。模型凭空捏造的串口/SSH 输出对不上任何真实执行,不再能推到
+// hardware_verified。这是"灵活性归模型,保证归系统"的技术兑现。
+type hostExecution struct {
+	stages map[string]bool
+	output string
+}
+
+var (
+	hostExecMu sync.Mutex
+	hostExecs  []hostExecution
+)
+
+// recordHostExecution 登记一次真实工具执行的输出与它覆盖的证据阶段(保留最近 60 次)。
+func recordHostExecution(output string, stages ...string) {
+	out := strings.TrimSpace(output)
+	if out == "" || len(stages) == 0 {
+		return
+	}
+	sm := make(map[string]bool, len(stages))
+	for _, s := range stages {
+		sm[s] = true
+	}
+	hostExecMu.Lock()
+	hostExecs = append(hostExecs, hostExecution{stages: sm, output: out})
+	if len(hostExecs) > 60 {
+		hostExecs = hostExecs[len(hostExecs)-60:]
+	}
+	hostExecMu.Unlock()
+}
+
+// recordToolExecution 在 dispatch 调用某动作工具后,按工具(+ action 参数)映射出它覆盖
+// 的证据阶段,把真实输出登记进执行日志。统一一处挂钩,不必改每个动作函数。
+func recordToolExecution(name string, args map[string]any, output string) {
+	var stages []string
+	switch name {
+	case "arduino_compile":
+		stages = []string{"compile"}
+	case "arduino_upload":
+		stages = []string{"upload"}
+	case "arduino_monitor_sample":
+		stages = []string{"monitor", "serial"}
+	case "platformio_run":
+		stages = []string{"compile", "upload", "flash", "monitor", "serial"}
+	case "esp_idf_run":
+		stages = []string{"compile", "flash", "upload", "monitor", "serial"}
+	case "mpremote_run":
+		stages = []string{"mpremote", "monitor", "serial"}
+	case "ssh_deploy_run":
+		stages = []string{"ssh", "deploy", "monitor", "serial"}
+	case "hardware_project_validate":
+		stages = []string{"compile", "syntax"}
+	default:
+		return
+	}
+	recordHostExecution(output, stages...)
+}
+
+// distinctiveLines 取 output 里足够独特(>=4 个非空白字符)的行,用于跨执行内容比对。
+// 阈值取 4:真实串口行常很短(如 "led:on"、"ready"、"temp=25"),太高会漏掉真证据;
+// 太低(如 1-2 字符的 "ok"/"on")又易误配。比对要求整行逐字出现在某次真实执行输出里。
+func distinctiveLines(output string) []string {
+	var out []string
+	for _, ln := range strings.Split(output, "\n") {
+		t := strings.TrimSpace(ln)
+		if len([]rune(t)) >= 4 {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// hostObservedFor 判断模型记录的 output 是否对应某次覆盖该 stage 的真实执行:二者需共享
+// 至少一行可辨识文本。模型若如实粘贴真实工具输出即命中;凭空捏造则对不上。
+func hostObservedFor(stage, output string) bool {
+	lines := distinctiveLines(output)
+	if len(lines) == 0 {
+		return false
+	}
+	hostExecMu.Lock()
+	defer hostExecMu.Unlock()
+	for _, e := range hostExecs {
+		if !e.stages[stage] {
+			continue
+		}
+		for _, ln := range lines {
+			if strings.Contains(e.output, ln) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hostExecutionHappened 判断本进程是否真的跑过一次覆盖该 stage 的动作工具(不看输出内容,
+// 只看"真发生过")。用于 upload/flash 这类"重点是真烧录过、而非输出逐行可比"的阶段。
+func hostExecutionHappened(stage string) bool {
+	hostExecMu.Lock()
+	defer hostExecMu.Unlock()
+	for _, e := range hostExecs {
+		if e.stages[stage] {
+			return true
+		}
+	}
+	return false
+}
+
+// hardwareExecutionStage 标记"必须由真实设备执行支撑"的证据阶段(伪造重灾区)。
+func hardwareExecutionStage(stage string) bool {
+	switch stage {
+	case "upload", "flash", "monitor", "serial", "mpremote", "ssh", "deploy":
+		return true
+	default:
+		return false
+	}
+}
+
+// computeHostObserved 按阶段决定证据是否"有真实执行支撑":运行/串口类要求输出对得上真实
+// 执行(防伪造日志);烧录类只要求真跑过一次烧录(输出常无可比内容)。
+func computeHostObserved(stage, output string) bool {
+	switch stage {
+	case "upload", "flash":
+		return hostExecutionHappened(stage)
+	case "monitor", "serial", "mpremote", "ssh", "deploy":
+		return hostObservedFor(stage, output)
+	default:
+		return false
+	}
+}
+
 func evidenceRecordStrongEnough(record evidenceRecord) bool {
+	// 真机执行类阶段(烧录/串口/SSH 运行等)除了要有输出体,还必须 hostObserved——即记录的
+	// 输出对得上 MCP 真实跑过的对应工具。否则模型可以凭空填一段串口输出就推到 hardware_verified(#2-3)。
+	if hardwareExecutionStage(record.Stage) && !record.HostObserved {
+		return false
+	}
 	switch record.Stage {
 	case "monitor", "serial", "mpremote", "ssh", "deploy":
 		return commandOutputHasBody(record.OutputExcerpt)
