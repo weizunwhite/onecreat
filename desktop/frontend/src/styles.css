@@ -10338,6 +10338,56 @@ button.session-file-summary:hover {
   color: #fff;
 }
 
+/* 一键安装核心工具链按钮 + 结果 */
+.hardware-view__toolchain-autoinstall {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 6px 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.hardware-view__toolchain-autoinstall:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+.hardware-view__toolchain-autoinstall:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+.hardware-view__install-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 2px 0 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--bg-soft, rgba(127, 127, 127, 0.08));
+  font-size: 11px;
+  line-height: 1.5;
+}
+.hardware-view__install-msg--ok {
+  color: var(--fg);
+}
+.hardware-view__install-msg--err {
+  color: var(--danger, #d9534f);
+}
+.hardware-view__install-next {
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--fg-faint);
+}
+
 /* 空状态 — 没识别到项目时显示 */
 .hardware-view__empty {
   text-align: center;

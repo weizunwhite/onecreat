@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Copy,
   Cpu,
+  Download,
   Eye,
   Hammer,
   Loader2,
@@ -18,6 +19,7 @@ import { copyText } from "../lib/crash";
 import type {
   CapabilitiesView,
   HardwareDetectView,
+  HardwareInstallToolchainView,
   HardwareEvidenceStatusView,
   HardwareMCPView,
   HardwareRunResult,
@@ -320,6 +322,9 @@ export function HardwarePanel({
   const [err, setErr] = useState<string | null>(null);
   // 项目条上「工具就绪 X/Y」点开后,列出具体每个工具是否就绪。
   const [toolchainsOpen, setToolchainsOpen] = useState(false);
+  // 一键安装核心工具链(arduino-cli + 板卡 core)的状态。
+  const [installing, setInstalling] = useState(false);
+  const [installResult, setInstallResult] = useState<HardwareInstallToolchainView | null>(null);
   // 板卡选项:来自后端共享注册表,加板=改 JSON 即自动多一项;失败兜底静态表。
   const [boardPresets, setBoardPresets] = useState<BoardPreset[]>(FALLBACK_BOARD_PRESETS);
   useEffect(() => {
@@ -369,6 +374,27 @@ export function HardwarePanel({
     // 仅在视图可见时拉取硬件状态,切回 chat 视图时不再轮询。
     if (active) void reload();
   }, [reload, active]);
+
+  // 一键安装核心工具链:下载 arduino-cli 并补齐板卡 core(默认 avr + esp32),
+  // 装完重新检测,工具链就绪状态会自动刷新。给学生/老师打包后缺工具时点一下即可。
+  const installToolchain = useCallback(async () => {
+    setInstalling(true);
+    setInstallResult(null);
+    try {
+      const result = await app.HardwareInstallToolchain([]);
+      setInstallResult(result);
+      await reload(); // 刷新工具链 ✅/⚠️ 状态
+    } catch (e) {
+      setInstallResult({
+        available: false,
+        steps: [],
+        allOK: false,
+        error: String((e as Error)?.message ?? e),
+      });
+    } finally {
+      setInstalling(false);
+    }
+  }, [reload]);
 
   const hardware = useMemo(() => findHardwareServer(view), [view]);
   const connected = hardware?.status === "connected";
@@ -787,6 +813,32 @@ export function HardwarePanel({
               {toolchainsOpen && (
                 <div className="hardware-view__toolchains-menu">
                   <div className="hardware-view__toolchains-head">本机开发工具（✅ 已装 / ⚠️ 未装）</div>
+                  <button
+                    className="hardware-view__toolchain-autoinstall"
+                    disabled={installing}
+                    onClick={() => void installToolchain()}
+                    title="自动下载 arduino-cli 并补齐 Arduino/ESP32 板卡 core（装到用户目录，免管理员、免 Python）"
+                  >
+                    {installing ? <Loader2 size={13} className="hardware-spin" /> : <Download size={13} />}
+                    {installing ? "安装中…首次下载 core 可能几分钟" : "一键安装 Arduino/ESP32 工具链"}
+                  </button>
+                  {installResult && (
+                    <div className="hardware-view__install-result">
+                      {installResult.error ? (
+                        <div className="hardware-view__install-msg hardware-view__install-msg--err">{installResult.error}</div>
+                      ) : (
+                        installResult.steps.map((step) => (
+                          <div
+                            key={step.tool}
+                            className={`hardware-view__install-msg hardware-view__install-msg--${step.ok ? "ok" : "err"}`}
+                          >
+                            {step.ok ? "✅" : "❌"} {step.tool} — {step.message}
+                          </div>
+                        ))
+                      )}
+                      {installResult.nextStep && <div className="hardware-view__install-next">{installResult.nextStep}</div>}
+                    </div>
+                  )}
                   {detect.toolchains.map((tool) => (
                     <div className="hardware-view__toolchain-row" key={tool.name}>
                       {tool.available ? (

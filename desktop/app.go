@@ -1550,6 +1550,25 @@ type HardwareDetectView struct {
 	Error           string                  `json:"error,omitempty"`
 }
 
+// HardwareInstallStepView 是一键安装里单个工具的安装结果(对应 MCP 的 toolInstallStep)。
+type HardwareInstallStepView struct {
+	Tool    string `json:"tool"`
+	Action  string `json:"action"` // already_present | installed | failed | skipped
+	OK      bool   `json:"ok"`
+	Path    string `json:"path,omitempty"`
+	Message string `json:"message"`
+}
+
+// HardwareInstallToolchainView 是「一键安装核心工具链」按钮的结果。
+type HardwareInstallToolchainView struct {
+	Available  bool                      `json:"available"`
+	Steps      []HardwareInstallStepView `json:"steps"`
+	AllOK      bool                      `json:"allOK"`
+	ManagedDir string                    `json:"managedDir,omitempty"`
+	NextStep   string                    `json:"nextStep,omitempty"`
+	Error      string                    `json:"error,omitempty"`
+}
+
 // HardwareEvidenceStatusView is a compact projection of hardware_evidence_status
 // for the drawer. It makes the local/real-hardware verification boundary visible
 // without asking the model to summarize it first.
@@ -1672,6 +1691,36 @@ func (a *App) HardwareDetect() HardwareDetectView {
 		return view
 	}
 	normalizeHardwareDetectView(&view)
+	view.Available = true
+	return view
+}
+
+// HardwareInstallToolchain 一键安装核心硬件工具链(arduino-cli + 板卡 core)。
+// 给学生/老师打包后,缺工具时点一下就能从零把编译/烧录环境备齐。
+// 首次会联网下载 core,耗时可能几分钟,所以用长超时;前端按钮自己转圈。
+func (a *App) HardwareInstallToolchain(cores []string) HardwareInstallToolchainView {
+	view := HardwareInstallToolchainView{Steps: []HardwareInstallStepView{}}
+	command, _, err := resolveHardwareMCP()
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	args := map[string]any{}
+	if len(cores) > 0 {
+		args["cores"] = cores
+	}
+	text, err := callHardwareMCPTool(command, "hardware_install_toolchain", args, 20*time.Minute)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	if err := json.Unmarshal([]byte(text), &view); err != nil {
+		view.Error = "hardware_install_toolchain returned invalid JSON: " + err.Error()
+		return view
+	}
+	if view.Steps == nil {
+		view.Steps = []HardwareInstallStepView{}
+	}
 	view.Available = true
 	return view
 }

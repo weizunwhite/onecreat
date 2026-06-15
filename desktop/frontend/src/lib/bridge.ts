@@ -17,6 +17,7 @@ import type {
   HistoryMessage,
   HardwareBoardFactsView,
   HardwareDetectView,
+  HardwareInstallToolchainView,
   HardwareEvidenceStatusView,
   HardwareBoardSummary,
   HardwareMCPView,
@@ -114,6 +115,8 @@ export interface AppBindings {
   // 板卡选择器的可选项,来自共享数据驱动注册表(boards.json)。
   HardwareBoardList(): Promise<HardwareBoardSummary[]>;
   HardwareDetect(): Promise<HardwareDetectView>;
+  // 一键安装核心工具链（arduino-cli + 板卡 core）。cores 为空用默认 [arduino:avr, esp32:esp32]。
+  HardwareInstallToolchain(cores: string[]): Promise<HardwareInstallToolchainView>;
   HardwareEvidenceStatus(): Promise<HardwareEvidenceStatusView>;
   // 把 tests/hardware_evidence.jsonl 的真机验证记录汇总成可粘进竞赛材料的 Markdown（无记录返回空串）。
   HardwareEvidenceExport(projectDir: string): Promise<string>;
@@ -736,6 +739,23 @@ function makeMockApp(): AppBindings {
         ],
         recommendations: ["ESP-IDF 工程建议优先接入官方 Tools MCP。"],
         espIdfOfficialMcp: {},
+      };
+    },
+    async HardwareInstallToolchain(cores: string[]) {
+      return {
+        available: true,
+        allOK: true,
+        managedDir: `${cwd}/.onecreat/tools/bin`,
+        steps: [
+          { tool: "arduino-cli", action: "installed", ok: true, path: `${cwd}/.onecreat/tools/bin/arduino-cli`, message: "已下载并安装" },
+          ...(cores.length ? cores : ["arduino:avr", "esp32:esp32"]).map((c) => ({
+            tool: c,
+            action: "installed",
+            ok: true,
+            message: "core 安装完成",
+          })),
+        ],
+        nextStep: "工具链就绪，可以直接编译/烧录了。",
       };
     },
     async HardwareBoardFacts() {

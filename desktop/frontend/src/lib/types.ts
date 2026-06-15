@@ -274,6 +274,22 @@ export interface HardwareDetectView {
   espIdfOfficialMcp?: Record<string, string>;
   error?: string;
 }
+// 一键安装核心工具链的单步与整体结果（对应 Go 的 HardwareInstall*View）。
+export interface HardwareInstallStepView {
+  tool: string;
+  action: string; // already_present | installed | failed | skipped
+  ok: boolean;
+  path?: string;
+  message: string;
+}
+export interface HardwareInstallToolchainView {
+  available: boolean;
+  steps: HardwareInstallStepView[];
+  allOK: boolean;
+  managedDir?: string;
+  nextStep?: string;
+  error?: string;
+}
 export interface HardwareEvidenceStatusView {
   available: boolean;
   projectDir?: string;
