@@ -246,6 +246,44 @@ func arduinoCoreInstalled(core string) bool {
 	return strings.Contains(out, core)
 }
 
+// runInstallArduinoCLI 只装 arduino-cli 本体,返回单步 JSON。
+// GUI 用它做「分步进度」:前端先调这个,再逐个调 runInstallCore,中间能刷新进度。
+func runInstallArduinoCLI(args map[string]any) (string, error) {
+	ensureManagedToolsOnPath()
+	timeout := timeoutArg(args, "timeout_seconds", 600*time.Second)
+	step := toolInstallStep{Tool: "arduino-cli"}
+	if p, err := exec.LookPath("arduino-cli"); err == nil {
+		step.Action, step.OK, step.Path, step.Message = "already_present", true, p, "已安装，跳过"
+	} else if target, ierr := installArduinoCLI(timeout); ierr != nil {
+		step.Action, step.OK, step.Message = "failed", false, ierr.Error()+"。"+toolInstallHint("arduino-cli")
+	} else {
+		step.Action, step.OK, step.Path, step.Message = "installed", true, target, "已下载并安装到 "+target
+	}
+	return prettyJSON(step), nil
+}
+
+// runInstallCore 装单个板卡 core,已装则秒跳过,返回单步 JSON(同样给 GUI 分步进度用)。
+func runInstallCore(args map[string]any) (string, error) {
+	ensureManagedToolsOnPath()
+	core := strings.TrimSpace(strArg(args, "core", ""))
+	step := toolInstallStep{Tool: core}
+	if core == "" {
+		step.Action, step.OK, step.Message = "failed", false, "core 必填"
+		return prettyJSON(step), nil
+	}
+	if arduinoCoreInstalled(core) {
+		step.Action, step.OK, step.Message = "already_present", true, "core 已装，跳过"
+		return prettyJSON(step), nil
+	}
+	timeout := timeoutArg(args, "timeout_seconds", 900*time.Second)
+	if _, err := runArduinoCoreInstall(map[string]any{"core": core, "timeout_seconds": timeout.Seconds()}); err != nil {
+		step.Action, step.OK, step.Message = "failed", false, "core 安装失败: "+err.Error()
+		return prettyJSON(step), nil
+	}
+	step.Action, step.OK, step.Message = "installed", true, "core 安装完成"
+	return prettyJSON(step), nil
+}
+
 // runInstallToolchain 是 hardware_install_toolchain 工具的实现:
 // 缺 arduino-cli 就下载装好,再把指定的 core 补齐;每步回报状态,失败给手动指引。
 func runInstallToolchain(args map[string]any) (string, error) {

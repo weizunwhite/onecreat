@@ -347,6 +347,25 @@ var tools = []toolDef{
 		run: runInstallToolchain,
 	},
 	{
+		name:        "hardware_install_arduino_cli",
+		description: "只安装 arduino-cli 本体（不含 core）。GUI 分步进度用：先装 arduino-cli，再逐个装 core，中间能刷新进度。返回单步状态 JSON。",
+		readOnly:    false,
+		schema: objectSchema(map[string]any{
+			"timeout_seconds": map[string]any{"type": "number", "description": "超时秒数，默认 600。"},
+		}, nil),
+		run: runInstallArduinoCLI,
+	},
+	{
+		name:        "hardware_install_core",
+		description: "安装单个 arduino-cli 板卡 core（已装则秒跳过）。GUI 分步进度用。core 取值：arduino:avr / esp32:esp32 / esp8266:esp8266 / rp2040:rp2040。返回单步状态 JSON。",
+		readOnly:    false,
+		schema: objectSchema(map[string]any{
+			"core":            map[string]any{"type": "string", "description": "Core id，如 esp32:esp32。"},
+			"timeout_seconds": map[string]any{"type": "number", "description": "超时秒数，默认 900。"},
+		}, []string{"core"}),
+		run: runInstallCore,
+	},
+	{
 		name:        "arduino_upload",
 		description: "Upload a previously compiled or buildable Arduino sketch with arduino-cli. arduino-cli upload does not compile by itself.",
 		readOnly:    false,

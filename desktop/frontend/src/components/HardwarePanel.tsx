@@ -19,7 +19,6 @@ import { copyText } from "../lib/crash";
 import type {
   CapabilitiesView,
   HardwareDetectView,
-  HardwareInstallToolchainView,
   HardwareEvidenceStatusView,
   HardwareMCPView,
   HardwareRunResult,
@@ -30,6 +29,14 @@ type HardwareAction = {
   title: string;
   subtitle: string;
   prompt: string;
+};
+
+// 一键安装的单步实时状态(前端分步驱动,逐步刷新进度)。
+type InstallStepUI = {
+  tool: string;
+  label: string;
+  status: "pending" | "running" | "done" | "failed";
+  message?: string;
 };
 
 type BoardPreset = {
@@ -322,9 +329,9 @@ export function HardwarePanel({
   const [err, setErr] = useState<string | null>(null);
   // 项目条上「工具就绪 X/Y」点开后,列出具体每个工具是否就绪。
   const [toolchainsOpen, setToolchainsOpen] = useState(false);
-  // 一键安装核心工具链(arduino-cli + 板卡 core)的状态。
+  // 一键安装核心工具链(arduino-cli + 板卡 core)的实时分步状态。
   const [installing, setInstalling] = useState(false);
-  const [installResult, setInstallResult] = useState<HardwareInstallToolchainView | null>(null);
+  const [installSteps, setInstallSteps] = useState<InstallStepUI[] | null>(null);
   // 板卡选项:来自后端共享注册表,加板=改 JSON 即自动多一项;失败兜底静态表。
   const [boardPresets, setBoardPresets] = useState<BoardPreset[]>(FALLBACK_BOARD_PRESETS);
   useEffect(() => {
@@ -375,24 +382,43 @@ export function HardwarePanel({
     if (active) void reload();
   }, [reload, active]);
 
-  // 一键安装核心工具链:下载 arduino-cli 并补齐板卡 core(默认 avr + esp32),
-  // 装完重新检测,工具链就绪状态会自动刷新。给学生/老师打包后缺工具时点一下即可。
+  // 一键安装核心工具链:前端分步驱动(先 arduino-cli,再逐个 core),
+  // 每步开始/完成都即时刷新进度,用户能清楚看到「正在装哪一步」。装完重新检测。
   const installToolchain = useCallback(async () => {
+    const coreList = [
+      { tool: "arduino:avr", label: "Arduino UNO / Nano / Mega 板卡" },
+      { tool: "esp32:esp32", label: "ESP32 全系板卡（约 200MB，较慢）" },
+    ];
+    let steps: InstallStepUI[] = [
+      { tool: "arduino-cli", label: "arduino-cli（编译 / 烧录核心工具）", status: "pending" },
+      ...coreList.map((c) => ({ tool: c.tool, label: c.label, status: "pending" as const })),
+    ];
+    const patch = (tool: string, next: Partial<InstallStepUI>) => {
+      steps = steps.map((s) => (s.tool === tool ? { ...s, ...next } : s));
+      setInstallSteps([...steps]);
+    };
     setInstalling(true);
-    setInstallResult(null);
+    setInstallSteps([...steps]);
     try {
-      const result = await app.HardwareInstallToolchain([]);
-      setInstallResult(result);
-      await reload(); // 刷新工具链 ✅/⚠️ 状态
+      patch("arduino-cli", { status: "running" });
+      const cli = await app.HardwareInstallArduinoCLI();
+      patch("arduino-cli", { status: cli.ok ? "done" : "failed", message: cli.message });
+      if (cli.ok) {
+        for (const c of coreList) {
+          patch(c.tool, { status: "running" });
+          const r = await app.HardwareInstallCore(c.tool);
+          patch(c.tool, { status: r.ok ? "done" : "failed", message: r.message });
+        }
+      } else {
+        coreList.forEach((c) => patch(c.tool, { status: "failed", message: "arduino-cli 未装上，已跳过" }));
+      }
     } catch (e) {
-      setInstallResult({
-        available: false,
-        steps: [],
-        allOK: false,
-        error: String((e as Error)?.message ?? e),
-      });
+      const msg = String((e as Error)?.message ?? e);
+      steps = steps.map((s) => (s.status === "running" || s.status === "pending" ? { ...s, status: "failed", message: msg } : s));
+      setInstallSteps([...steps]);
     } finally {
       setInstalling(false);
+      await reload(); // 刷新工具链 ✅/⚠️ 状态
     }
   }, [reload]);
 
@@ -793,6 +819,62 @@ export function HardwarePanel({
         {hardwareMCP?.error && !hardwareMCP.available && <div className="banner banner--error">{hardwareMCP.error}</div>}
         {detect?.error && <div className="banner banner--error">{detect.error}</div>}
 
+        {/* 一键安装的实时进度卡片:醒目、常驻 body 顶部,逐步刷新让用户看清正在装哪一步 */}
+        {installSteps && (
+          <div
+            className={`hardware-view__install-card hardware-view__install-card--${
+              installing ? "running" : installSteps.every((s) => s.status === "done") ? "ok" : "warn"
+            }`}
+          >
+            <div className="hardware-view__install-card-head">
+              {installing ? (
+                <Loader2 size={15} className="hardware-spin" />
+              ) : installSteps.every((s) => s.status === "done") ? (
+                <CheckCircle2 size={15} />
+              ) : (
+                <AlertTriangle size={15} />
+              )}
+              <span className="hardware-view__install-card-title">
+                {installing
+                  ? "正在安装工具链…首次下载较慢（尤其 ESP32 约 200MB），请耐心等待，不要关闭"
+                  : installSteps.every((s) => s.status === "done")
+                    ? "工具链已就绪 ✅ 现在可以直接编译 / 烧录"
+                    : "部分项未完成，看下方每步说明"}
+              </span>
+              {!installing && (
+                <button
+                  className="hardware-view__install-card-close"
+                  onClick={() => setInstallSteps(null)}
+                  title="关闭"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div className="hardware-view__install-steps">
+              {installSteps.map((s) => (
+                <div key={s.tool} className={`hardware-view__install-step hardware-view__install-step--${s.status}`}>
+                  <span className="hardware-view__install-step-ico">
+                    {s.status === "running" ? (
+                      <Loader2 size={13} className="hardware-spin" />
+                    ) : s.status === "done" ? (
+                      <CheckCircle2 size={13} className="hardware-view__toolchain-ico--ok" />
+                    ) : s.status === "failed" ? (
+                      <AlertTriangle size={13} className="hardware-view__toolchain-ico--warn" />
+                    ) : (
+                      <span className="hardware-view__install-step-dot" />
+                    )}
+                  </span>
+                  <span className="hardware-view__install-step-label">{s.label}</span>
+                  <span className="hardware-view__install-step-msg">
+                    {s.status === "running" ? "正在处理…" : s.status === "pending" ? "等待中" : s.message || ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 项目路径条:有项目时一行精简显示;无项目时给醒目空状态指引学生 */}
         {detect?.projectDir ? (
           <div className="hardware-view__project-bar">
@@ -816,29 +898,15 @@ export function HardwarePanel({
                   <button
                     className="hardware-view__toolchain-autoinstall"
                     disabled={installing}
-                    onClick={() => void installToolchain()}
-                    title="自动下载 arduino-cli 并补齐 Arduino/ESP32 板卡 core（装到用户目录，免管理员、免 Python）"
+                    onClick={() => {
+                      setToolchainsOpen(false); // 收起下拉,进度显示在下方醒目卡片里
+                      void installToolchain();
+                    }}
+                    title="自动下载 arduino-cli 并补齐 Arduino/ESP32 板卡 core（装到用户目录，免管理员、免 Python）。进度在下方卡片实时显示。"
                   >
                     {installing ? <Loader2 size={13} className="hardware-spin" /> : <Download size={13} />}
-                    {installing ? "安装中…首次下载 core 可能几分钟" : "一键安装 Arduino/ESP32 工具链"}
+                    {installing ? "安装中…" : "一键安装 Arduino/ESP32 工具链"}
                   </button>
-                  {installResult && (
-                    <div className="hardware-view__install-result">
-                      {installResult.error ? (
-                        <div className="hardware-view__install-msg hardware-view__install-msg--err">{installResult.error}</div>
-                      ) : (
-                        installResult.steps.map((step) => (
-                          <div
-                            key={step.tool}
-                            className={`hardware-view__install-msg hardware-view__install-msg--${step.ok ? "ok" : "err"}`}
-                          >
-                            {step.ok ? "✅" : "❌"} {step.tool} — {step.message}
-                          </div>
-                        ))
-                      )}
-                      {installResult.nextStep && <div className="hardware-view__install-next">{installResult.nextStep}</div>}
-                    </div>
-                  )}
                   {detect.toolchains.map((tool) => (
                     <div className="hardware-view__toolchain-row" key={tool.name}>
                       {tool.available ? (

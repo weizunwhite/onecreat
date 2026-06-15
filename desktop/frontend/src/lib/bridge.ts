@@ -18,6 +18,7 @@ import type {
   HardwareBoardFactsView,
   HardwareDetectView,
   HardwareInstallToolchainView,
+  HardwareInstallStepView,
   HardwareEvidenceStatusView,
   HardwareBoardSummary,
   HardwareMCPView,
@@ -117,6 +118,9 @@ export interface AppBindings {
   HardwareDetect(): Promise<HardwareDetectView>;
   // 一键安装核心工具链（arduino-cli + 板卡 core）。cores 为空用默认 [arduino:avr, esp32:esp32]。
   HardwareInstallToolchain(cores: string[]): Promise<HardwareInstallToolchainView>;
+  // 分步安装（GUI 实时进度用）：先装 arduino-cli，再逐个装 core，中间刷新进度。
+  HardwareInstallArduinoCLI(): Promise<HardwareInstallStepView>;
+  HardwareInstallCore(core: string): Promise<HardwareInstallStepView>;
   HardwareEvidenceStatus(): Promise<HardwareEvidenceStatusView>;
   // 把 tests/hardware_evidence.jsonl 的真机验证记录汇总成可粘进竞赛材料的 Markdown（无记录返回空串）。
   HardwareEvidenceExport(projectDir: string): Promise<string>;
@@ -757,6 +761,14 @@ function makeMockApp(): AppBindings {
         ],
         nextStep: "工具链就绪，可以直接编译/烧录了。",
       };
+    },
+    async HardwareInstallArduinoCLI() {
+      await new Promise((r) => setTimeout(r, 800)); // mock 里也演示一下「进行中」
+      return { tool: "arduino-cli", action: "installed", ok: true, path: `${cwd}/.onecreat/tools/bin/arduino-cli`, message: "已下载并安装" };
+    },
+    async HardwareInstallCore(core: string) {
+      await new Promise((r) => setTimeout(r, 800));
+      return { tool: core, action: "installed", ok: true, message: "core 安装完成" };
     },
     async HardwareBoardFacts() {
       return {

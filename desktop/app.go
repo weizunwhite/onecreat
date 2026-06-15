@@ -1725,6 +1725,42 @@ func (a *App) HardwareInstallToolchain(cores []string) HardwareInstallToolchainV
 	return view
 }
 
+// HardwareInstallArduinoCLI 只装 arduino-cli 本体,返回单步结果。GUI 分步进度用:
+// 前端先调这个,再逐个调 HardwareInstallCore,中间刷新进度,用户能看到正在装哪一步。
+func (a *App) HardwareInstallArduinoCLI() HardwareInstallStepView {
+	return hardwareInstallStep("hardware_install_arduino_cli", nil)
+}
+
+// HardwareInstallCore 装单个板卡 core(已装秒跳过),返回单步结果。GUI 分步进度用。
+func (a *App) HardwareInstallCore(core string) HardwareInstallStepView {
+	return hardwareInstallStep("hardware_install_core", map[string]any{"core": core})
+}
+
+// hardwareInstallStep 调一个返回单步 JSON 的安装工具,解析成 HardwareInstallStepView。
+func hardwareInstallStep(tool string, args map[string]any) HardwareInstallStepView {
+	step := HardwareInstallStepView{}
+	command, _, err := resolveHardwareMCP()
+	if err != nil {
+		step.Action = "failed"
+		step.Message = err.Error()
+		return step
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	text, err := callHardwareMCPTool(command, tool, args, 20*time.Minute)
+	if err != nil {
+		step.Action = "failed"
+		step.Message = err.Error()
+		return step
+	}
+	if err := json.Unmarshal([]byte(text), &step); err != nil {
+		step.Action = "failed"
+		step.Message = tool + " returned invalid JSON: " + err.Error()
+	}
+	return step
+}
+
 // HardwareEvidenceStatus runs hardware_evidence_status directly so the drawer can
 // show whether the current project has only local validation or real-device proof.
 func (a *App) HardwareEvidenceStatus() HardwareEvidenceStatusView {
