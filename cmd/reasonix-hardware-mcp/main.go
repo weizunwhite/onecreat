@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -3080,10 +3081,17 @@ func runArduinoMonitor(args map[string]any) (string, error) {
 	if fqbn := strArg(args, "fqbn", ""); fqbn != "" {
 		cmdArgs = append(cmdArgs, "-b", fqbn)
 	}
-	out, err := runCommandText("arduino-cli", cmdArgs, "", time.Duration(seconds)*time.Second)
+	// monitor 必须撑住 stdin(keepStdinOpen=true):arduino-cli monitor 读到 /dev/null
+	// 的 EOF 会约 1s 自退、采不到任何串口(实测 CH340 ESP32)。撑住后它会跑满采样秒数,
+	// 再被采样超时正常杀掉——所以下面把“timed out 且有输出”当成成功路径。
+	out, err := runCommandTextOpts("arduino-cli", cmdArgs, "", time.Duration(seconds)*time.Second, true)
 	if err != nil {
-		if strings.Contains(err.Error(), "timed out") && commandOutputHasBody(out) {
-			return out, nil
+		if strings.Contains(err.Error(), "timed out") {
+			if commandOutputHasBody(out) {
+				return out, nil
+			}
+			// 跑满窗口仍无输出:才是真的硬件侧问题,给排查指引而不是干瘪的 timeout。
+			return out, errors.New(serialNoOutputGuidance)
 		}
 		return out, err
 	}
@@ -3485,6 +3493,25 @@ func readResource(params json.RawMessage) (any, *rpcError) {
 // --- command helpers ---
 
 func runCommandText(name string, args []string, dir string, timeout time.Duration) (string, error) {
+	return runCommandTextOpts(name, args, dir, timeout, false)
+}
+
+// ctxEOFReader 是个永不返回数据、直到 ctx 结束才 EOF 的 stdin。给交互式 monitor 撑住
+// stdin,避免它读到 /dev/null 的即时 EOF 而秒退;ctx 结束(超时杀进程)后返回 EOF,
+// 让 exec 的 stdin 拷贝 goroutine 能收尾、cmd.Run 正常返回,不泄漏 goroutine。
+type ctxEOFReader struct{ ctx context.Context }
+
+func (r ctxEOFReader) Read(p []byte) (int, error) {
+	<-r.ctx.Done()
+	return 0, io.EOF
+}
+
+// runCommandTextOpts 跑外部命令并捕获输出。keepStdinOpen=true 时给子进程一个永不 EOF
+// 的 stdin,专给 arduino-cli monitor 这类“交互式、读到 stdin EOF 就自退”的命令用:
+// 否则 Go 的 exec 默认把 stdin 接 /dev/null,monitor 读到 EOF 约 1s 就退,在 CH340
+// ESP32 这类板上一个字节都采不到(2026-06 实测)。撑住 stdin 后它会一直跑到超时被杀,
+// 我们才拿到这段采样输出。普通命令(编译/上传)保持 keepStdinOpen=false,自然退出。
+func runCommandTextOpts(name string, args []string, dir string, timeout time.Duration, keepStdinOpen bool) (string, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
@@ -3501,6 +3528,9 @@ func runCommandText(name string, args []string, dir string, timeout time.Duratio
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	setKillGroup(cmd) // 超时杀整个进程组,monitor 不留占串口的孤儿子进程(F2)
+	if keepStdinOpen {
+		cmd.Stdin = ctxEOFReader{ctx: ctx} // 撑住 stdin,monitor 才不会读 /dev/null EOF 秒退
+	}
 	if dir != "" {
 		cmd.Dir = dir
 	}

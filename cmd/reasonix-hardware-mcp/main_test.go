@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestJSONRPCToolsListIncludesHardwareTools(t *testing.T) {
@@ -627,6 +629,31 @@ func TestPlatformDefaultBoardsExist(t *testing.T) {
 		if _, ok := findBoardProfile(db, p); !ok {
 			t.Errorf("平台 %q 的 defaultBoard=%q 在注册表里找不到匹配 profile", p, db)
 		}
+	}
+}
+
+// arduino-cli monitor 读到 stdin EOF 会约 1s 自退,在 CH340 ESP32 上一个字节都采不到
+// (2026-06 真机实测)。keepStdinOpen 给它一个永不 EOF 的 stdin,让它跑满采样窗口才被超时杀。
+// 这里用 cat 复现:cat 读 stdin 到 EOF 才退 —— 默认(/dev/null)立即退,keepStdinOpen 撑到超时。
+func TestKeepStdinOpenPreventsEOFExit(t *testing.T) {
+	if _, err := exec.LookPath("cat"); err != nil {
+		t.Skip("no cat on PATH")
+	}
+	// 默认 stdin=/dev/null:cat 立即读到 EOF 退出,远早于超时。
+	start := time.Now()
+	_, _ = runCommandText("cat", nil, "", 800*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("默认 stdin 应让 cat 立即 EOF 退出,实际耗时 %v(说明默认行为变了)", elapsed)
+	}
+	// keepStdinOpen=true:cat 阻塞读 stdin,一直撑到 800ms 超时——这正是 monitor 需要的。
+	start = time.Now()
+	_, err := runCommandTextOpts("cat", nil, "", 800*time.Millisecond, true)
+	elapsed := time.Since(start)
+	if elapsed < 700*time.Millisecond {
+		t.Fatalf("keepStdinOpen=true 应撑到超时(~800ms),实际 %v(err=%v)——stdin 没撑住", elapsed, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("keepStdinOpen 跑满窗口应返回 timed out,得到 err=%v", err)
 	}
 }
 
@@ -1526,7 +1553,9 @@ func TestArduinoMonitorTimeoutWithoutOutputIsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("runArduinoMonitor should fail when it times out without serial output:\n%s", out)
 	}
-	if !strings.Contains(err.Error(), "timed out") || !strings.Contains(out, "$ arduino-cli monitor") {
+	// 跑满采样窗口仍无串口输出 -> 返回明确的“没采到输出”硬件侧排查指引(而不是干瘪的
+	// timeout);命令头要带上,方便排查。stdin 撑住后 monitor 不再秒退,这是超时分支。
+	if !strings.Contains(err.Error(), "串口没采到输出") || !strings.Contains(out, "$ arduino-cli monitor") {
 		t.Fatalf("unexpected monitor timeout result: err=%v out=%s", err, out)
 	}
 }
