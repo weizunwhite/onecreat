@@ -2138,11 +2138,25 @@ func renderPlatformAPIFacts(ms moduleSpecMirror) string {
 // buttons in HardwarePanel. Fields are optional unless required by the underlying
 // MCP tool — the dispatch picks the right tool by Platform.
 type HardwareRunInput struct {
-	ProjectDir string `json:"projectDir"`
-	Platform   string `json:"platform"`
-	Board      string `json:"board,omitempty"`
-	Port       string `json:"port,omitempty"`
-	Seconds    int    `json:"seconds,omitempty"`
+	ProjectDir  string `json:"projectDir"`
+	Platform    string `json:"platform"`
+	Board       string `json:"board,omitempty"`
+	Port        string `json:"port,omitempty"`
+	Seconds     int    `json:"seconds,omitempty"`
+	Address     string `json:"address,omitempty"`     // OTA WiFi 烧录:板子地址(IP 或 mDNS 名)
+	OTAPassword string `json:"otaPassword,omitempty"` // OTA WiFi 烧录:ArduinoOTA 口令
+}
+
+// HardwarePublishInput 是「发布固件到远程服务器」(③ 云端拉取)的入参。
+// 服务器配置(ssh/目录/URL)留空时用 NAS 默认值。
+type HardwarePublishInput struct {
+	ProjectDir  string `json:"projectDir"`
+	Board       string `json:"board,omitempty"`
+	ProjectName string `json:"projectName"`
+	Version     string `json:"version"`
+	SSHHost     string `json:"sshHost,omitempty"`
+	RemoteDir   string `json:"remoteDir,omitempty"`
+	BaseURL     string `json:"baseURL,omitempty"`
 }
 
 // HardwareRunResult is the normalized result the frontend renders into the
@@ -2276,6 +2290,68 @@ func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
 	default:
 		return HardwareRunResult{Status: "failed", Summary: "未知平台", Error: "unsupported platform: " + input.Platform}
 	}
+}
+
+// HardwareOTAUpload 通过 WiFi(OTA)把固件烧给已经跑着 ArduinoOTA 的板子,不用 USB。
+// 走 arduino-cli 网络口(espota);面向 arduino/esp32 工程。
+func (a *App) HardwareOTAUpload(input HardwareRunInput) HardwareRunResult {
+	command, err := a.requireHardwareMCP()
+	if err != nil {
+		return HardwareRunResult{Status: "failed", Error: err.Error()}
+	}
+	if strings.TrimSpace(input.Address) == "" {
+		return HardwareRunResult{Status: "skipped", Summary: "缺少板子地址", NextStep: "填入板子的 WiFi 地址(IP 或 esp32-onecreat.local)后再点 WiFi 烧录。"}
+	}
+	projectDir := resolveHardwareProjectDir(input.ProjectDir)
+	fqbn := arduinoFQBNFromBoard(input.Board)
+	if fqbn == "" {
+		fqbn = "esp32:esp32:esp32" // OTA 以 ESP32 为主,板卡缺省时兜底
+	}
+	args := map[string]any{
+		"sketch_dir":      projectDir,
+		"fqbn":            fqbn,
+		"address":         strings.TrimSpace(input.Address),
+		"timeout_seconds": 180,
+	}
+	if pwd := strings.TrimSpace(input.OTAPassword); pwd != "" {
+		args["password"] = pwd
+	}
+	return runHardwareSimple(command, "arduino_ota_upload", args, 200*time.Second, "WiFi 烧录(OTA)")
+}
+
+// HardwarePublishFirmware 把固件发布到远程固件服务器(③ 云端拉取),板子自己来拉。
+// 服务器配置留空用 NAS 默认(nas:/share/Public/onecreat-firmware,http://192.168.6.131:9000)。
+func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunResult {
+	command, err := a.requireHardwareMCP()
+	if err != nil {
+		return HardwareRunResult{Status: "failed", Error: err.Error()}
+	}
+	if strings.TrimSpace(input.ProjectName) == "" || strings.TrimSpace(input.Version) == "" {
+		return HardwareRunResult{Status: "skipped", Summary: "缺少项目名或版本号", NextStep: "填项目名和版本号(如 1.0.2)后再发布。"}
+	}
+	projectDir := resolveHardwareProjectDir(input.ProjectDir)
+	fqbn := arduinoFQBNFromBoard(input.Board)
+	if fqbn == "" {
+		fqbn = "esp32:esp32:esp32"
+	}
+	args := map[string]any{
+		"project_name":    strings.TrimSpace(input.ProjectName),
+		"version":         strings.TrimSpace(input.Version),
+		"ssh_host":        firstNonEmptyStr(input.SSHHost, "nas"),
+		"remote_dir":      firstNonEmptyStr(input.RemoteDir, "/share/Public/onecreat-firmware"),
+		"base_url":        firstNonEmptyStr(input.BaseURL, "http://192.168.6.131:9000"),
+		"sketch_dir":      projectDir,
+		"fqbn":            fqbn,
+		"timeout_seconds": 300,
+	}
+	return runHardwareSimple(command, "firmware_publish", args, 320*time.Second, "发布固件(远程)")
+}
+
+func firstNonEmptyStr(v, def string) string {
+	if strings.TrimSpace(v) != "" {
+		return v
+	}
+	return def
 }
 
 // HardwareMonitor dispatches to the platform-appropriate serial-monitor MCP tool

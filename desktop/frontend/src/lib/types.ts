@@ -534,6 +534,19 @@ export interface HardwareRunInput {
   board?: string;
   port?: string;
   seconds?: number;
+  address?: string; // OTA WiFi 烧录:板子地址(IP 或 mDNS 名)
+  otaPassword?: string; // OTA WiFi 烧录:ArduinoOTA 口令
+}
+
+// 发布固件到远程服务器(③ 云端拉取)的入参,服务器配置留空用 NAS 默认。
+export interface HardwarePublishInput {
+  projectDir: string;
+  board?: string;
+  projectName: string;
+  version: string;
+  sshHost?: string;
+  remoteDir?: string;
+  baseURL?: string;
 }
 
 export interface HardwareRunResult {

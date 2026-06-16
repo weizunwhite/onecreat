@@ -23,6 +23,7 @@ import type {
   HardwareEvidenceStatusView,
   HardwareBoardSummary,
   HardwareMCPView,
+  HardwarePublishInput,
   HardwareRunInput,
   HardwareRunResult,
   ReferenceFileResult,
@@ -132,6 +133,9 @@ export interface AppBindings {
   HardwareValidate(input: HardwareRunInput): Promise<HardwareRunResult>;
   HardwareUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
   HardwareMonitor(input: HardwareRunInput): Promise<HardwareRunResult>;
+  // OTA 远程烧录：WiFi 局域网直推(①) + 发布固件到远程服务器供云端拉取(③)。
+  HardwareOTAUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
+  HardwarePublishFirmware(input: HardwarePublishInput): Promise<HardwareRunResult>;
   // 串口监视器（常驻双向串口）：SerialOpen 后数据走 serial:data 事件，SerialWrite 反向发送。
   SerialPorts(): Promise<string[]>;
   SerialOpen(port: string, baud: number): Promise<SerialResult>;
@@ -861,6 +865,12 @@ function makeMockApp(): AppBindings {
     },
     async HardwareMonitor(_input: HardwareRunInput) {
       return { status: "skipped", summary: "dev mock — no device attached" } as HardwareRunResult;
+    },
+    async HardwareOTAUpload(_input: HardwareRunInput) {
+      return { status: "skipped", summary: "dev mock — OTA 需真实板子和 WiFi" } as HardwareRunResult;
+    },
+    async HardwarePublishFirmware(_input: HardwarePublishInput) {
+      return { status: "passed", summary: "dev mock — 已模拟发布固件到 NAS" } as HardwareRunResult;
     },
     async SerialPorts() {
       return ["/dev/cu.usbserial-mock"];
