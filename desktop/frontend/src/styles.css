@@ -1813,9 +1813,29 @@ body {
   color: var(--fg);
 }
 .msg__userbody {
+  position: relative;
   min-width: 0;
   display: grid;
   gap: 6px;
+  /* 浅绿框:把「用户输入」跟 AI 回复明显区分开,好认、也方便复制 */
+  background: color-mix(in srgb, #34c759 13%, transparent);
+  border: 1px solid color-mix(in srgb, #34c759 30%, transparent);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+/* 用户消息复制按钮:浅绿框右上角,悬停时出现 */
+.copybtn.msg__usercopy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.msg--user:hover .copybtn.msg__usercopy {
+  opacity: 0.6;
+}
+.copybtn.msg__usercopy:hover {
+  opacity: 1;
 }
 /* Rewind affordance on a user message: an always-visible (dim) ⟲ at the right of
    the row that toggles a dropdown popover of actions. The menu is absolutely
@@ -9125,7 +9145,11 @@ button.session-file-summary:hover {
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 56px;
+  /* min-height(可随内容增高)而非固定 height:56px —— 配合下方重复定义里的
+     flex-wrap:wrap,固定高度会把换行的右侧组(助手状态/刷新/返回)挤到工具栏
+     下边界之外、藏到项目条后面(那三个"多余的框"就是这么来的)。 */
+  min-height: 56px;
+  flex-wrap: wrap;
   padding: 0 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);

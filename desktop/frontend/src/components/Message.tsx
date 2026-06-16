@@ -4,6 +4,7 @@ import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 import { useT } from "../lib/i18n";
 import { useDetailMode } from "../lib/detailMode";
+import { streamingDisplayText } from "../lib/streamText";
 import type { Item } from "../lib/useController";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -31,6 +32,8 @@ export function UserMessage({
       <span className="msg__caret">›</span>
       <div className="msg__userbody">
         <div className="msg__text">{displayText}</div>
+        {/* 复制按钮:浅绿框右上角,悬停显示,方便复制自己问过的话 */}
+        <CopyButton text={text} className="msg__usercopy" />
       </div>
       {canRewind && (
         <div className="rewind">
@@ -83,11 +86,11 @@ export const AssistantMessage = memo(function AssistantMessage({
       )}
       <div className="msg__body">
         {item.streaming ? (
-          // While streaming, render raw text (stable, monospace-free) instead of
-          // re-parsing markdown on every token — partial markdown reflows the
-          // layout and makes the view jitter. Markdown renders once, on completion.
+          // 流式时不做完整 Markdown 渲染(每 token 重解析+代码高亮+KaTeX 会卡顿抖动),
+          // 而是用 streamingDisplayText 轻量「去标记」:把 ** # ` 围栏等符号抹掉显示成
+          // 干净文字,代码内容保留。生成结束后由下面的 <Markdown> 一次性排成正式格式。
           <div className="msg__stream">
-            {item.text}
+            {streamingDisplayText(item.text)}
             <span className="cursor" />
           </div>
         ) : (

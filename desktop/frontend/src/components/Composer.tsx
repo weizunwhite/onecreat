@@ -966,10 +966,10 @@ export function Composer({
             </div>
           )}
           {coach && (
-            <div className="composer__kb">
+            <div className="composer__kb-wrap">
               <button
                 type="button"
-                className={`composer__kb-toggle${coach.key ? " composer__kb-toggle--on" : ""}`}
+                className={`composer__kb${coach.key ? " composer__kb--on" : ""}`}
                 onClick={(e) => {
                   const r = e.currentTarget.getBoundingClientRect();
                   setCoachMenuPos({ left: r.left, bottom: window.innerHeight - r.top + 6 });

@@ -791,10 +791,13 @@ export function HardwarePanel({
         </div>
 
         <div className="hardware-view__toolbar-group hardware-view__toolbar-group--right">
-          <div className={`hardware-view__mcp hardware-view__mcp--${connected ? "ok" : hardwareMCP?.available ? "warn" : "off"}`}>
+          <div
+            className={`hardware-view__mcp hardware-view__mcp--${connected ? "ok" : hardwareMCP?.available ? "warn" : "off"}`}
+            title="硬件助手 = 让 AI 能真的检测板卡 / 编译 / 烧录 / 看串口的后端(硬件 MCP）。显示「已启用」才说明它接进了当前对话，上面的编译/烧录/看串口才能用。"
+          >
             <span className="hardware-view__mcp-dot" />
             <span className="hardware-view__mcp-label">
-              {connected ? "助手已启用" : hardwareMCP?.available ? "未启用" : "未安装"}
+              {connected ? "硬件助手已启用" : hardwareMCP?.available ? "硬件助手未启用" : "硬件助手未安装"}
             </span>
             {!connected && hardwareMCP?.available && (
               <button className="hardware-view__mcp-btn" disabled={busy} onClick={() => void enableHardware()}>
