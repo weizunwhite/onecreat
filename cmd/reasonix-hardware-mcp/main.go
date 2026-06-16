@@ -380,6 +380,37 @@ var tools = []toolDef{
 		run: runArduinoUpload,
 	},
 	{
+		name:        "arduino_ota_upload",
+		description: "Upload a compiled Arduino sketch over WiFi (OTA) via arduino-cli network upload (espota). The board must already run an ArduinoOTA-capable sketch and be reachable at `address`. No USB needed.",
+		readOnly:    false,
+		schema: objectSchema(map[string]any{
+			"sketch_dir":      map[string]any{"type": "string", "description": "Directory containing the .ino sketch."},
+			"fqbn":            map[string]any{"type": "string", "description": "Fully qualified board name, e.g. esp32:esp32:esp32."},
+			"address":         map[string]any{"type": "string", "description": "Board network address: IP (192.168.1.50) or mDNS host (esp32-onecreat.local)."},
+			"password":        map[string]any{"type": "string", "description": "OTA password from the board's ArduinoOTA.setPassword(). Optional."},
+			"build_path":      map[string]any{"type": "string", "description": "Optional directory with compiled binaries (skip recompile)."},
+			"timeout_seconds": map[string]any{"type": "number", "description": "Command timeout. Defaults to 180."},
+		}, []string{"sketch_dir", "fqbn", "address"}),
+		run: runArduinoOTAUpload,
+	},
+	{
+		name:        "firmware_publish",
+		description: "Publish firmware to a remote HTTP server for OTA cloud-pull: scp the .bin to <ssh_host>:<remote_dir>/<project>/firmware.bin and write version.txt. Boards running the cloud-pull agent fetch it automatically. Provide bin_path, or sketch_dir+fqbn to compile first.",
+		readOnly:    false,
+		schema: objectSchema(map[string]any{
+			"project_name":    map[string]any{"type": "string", "description": "Project folder on the server, e.g. line_follower (avoid spaces)."},
+			"version":         map[string]any{"type": "string", "description": "New version written to version.txt, e.g. 1.0.2."},
+			"ssh_host":        map[string]any{"type": "string", "description": "SSH host/alias for the firmware server, e.g. nas."},
+			"remote_dir":      map[string]any{"type": "string", "description": "Firmware root on the server, e.g. /share/Public/onecreat-firmware."},
+			"base_url":        map[string]any{"type": "string", "description": "Public base URL for reporting, e.g. http://192.168.6.131:9000."},
+			"bin_path":        map[string]any{"type": "string", "description": "Prebuilt .bin to publish. If empty, compile sketch_dir+fqbn."},
+			"sketch_dir":      map[string]any{"type": "string", "description": "Sketch to compile when bin_path is empty."},
+			"fqbn":            map[string]any{"type": "string", "description": "FQBN to compile with when bin_path is empty."},
+			"timeout_seconds": map[string]any{"type": "number", "description": "Overall timeout. Defaults to 300."},
+		}, []string{"project_name", "version", "ssh_host", "remote_dir"}),
+		run: runFirmwarePublish,
+	},
+	{
 		name:        "arduino_monitor_sample",
 		description: "Capture a short Arduino serial monitor sample via arduino-cli monitor for debugging. The command is stopped automatically after seconds.",
 		readOnly:    false,
@@ -2087,7 +2118,7 @@ func recordToolExecution(name string, args map[string]any, output string) {
 	switch name {
 	case "arduino_compile":
 		stages = []string{"compile"}
-	case "arduino_upload":
+	case "arduino_upload", "arduino_ota_upload":
 		stages = []string{"upload"}
 	case "arduino_monitor_sample":
 		stages = []string{"monitor", "serial"}
@@ -3093,6 +3124,96 @@ func runArduinoUpload(args map[string]any) (string, error) {
 		cmdArgs = append(cmdArgs, "--build-path", buildPath)
 	}
 	return runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", defaultTimeout))
+}
+
+// runArduinoOTAUpload 走 arduino-cli 网络口烧录(底层 espota),把固件通过 WiFi 推给
+// 已经跑着 ArduinoOTA 的板子。address 填板子 IP 或 mDNS 名,不需要 USB。
+func runArduinoOTAUpload(args map[string]any) (string, error) {
+	sketch, err := requirePath(args, "sketch_dir")
+	if err != nil {
+		return "", err
+	}
+	fqbn := strArg(args, "fqbn", "")
+	address := strArg(args, "address", "")
+	if fqbn == "" || address == "" {
+		return "", errors.New("fqbn and address are required")
+	}
+	cmdArgs := []string{"upload", sketch, "-p", address, "-b", fqbn}
+	if pwd := strArg(args, "password", ""); pwd != "" {
+		cmdArgs = append(cmdArgs, "--upload-field", "password="+pwd)
+	}
+	if buildPath := strArg(args, "build_path", ""); buildPath != "" {
+		cmdArgs = append(cmdArgs, "--build-path", buildPath)
+	}
+	return runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", 180*time.Second))
+}
+
+// runFirmwarePublish 把固件发布到远端固件服务器(NAS/VPS 上的 nginx),供云端拉取 OTA:
+// scp 固件到 <ssh_host>:<remote_dir>/<project>/firmware.bin,再写 version.txt。
+// 没给 bin_path 就先用 sketch_dir+fqbn 现编。板子(刷了 agent)下次轮询会自动拉取升级。
+func runFirmwarePublish(args map[string]any) (string, error) {
+	project := strArg(args, "project_name", "")
+	version := strArg(args, "version", "")
+	sshHost := strArg(args, "ssh_host", "")
+	remoteDir := strArg(args, "remote_dir", "")
+	baseURL := strArg(args, "base_url", "")
+	if project == "" || version == "" || sshHost == "" || remoteDir == "" {
+		return "", errors.New("project_name, version, ssh_host, remote_dir are required")
+	}
+	binPath := strArg(args, "bin_path", "")
+	if binPath == "" {
+		sketch := strArg(args, "sketch_dir", "")
+		fqbn := strArg(args, "fqbn", "")
+		if sketch == "" || fqbn == "" {
+			return "", errors.New("provide bin_path, or sketch_dir+fqbn to compile")
+		}
+		buildDir, err := os.MkdirTemp("", "fwpub-")
+		if err != nil {
+			return "", err
+		}
+		defer os.RemoveAll(buildDir)
+		if _, cerr := runCommandText("arduino-cli", []string{"compile", "--fqbn", fqbn, "--output-dir", buildDir, sketch}, "", 240*time.Second); cerr != nil {
+			return "", fmt.Errorf("compile failed: %w", cerr)
+		}
+		binPath, err = findSketchBin(buildDir)
+		if err != nil {
+			return "", err
+		}
+	}
+	remoteProjectDir := strings.TrimRight(remoteDir, "/") + "/" + project
+	// 远端建项目目录
+	if _, err := runCommandText("ssh", []string{sshHost, "mkdir -p " + shellArg(remoteProjectDir)}, "", 30*time.Second); err != nil {
+		return "", fmt.Errorf("ssh mkdir failed: %w", err)
+	}
+	// 传固件
+	if _, err := runCommandText("scp", []string{binPath, sshHost + ":" + shellArg(remoteProjectDir+"/firmware.bin")}, "", 150*time.Second); err != nil {
+		return "", fmt.Errorf("scp firmware failed: %w", err)
+	}
+	// 写版本号(板子靠它判断要不要更新)
+	verCmd := "printf %s " + shellArg(version) + " > " + shellArg(remoteProjectDir+"/version.txt")
+	if _, err := runCommandText("ssh", []string{sshHost, verCmd}, "", 30*time.Second); err != nil {
+		return "", fmt.Errorf("ssh write version failed: %w", err)
+	}
+	url := strings.TrimRight(baseURL, "/") + "/" + project
+	return fmt.Sprintf("已发布 %s v%s\n  固件: %s/firmware.bin\n  版本: %s/version.txt = %s\n板子(已刷 agent)会在下次轮询时自动拉取升级。", project, version, url, url, version), nil
+}
+
+// findSketchBin 在编译输出目录里找主固件 .ino.bin(排除 bootloader/partitions/merged)。
+func findSketchBin(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasSuffix(n, ".ino.bin") &&
+			!strings.Contains(n, ".bootloader.") &&
+			!strings.Contains(n, ".partitions.") &&
+			!strings.Contains(n, ".merged.") {
+			return filepath.Join(dir, n), nil
+		}
+	}
+	return "", errors.New("compiled firmware .bin not found in build dir")
 }
 
 func runArduinoMonitor(args map[string]any) (string, error) {
