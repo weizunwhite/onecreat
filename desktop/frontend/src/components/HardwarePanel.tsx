@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { app, openExternal } from "../lib/bridge";
 import { copyText } from "../lib/crash";
+import { SerialMonitor } from "./SerialMonitor";
 import type {
   CapabilitiesView,
   HardwareDetectView,
@@ -327,6 +329,8 @@ export function HardwarePanel({
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // 串口监视器(常驻窗口,像 Arduino IDE)是否打开。
+  const [serialMonitorOpen, setSerialMonitorOpen] = useState(false);
   // 项目条上「工具就绪 X/Y」点开后,列出具体每个工具是否就绪。
   const [toolchainsOpen, setToolchainsOpen] = useState(false);
   // 一键安装核心工具链(arduino-cli + 板卡 core)的实时分步状态。
@@ -783,10 +787,18 @@ export function HardwarePanel({
             className="hardware-view__btn"
             disabled={!hasHardwareProject || !hardwareMCP?.available || running.monitor || (!port && detectedPlatform === "arduino")}
             onClick={() => void runOneTouch("monitor")}
-            title="采样 8 秒串口"
+            title="快速采样 8 秒串口并记入验证证据(给竞赛留证据用)"
           >
             {running.monitor ? <Loader2 size={14} className="hardware-spin" /> : <Eye size={14} />}
             <span>看串口</span>
+          </button>
+          <button
+            className="hardware-view__btn"
+            onClick={() => setSerialMonitorOpen(true)}
+            title="打开常驻串口窗口(像 Arduino IDE:选波特率、实时查看数据、发送指令调试)"
+          >
+            <Activity size={14} />
+            <span>串口监视器</span>
           </button>
         </div>
 
@@ -1176,6 +1188,8 @@ export function HardwarePanel({
           ) : null}
         </details>
       </div>
+
+      {serialMonitorOpen && <SerialMonitor initialPort={port} onClose={() => setSerialMonitorOpen(false)} />}
     </div>
   );
 }

@@ -19,6 +19,7 @@ import type {
   HardwareDetectView,
   HardwareInstallToolchainView,
   HardwareInstallStepView,
+  SerialResult,
   HardwareEvidenceStatusView,
   HardwareBoardSummary,
   HardwareMCPView,
@@ -131,6 +132,11 @@ export interface AppBindings {
   HardwareValidate(input: HardwareRunInput): Promise<HardwareRunResult>;
   HardwareUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
   HardwareMonitor(input: HardwareRunInput): Promise<HardwareRunResult>;
+  // 串口监视器（常驻双向串口）：SerialOpen 后数据走 serial:data 事件，SerialWrite 反向发送。
+  SerialPorts(): Promise<string[]>;
+  SerialOpen(port: string, baud: number): Promise<SerialResult>;
+  SerialClose(): Promise<void>;
+  SerialWrite(data: string): Promise<SerialResult>;
   AddHardwareMCPServer(): Promise<number>;
   KnowledgeView(): Promise<KnowledgeView>;
   KnowledgeCreate(name: string): Promise<KnowledgeBaseView>;
@@ -254,6 +260,29 @@ export function onReady(tabId: string, cb: () => void): () => void {
   // In dev mock, fire immediately since there's no real boot sequence.
   cb();
   return () => {};
+}
+
+// 串口监视器事件:serial:data 每读到一段数据触发,serial:closed 在端口异常断开时触发。
+// 浏览器 dev 模式下用一个模拟流(mock SerialOpen 起的定时器)喂数据,方便不接板子也能调界面。
+const serialListeners = new Set<(chunk: string) => void>();
+const serialClosedListeners = new Set<(reason: string) => void>();
+let mockSerialTimer: ReturnType<typeof setInterval> | null = null;
+let mockSerialN = 0;
+
+export function onSerialData(cb: (chunk: string) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("serial:data", (d) => cb(String(d)));
+  }
+  serialListeners.add(cb);
+  return () => serialListeners.delete(cb);
+}
+
+export function onSerialClosed(cb: (reason: string) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("serial:closed", (r) => cb(String(r)));
+  }
+  serialClosedListeners.add(cb);
+  return () => serialClosedListeners.delete(cb);
 }
 
 // app proxies each call to the live binding (or the dev mock only when truly
@@ -832,6 +861,30 @@ function makeMockApp(): AppBindings {
     },
     async HardwareMonitor(_input: HardwareRunInput) {
       return { status: "skipped", summary: "dev mock — no device attached" } as HardwareRunResult;
+    },
+    async SerialPorts() {
+      return ["/dev/cu.usbserial-mock"];
+    },
+    async SerialOpen(_port: string, _baud: number) {
+      if (mockSerialTimer) clearInterval(mockSerialTimer);
+      mockSerialN = 0;
+      // 模拟一个每秒打印递增计数的板子,方便浏览器 dev 里调界面。
+      mockSerialTimer = setInterval(() => {
+        mockSerialN += 1;
+        const line = `hello mock #${mockSerialN}  temp:${(20 + Math.sin(mockSerialN / 5) * 5).toFixed(1)}\n`;
+        serialListeners.forEach((cb) => cb(line));
+      }, 1000);
+      return { ok: true };
+    },
+    async SerialClose() {
+      if (mockSerialTimer) {
+        clearInterval(mockSerialTimer);
+        mockSerialTimer = null;
+      }
+    },
+    async SerialWrite(data: string) {
+      serialListeners.forEach((cb) => cb(`[已发送] ${data}`));
+      return { ok: true };
     },
     async AddHardwareMCPServer() {
       return this.AddMCPServer({

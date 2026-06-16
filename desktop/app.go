@@ -61,6 +61,11 @@ type App struct {
 	disabledMCP map[string]ServerView
 	mcpOrder    []string
 
+	// 常驻双向串口(「串口监视器」面板用):一次一个连接;读到的数据通过 Wails 事件
+	// serial:data 实时推给前端,前端可调 SerialWrite 反向发送(滑块/发送框)。
+	serialMu  sync.Mutex
+	serialSes *serialSession
+
 	// 多标签多任务(像 Codex / Claude Code):每个 tab 一个独立 controller + sink +
 	// session 文件,后台 tab 的 controller 照常在自己的 goroutine 里跑,事件发到
 	// 独立通道 agent:event:<tabID> —— 所以多个任务可以「真并行」。
@@ -2300,15 +2305,20 @@ func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
 		}
 		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
 	case "platformio":
+		// PlatformIO 的 `pio run -t monitor` 是交互式终端,onecreat 用程序方式(非 TTY)
+		// spawn 它会在 termios.tcgetattr 崩溃(Operation not supported by device)。
+		// 「看串口」本质是按波特率读串口,与构建系统无关 —— 直接复用已修好的
+		// arduino_monitor_sample 端口级读取(arduino-cli monitor),稳。
+		if input.Port == "" {
+			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "在上方「串口」里选择开发板端口后再点查看串口。"}
+		}
 		args := map[string]any{
-			"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
-			"targets":         []string{"monitor"},
+			"port":            input.Port,
+			"seconds":         seconds,
+			"baud":            115200,
 			"timeout_seconds": seconds + 5,
 		}
-		if input.Port != "" {
-			args["monitor_port"] = input.Port
-		}
-		return runHardwareSimple(command, "platformio_run", args, time.Duration(seconds+10)*time.Second, "PlatformIO 串口")
+		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
 	case "esp_idf":
 		args := map[string]any{
 			"project_dir":     resolveHardwareProjectDir(input.ProjectDir),

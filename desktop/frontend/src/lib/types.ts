@@ -290,6 +290,11 @@ export interface HardwareInstallToolchainView {
   nextStep?: string;
   error?: string;
 }
+// 串口监视器（常驻双向串口）打开/写入的统一返回。
+export interface SerialResult {
+  ok: boolean;
+  error?: string;
+}
 export interface HardwareEvidenceStatusView {
   available: boolean;
   projectDir?: string;
