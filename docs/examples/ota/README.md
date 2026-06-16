@@ -11,7 +11,7 @@
 | 模板 | 模型 | 怎么用 | 适用 | 跨网段? |
 |------|------|--------|------|---------|
 | `ota_lan_push/` | 推（电脑→板子） | 电脑往板子 IP 推固件（ArduinoOTA） | 师生同一 WiFi，课堂常见 | ❌ 同一局域网 |
-| `ota_web_browser/` | 拉（浏览器上传） | 浏览器开 `http://板子IP/update` 拖 .bin | 学生自助刷机 | ❌ 同一局域网 |
+| `ota_web_browser/` | 拉（浏览器上传） | 浏览器开 `http://板子IP/` 选 .bin 上传（零依赖） | 学生自助刷机 | ❌ 同一局域网 |
 | `ota_cloud_pull/` | 拉（板子→服务器） | 板子定时去服务器查更新、自己下载 | 真·远程，板子在任何地方 | ✅ 只要能上网 |
 
 ## 三步通用流程
@@ -37,8 +37,13 @@ onecreat 集成后：硬件面板「串口」旁边会多一个 **「WiFi 口」
 
 ## ② 浏览器拖拽（ota_web_browser）
 
-需要先装库：`arduino-cli lib install ElegantOTA`。底座烧好后，浏览器打开
-`http://板子IP/update`，把 onecreat 编译出的 `.bin` 拖进去即可。
+零依赖（只用内置 WebServer + Update，不用装库）。底座烧好后，浏览器打开
+`http://板子IP/`，选中 onecreat 编译出的 `.bin` 点「上传并升级」即可。
+命令行等价（onecreat 后端也这么推，已真机验证）：
+
+```bash
+curl -F "firmware=@firmware.bin" http://板子IP/update
+```
 
 ## ③ 云端拉取（ota_cloud_pull）—— 真·远程
 
