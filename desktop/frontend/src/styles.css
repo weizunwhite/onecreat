@@ -11479,3 +11479,222 @@ button.session-file-summary:hover {
   background: color-mix(in srgb, var(--accent) 88%, #000);
   border-color: var(--accent);
 }
+
+/* ── 串口监视器 Phase 2(实时曲线)+ Phase 3(交互控件) ───────────────── */
+
+/* 工具栏:文本/曲线 视图切换(分段控件) */
+.serialmon__seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.serialmon__seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-faint);
+  background: var(--bg-elev-2);
+  border: none;
+  cursor: pointer;
+}
+.serialmon__seg button + button {
+  border-left: 1px solid var(--border);
+}
+.serialmon__seg button.is-on {
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+
+/* 实时曲线画布:占满剩余高度,canvas 自适应容器尺寸(内部按 DPR 缩放保证清晰)。 */
+.serialmon__plot {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--bg);
+}
+.serialmon__plot canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 交互控件面板(在数据区和发送框之间,可滚动)。 */
+.serialmon__controls {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.serialmon__controls-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+.serialmon__controls-title {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.serialmon__controls-head small {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+.serialmon__controls-spacer {
+  flex: 1;
+}
+.serialmon__controls-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* 单个控件卡片 */
+.serialmon__ctrl {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  padding: 8px 10px;
+}
+.serialmon__ctrl--slider {
+  width: 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.serialmon__ctrl-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--fg);
+}
+.serialmon__ctrl-top strong {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.serialmon__ctrl--slider input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.serialmon__ctrl-sub {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.serialmon__ctrl-sub code {
+  font-family: var(--mono);
+  color: var(--fg);
+}
+
+/* 按钮型控件 */
+.serialmon__ctrl--btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 76px;
+  height: 44px;
+  align-self: flex-start;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.serialmon__ctrl--btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-elev));
+}
+.serialmon__ctrl--slider input:disabled,
+.serialmon__ctrl--btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 编辑态:改名称 / 范围 / 指令模板 + 删除 */
+.serialmon__ctrl--edit {
+  width: 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.serialmon__ctrl-editrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.serialmon__ctrl-name,
+.serialmon__ctrl-fields input {
+  padding: 4px 7px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.serialmon__ctrl-name {
+  flex: 1;
+  min-width: 0;
+}
+.serialmon__ctrl-del {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  color: var(--err);
+  cursor: pointer;
+}
+.serialmon__ctrl-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.serialmon__ctrl-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+.serialmon__ctrl-fields input {
+  width: 62px;
+}
+.serialmon__ctrl-tmpl {
+  flex: 1;
+  min-width: 120px;
+}
+.serialmon__ctrl-tmpl input {
+  width: 100%;
+}
+
+.serialmon__controls-add {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+.serialmon__controls-add small {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.serialmon__controls-add code {
+  font-family: var(--mono);
+  color: var(--fg);
+}
+
+/* 控件面板里用的小号 chip */
+.chip--sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  gap: 4px;
+}
