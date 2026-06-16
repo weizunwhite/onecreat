@@ -18,6 +18,7 @@ import {
 import { app, openExternal } from "../lib/bridge";
 import { copyText } from "../lib/crash";
 import { SerialMonitor } from "./SerialMonitor";
+import { OTAPanel } from "./OTAPanel";
 import type {
   CapabilitiesView,
   HardwareDetectView,
@@ -455,6 +456,8 @@ export function HardwarePanel({
   // 「一键运行」按钮:把学生最常用的三件事 — 编译/烧录/看串口 —
   // 直接绑到对应 MCP 工具,不必再绕一圈到对话里让 AI 决定调什么。
   const detectedPlatform = useMemo(() => detectPlatformFromTypes(detect?.projectTypes), [detect?.projectTypes]);
+  // OTA 用的板卡值:检测到的真实板 value 形如 detected:port:fqbn,要抽出真 fqbn(同 runOneTouch)。
+  const resolvedBoard = useMemo(() => (board.startsWith("detected:") ? board.split(":").slice(2).join(":") : board), [board]);
   const hasHardwareProject = !!detectedPlatform && !!detect?.projectDir;
   const [running, setRunning] = useState<{ validate: boolean; upload: boolean; monitor: boolean }>({
     validate: false,
@@ -1111,6 +1114,14 @@ export function HardwarePanel({
             ))}
           </div>
         </section>
+
+        {/* 远程烧录(OTA):新建项目脚手架 / WiFi 烧录 / 发布到 NAS */}
+        <OTAPanel
+          projectDir={detect?.projectDir ?? ""}
+          board={resolvedBoard}
+          mcpReady={!!hardwareMCP?.available}
+          onOpenWorkspace={onOpenWorkspace}
+        />
 
         {/* 本机检测详情(默认折叠,需要时打开) */}
         <details className="hardware-section hardware-view__detail">

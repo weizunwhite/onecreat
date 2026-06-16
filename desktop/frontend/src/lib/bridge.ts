@@ -26,6 +26,8 @@ import type {
   HardwarePublishInput,
   HardwareRunInput,
   HardwareRunResult,
+  OTAScaffoldInput,
+  OTAScaffoldResult,
   ReferenceFileResult,
   JobView,
   KnowledgeBaseView,
@@ -136,6 +138,7 @@ export interface AppBindings {
   // OTA 远程烧录：WiFi 局域网直推(①) + 发布固件到远程服务器供云端拉取(③)。
   HardwareOTAUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
   HardwarePublishFirmware(input: HardwarePublishInput): Promise<HardwareRunResult>;
+  HardwareScaffoldOTA(input: OTAScaffoldInput): Promise<OTAScaffoldResult>;
   // 串口监视器（常驻双向串口）：SerialOpen 后数据走 serial:data 事件，SerialWrite 反向发送。
   SerialPorts(): Promise<string[]>;
   SerialOpen(port: string, baud: number): Promise<SerialResult>;
@@ -871,6 +874,9 @@ function makeMockApp(): AppBindings {
     },
     async HardwarePublishFirmware(_input: HardwarePublishInput) {
       return { status: "passed", summary: "dev mock — 已模拟发布固件到 NAS" } as HardwareRunResult;
+    },
+    async HardwareScaffoldOTA(input: OTAScaffoldInput) {
+      return { ok: true, path: `/dev/mock/onecreat-projects/${input.projectName}` } as OTAScaffoldResult;
     },
     async SerialPorts() {
       return ["/dev/cu.usbserial-mock"];

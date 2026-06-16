@@ -549,6 +549,21 @@ export interface HardwarePublishInput {
   baseURL?: string;
 }
 
+// 新建 OTA 项目脚手架(A 方案)入参/结果。
+export interface OTAScaffoldInput {
+  destDir?: string;
+  projectName: string;
+  mode: "lan" | "web" | "cloud";
+  wifiSSID: string;
+  wifiPassword: string;
+  nasBaseURL?: string;
+}
+export interface OTAScaffoldResult {
+  ok: boolean;
+  path?: string;
+  error?: string;
+}
+
 export interface HardwareRunResult {
   status: "passed" | "failed" | "skipped" | string;
   // 验证子类（如 python_syntax）：前端据此区分「真编译通过」与「仅 py_compile 语法通过」。

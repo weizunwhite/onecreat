@@ -11698,3 +11698,114 @@ button.session-file-summary:hover {
   font-size: 11.5px;
   gap: 4px;
 }
+
+/* ── 远程烧录(OTA)面板 ───────────────────────────────────────────── */
+.ota > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+.ota__intro {
+  margin: 8px 0 12px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  line-height: 1.6;
+}
+.ota__card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--bg-soft);
+}
+.ota__card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg);
+}
+.ota__modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ota__mode {
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-faint);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ota__mode.is-on {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.ota__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ota__in {
+  flex: 1;
+  min-width: 120px;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.ota__in--sm {
+  flex: 0 0 110px;
+  min-width: 90px;
+}
+.ota__in:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.ota__msg {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.ota__msg--ok {
+  color: var(--ok);
+}
+.ota__msg--warn {
+  color: var(--warn);
+}
+.ota__msg--fail {
+  color: var(--err);
+}
+.ota__next {
+  color: var(--fg-faint);
+}
+.ota__err {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+.ota__link {
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
