@@ -25,9 +25,10 @@
 const char* WIFI_SSID     = "你的WiFi名称";
 const char* WIFI_PASSWORD = "你的WiFi密码";
 
-// ↓↓↓ 固件服务器地址（端口/路径等 NAS 服务搭好后定）↓↓↓
-const char* FW_VERSION_URL = "http://192.168.6.131:8080/firmware/version.txt";
-const char* FW_BIN_URL     = "http://192.168.6.131:8080/firmware/firmware.bin";
+// ↓↓↓ 固件服务器：NAS 上的 nginx(端口 9000),按项目分子目录 ↓↓↓
+// 部署见本目录 README 的「NAS 固件服务器」一节。以后换 VPS 只改这两行域名。
+const char* FW_VERSION_URL = "http://192.168.6.131:9000/你的项目/version.txt";
+const char* FW_BIN_URL     = "http://192.168.6.131:9000/你的项目/firmware.bin";
 
 // 这块板子当前烧的是哪个版本（每次发布新固件时把它改大）
 const char* CURRENT_VERSION = "1.0.0";

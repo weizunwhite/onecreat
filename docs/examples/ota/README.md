@@ -62,3 +62,40 @@ onecreat 编译新固件 → 发布 firmware.bin + version.txt 到服务器 → 
 1. ① 真机跑通"USB 烧一次 → 之后 WiFi 推"→ 集成进 onecreat（WiFi 口）。
 2. ② 真机跑通浏览器拖拽 → onecreat 加"打开升级页"入口。
 3. ③ NAS 上搭固件分发端点 → agent 真机跑通拉取 → 做成 onecreat 发布 + skill。
+
+## NAS 固件服务器（③ 用，已部署并验证）
+
+用 NAS 上的 Container Station 起了一个 nginx 容器，把固件目录映射成 HTTP 服务：
+
+```bash
+# 在 NAS 上(SSH 进去),DOCKER 是 Container Station 的 docker 路径
+DOCKER=/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
+mkdir -p /share/Public/onecreat-firmware            # 固件根目录(public 盘下)
+$DOCKER run -d --name onecreat-fw --restart unless-stopped \
+  -p 9000:80 -v /share/Public/onecreat-firmware:/usr/share/nginx/html:ro nginx:alpine
+```
+
+- 服务地址：`http://192.168.6.131:9000/`
+- 目录结构：每个项目一个子文件夹，各放 `firmware.bin` + `version.txt`
+  ```
+  /share/Public/onecreat-firmware/
+    超声波小车/   firmware.bin  version.txt
+    巡线/         firmware.bin  version.txt
+  ```
+
+### 发布新固件（两种方式）
+
+```bash
+# 方式 A：命令行(以后 onecreat 一键「发布」就是这两步)
+scp 新固件.bin nas:/share/Public/onecreat-firmware/超声波小车/firmware.bin
+ssh nas 'echo "1.0.2" > /share/Public/onecreat-firmware/超声波小车/version.txt'
+```
+
+> 方式 B：直接在 QNAP File Station 把 `.bin` 拖进对应文件夹，再改 `version.txt` 里的版本号。
+
+板子(刷了 agent 底座)每隔 N 秒查 `version.txt`，版本变了就自动拉 `firmware.bin` 升级。
+
+### 以后换 VPS
+
+把同样的 nginx + 目录搬到 VPS（或直接用 VPS 上已有的 web 目录），
+然后只改各板子 agent 里的两个 URL 域名即可，逻辑完全不变。
