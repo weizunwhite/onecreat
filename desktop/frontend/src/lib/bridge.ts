@@ -1259,7 +1259,7 @@ function makeMockApp(): AppBindings {
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {
-        window.open("https://github.com/esengine/reasonix/releases/latest", "_blank", "noopener");
+        window.open("https://github.com/weizunwhite/onecreat/releases/latest", "_blank", "noopener");
       }
     },
   };
