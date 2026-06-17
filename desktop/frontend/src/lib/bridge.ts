@@ -6,6 +6,8 @@
 // developed and laid out without rebuilding the Go side.
 
 import type {
+  AccountLoginResult,
+  AccountSession,
   BalanceInfo,
   CapabilitiesView,
   CheckpointMeta,
@@ -105,6 +107,10 @@ export interface AppBindings {
   SwitchWorkspace(path: string): Promise<string>;
   // 内置文件夹选择器列目录(绕开 macOS 原生对话框跑到窗口后面的 bug)。
   BrowseDir(path: string): Promise<FolderListing>;
+  // 账号 / 权限(登录门控):登录 / 登出 / 查当前会话(含功能权限清单)。
+  AccountLogin(account: string, password: string): Promise<AccountLoginResult>;
+  AccountLogout(): Promise<void>;
+  AccountSessionInfo(): Promise<AccountSession>;
   ContextUsage(): Promise<ContextInfo>;
   // Balance queries the active provider's wallet balance (a network call);
   // returns an unavailable readout when no balance_url is configured or it fails.
@@ -278,6 +284,10 @@ const serialListeners = new Set<(chunk: string) => void>();
 const serialClosedListeners = new Set<(reason: string) => void>();
 let mockSerialTimer: ReturnType<typeof setInterval> | null = null;
 let mockSerialN = 0;
+
+// 账号 mock 会话(浏览器 dev / 无后端时):AccountLogin 改它,AccountSessionInfo 读它。
+const MOCK_ALL_FEATURES = ["hardware", "proposal", "paper", "lesson", "tutorial", "log", "jinpeng", "knowledge", "ota", "skills"];
+let mockSession: AccountSession = { loggedIn: false, account: "", isAdmin: false, permissions: [] };
 
 export function onSerialData(cb: (chunk: string) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
@@ -669,6 +679,23 @@ function makeMockApp(): AppBindings {
         home: "/Users/dev",
         desktop: "/Users/dev/Desktop",
       } as FolderListing;
+    },
+    async AccountLogin(account: string, password: string) {
+      if (account === "admin" && password === "admin") {
+        mockSession = { loggedIn: true, account: "超级管理员", isAdmin: true, permissions: [...MOCK_ALL_FEATURES] };
+        return { ok: true } as AccountLoginResult;
+      }
+      if (account === "demo" && password === "demo") {
+        mockSession = { loggedIn: true, account: "演示客户", isAdmin: false, permissions: ["hardware", "proposal", "paper", "knowledge"] };
+        return { ok: true } as AccountLoginResult;
+      }
+      return { ok: false, error: "账号或密码不对" } as AccountLoginResult;
+    },
+    async AccountLogout() {
+      mockSession = { loggedIn: false, account: "", isAdmin: false, permissions: [] };
+    },
+    async AccountSessionInfo() {
+      return mockSession;
     },
     async SwitchWorkspace(path: string) {
       return mockSwitchWorkspace(path);

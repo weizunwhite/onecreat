@@ -19,6 +19,7 @@ import {
   Pencil,
   Trash2,
   Settings as SettingsIcon,
+  LogOut,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -66,6 +67,8 @@ import { KnowledgePanel } from "./components/KnowledgePanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
 import { FolderPicker } from "./components/FolderPicker";
+import { LoginGate } from "./components/LoginGate";
+import { useSession, setSessionStore } from "./lib/account";
 import { app, onEvent } from "./lib/bridge";
 import { parseTodos } from "./lib/tools";
 import { useDetailMode, toggleDetailMode } from "./lib/detailMode";
@@ -435,6 +438,18 @@ export default function App() {
   const [workspacePreviewModeActive, setWorkspacePreviewModeActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
+  // 账号会话(登录门控)。session=null 加载中;未登录挡登录页;登录后按权限显示功能。
+  const session = useSession();
+  const refreshSession = useCallback(() => {
+    app
+      .AccountSessionInfo()
+      .then(setSessionStore)
+      .catch(() => setSessionStore({ loggedIn: false, account: "", isAdmin: false, permissions: [] }));
+  }, []);
+  useEffect(() => {
+    refreshSession();
+  }, [refreshSession]);
+  const canFeature = useCallback((key: string) => !!session && (session.isAdmin || session.permissions.includes(key)), [session]);
   // 主区域视图模式:'chat' = 普通对话(Transcript),'hardware' = 硬件 IDE 工作台。
   // 两个视图同时挂载用 display:none 切换,防止 chat 流式输出被中断。
   const [mainView, setMainView] = useState<"chat" | "hardware">("chat");
@@ -1130,6 +1145,10 @@ export default function App() {
       ? t("sidebar.expand")
       : t("sidebar.collapse");
 
+  // 登录门控:会话还没拉到先空着;未登录挡登录页。登录后才进 app。
+  if (session === null) return <div className="app" />;
+  if (!session.loggedIn) return <LoginGate onLoggedIn={refreshSession} />;
+
   return (
     <div className="app">
       {/* 文件夹「⋯」菜单:遮罩 + 弹层都渲染在 app 根层(同一层叠上下文,点击才落到菜单上) */}
@@ -1207,24 +1226,28 @@ export default function App() {
             <span>{t("topbar.newSession")}</span>
           </button>
 
-          <button
-            className={selectedKnowledgeBaseIds.length ? "sidebar__knowledge sidebar__knowledge--active" : "sidebar__knowledge"}
-            onClick={() => setKnowledgeOpen(true)}
-            title="知识库"
-          >
-            <BookOpen size={16} />
-            <span>知识库</span>
-            {selectedKnowledgeBaseIds.length > 0 && <small>{selectedKnowledgeBaseIds.length}</small>}
-          </button>
+          {canFeature("knowledge") && (
+            <button
+              className={selectedKnowledgeBaseIds.length ? "sidebar__knowledge sidebar__knowledge--active" : "sidebar__knowledge"}
+              onClick={() => setKnowledgeOpen(true)}
+              title="知识库"
+            >
+              <BookOpen size={16} />
+              <span>知识库</span>
+              {selectedKnowledgeBaseIds.length > 0 && <small>{selectedKnowledgeBaseIds.length}</small>}
+            </button>
+          )}
 
-          <button
-            className={`sidebar__hardware${mainView === "hardware" ? " sidebar__hardware--active" : ""}`}
-            onClick={() => setMainView(mainView === "hardware" ? "chat" : "hardware")}
-            title={t("sidebar.hardwareTitle")}
-          >
-            <Cpu size={16} />
-            <span>{t("sidebar.hardware")}</span>
-          </button>
+          {canFeature("hardware") && (
+            <button
+              className={`sidebar__hardware${mainView === "hardware" ? " sidebar__hardware--active" : ""}`}
+              onClick={() => setMainView(mainView === "hardware" ? "chat" : "hardware")}
+              title={t("sidebar.hardwareTitle")}
+            >
+              <Cpu size={16} />
+              <span>{t("sidebar.hardware")}</span>
+            </button>
+          )}
 
           <section className="sidebar__section">
             <div className="sidebar__section-head">
@@ -1410,6 +1433,14 @@ export default function App() {
             >
               <SettingsIcon size={15} />
               <span>{t("topbar.settings")}</span>
+            </button>
+            <button
+              className="sidebar__navitem"
+              onClick={() => app.AccountLogout().then(refreshSession)}
+              title={`当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""} — 点击退出登录`}
+            >
+              <LogOut size={15} />
+              <span>退出（{session.account}）</span>
             </button>
           </nav>
 

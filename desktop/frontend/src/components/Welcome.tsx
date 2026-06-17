@@ -1,6 +1,7 @@
 import { Cpu, PencilRuler, FileText, GraduationCap, BookMarked, ClipboardList, Award, type LucideIcon } from "lucide-react";
 import logo from "../assets/onecreat-logo.png";
 import { useT } from "../lib/i18n";
+import { useCan } from "../lib/account";
 import type { DictKey } from "../locales/en";
 
 // Welcome 是空状态首页：从「硬件优先」翻成「任务/技能启动台」。
@@ -83,6 +84,9 @@ export function Welcome({
   onOpenHardware?: () => void;
 }) {
   const t = useT();
+  const can = useCan();
+  // 只显示当前账号被分配了的功能卡(超管全显示)。没分配的,客户根本看不到。
+  const visible = VERTICALS.filter((v) => can(v.key));
 
   const launch = (v: Vertical) => {
     if (v.openHardware) onOpenHardware?.();
@@ -95,9 +99,9 @@ export function Welcome({
       <div className="welcome__title">onecreat</div>
       <div className="welcome__tag">{t("welcome.tagline")}</div>
 
-      {/* 垂直启动台：点一张卡开始一个任务 */}
+      {/* 垂直启动台：点一张卡开始一个任务（只显示已分配的功能） */}
       <div className="welcome__verticals">
-        {VERTICALS.map((v) => {
+        {visible.map((v) => {
           const Icon = v.icon;
           return (
             <button key={v.key} className="welcome__vertical" onClick={() => launch(v)} title={t(v.descKey)}>

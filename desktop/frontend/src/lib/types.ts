@@ -574,6 +574,18 @@ export interface FolderListing {
   error?: string;
 }
 
+// 账号会话(P1:登录 + 按权限门控)。permissions = 该账号开通的功能 key 列表;超管 isAdmin=true 拥有全部。
+export interface AccountSession {
+  loggedIn: boolean;
+  account: string;
+  isAdmin: boolean;
+  permissions: string[];
+}
+export interface AccountLoginResult {
+  ok: boolean;
+  error?: string;
+}
+
 export interface HardwareRunResult {
   status: "passed" | "failed" | "skipped" | string;
   // 验证子类（如 python_syntax）：前端据此区分「真编译通过」与「仅 py_compile 语法通过」。
