@@ -7,10 +7,13 @@ package main
 // 拿功能清单",其余(持久化、门控、前端)一律不动。AI 走网关(P3)再用 Token 配 provider。
 
 import (
+	"bytes"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // allFeatureKeys 是全部可被门控的功能 key(超管拥有全部)。和前端首页卡片 key + 各功能
@@ -58,26 +61,52 @@ func accountSessionPath() (string, error) {
 	return filepath.Join(dir, "onecreat", "session.json"), nil
 }
 
-// accountAuthenticate 是"问后端要账号+权限"的唯一入口。P1 用内置 mock 账号;接真后端时
-// 整个换成 HTTP 调用即可。返回会话 + 是否成功。
-func accountAuthenticate(account, password string) (persistedSession, bool) {
-	account = strings.TrimSpace(account)
-	switch {
-	case account == "admin" && password == "admin":
-		// 超级管理员:拥有全部功能。
-		return persistedSession{Account: "超级管理员", IsAdmin: true, Permissions: append([]string{}, allFeatureKeys...), Token: "mock-admin-token"}, true
-	case account == "demo" && password == "demo":
-		// 演示客户:只开了一部分功能,用来演示"没分配就用不了"。
-		return persistedSession{Account: "演示客户", IsAdmin: false, Permissions: []string{"hardware", "proposal", "paper", "knowledge"}, Token: "mock-demo-token"}, true
+// platformBaseURL 是 teacher 平台地址(onecreat 登录/权限/AI 网关都连它)。默认生产域名,
+// 可用 ONECREAT_PLATFORM_URL 覆盖(本地联调指向 http://127.0.0.1:3000)。
+func platformBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("ONECREAT_PLATFORM_URL")); v != "" {
+		return strings.TrimRight(v, "/")
 	}
-	return persistedSession{}, false
+	return "https://t.weizunxy.com"
+}
+
+// accountAuthenticate 调 teacher 平台 /api/onecreat/login(手机号+密码)拿 token + 功能权限。
+// 返回会话和错误信息(errMsg=="" 表示成功)。这是"问后端要账号+权限"的唯一入口。
+func accountAuthenticate(account, password string) (persistedSession, string) {
+	payload, _ := json.Marshal(map[string]string{"phone": strings.TrimSpace(account), "password": password})
+	req, err := http.NewRequest(http.MethodPost, platformBaseURL()+"/api/onecreat/login", bytes.NewReader(payload))
+	if err != nil {
+		return persistedSession{}, "请求构造失败"
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return persistedSession{}, "连不上服务器(检查网络/平台地址)"
+	}
+	defer resp.Body.Close()
+	var r struct {
+		OK       bool     `json:"ok"`
+		Token    string   `json:"token"`
+		Account  string   `json:"account"`
+		IsAdmin  bool     `json:"isAdmin"`
+		Features []string `json:"features"`
+		Error    string   `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	if !r.OK || r.Token == "" {
+		if strings.TrimSpace(r.Error) != "" {
+			return persistedSession{}, r.Error
+		}
+		return persistedSession{}, "登录失败"
+	}
+	return persistedSession{Account: r.Account, IsAdmin: r.IsAdmin, Permissions: r.Features, Token: r.Token}, ""
 }
 
 // AccountLogin 校验账号密码,成功则持久化会话。
 func (a *App) AccountLogin(account, password string) AccountLoginResult {
-	sess, ok := accountAuthenticate(account, password)
-	if !ok {
-		return AccountLoginResult{Error: "账号或密码不对"}
+	sess, errMsg := accountAuthenticate(account, password)
+	if errMsg != "" {
+		return AccountLoginResult{Error: errMsg}
 	}
 	path, err := accountSessionPath()
 	if err != nil {
