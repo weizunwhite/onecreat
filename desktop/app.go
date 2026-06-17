@@ -190,6 +190,9 @@ func (a *App) buildController() {
 	a.activeTab = "main"
 	a.mu.Unlock()
 
+	// 启动时若已登录,先把网关 env 设好再 buildTab —— 首个 controller 即直接走平台 AI 网关。
+	applyGatewayEnvFromSession()
+
 	a.buildTab(rt)
 }
 
@@ -2909,6 +2912,60 @@ func (a *App) SetModel(name string) error {
 		newCtrl.SetSessionPath(path)
 	}
 	return nil
+}
+
+// rebuildActiveTab 用当前 config + 环境(含网关 env)重建活动标签的 controller,沿用同一
+// model 并带过历史。登录/登出切换 AI 网关后调用,让新 provider(走网关 / 直连)立即生效,
+// 无需重启 app。逻辑同 SetModel,但模型不变、强制重建。boot.Build 是秒级操作,同步执行
+// (调用方 AccountLogin/Logout 是 Wails 绑定方法,前端登录按钮有 loading 态)。
+func (a *App) rebuildActiveTab() {
+	if a.ctx == nil {
+		return
+	}
+	a.mu.RLock()
+	ctrl := a.ctrl
+	model := a.model
+	targetTab := a.activeTab
+	targetSink := a.sink
+	if rt := a.tabs[targetTab]; rt != nil && rt.sink != nil {
+		targetSink = rt.sink
+	}
+	a.mu.RUnlock()
+	if model == "" {
+		return // 还没 build 过(极早期登录):startup 的 applyGatewayEnvFromSession 已兜底
+	}
+
+	var carried []provider.Message
+	if ctrl != nil {
+		_ = ctrl.Snapshot()
+		carried = ctrl.History()
+		ctrl.Close()
+	}
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink})
+	if err != nil {
+		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
+	}
+	a.mu.Lock()
+	if rt := a.tabs[targetTab]; rt != nil {
+		rt.ctrl = newCtrl
+		rt.label = newCtrl.Label()
+	}
+	if a.activeTab == targetTab {
+		a.ctrl = newCtrl
+		a.label = newCtrl.Label()
+	}
+	a.mu.Unlock()
+	newCtrl.EnableInteractiveApproval()
+
+	path := ""
+	if dir := newCtrl.SessionDir(); dir != "" {
+		path = agent.NewSessionPath(dir, newCtrl.Label())
+	}
+	if len(carried) > 0 {
+		newCtrl.Resume(&agent.Session{Messages: carried}, path)
+	} else if path != "" {
+		newCtrl.SetSessionPath(path)
+	}
 }
 
 func resolveHardwareMCP() (command, source string, err error) {

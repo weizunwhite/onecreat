@@ -40,7 +40,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
 	effort, _ := cfg.Extra["effort"].(string)
-	deepseek := isDeepSeekBaseURL(cfg.BaseURL)
+	deepseek := isDeepSeekBaseURL(cfg.BaseURL) || isDeepSeekModel(cfg.Model)
 	if deepseek {
 		effort = strings.ToLower(strings.TrimSpace(effort))
 		switch effort {
@@ -97,6 +97,16 @@ func isDeepSeekBaseURL(baseURL string) bool {
 	}
 	host := strings.ToLower(u.Hostname())
 	return host == "api.deepseek.com" || strings.HasSuffix(host, ".deepseek.com")
+}
+
+// isDeepSeekModel reports whether the model is one of DeepSeek's own thinking-capable
+// models by its native name (deepseek-v4-flash/pro, deepseek-reasoner, …). It matches
+// the hyphen form only, so OpenRouter-namespaced ids like "deepseek/deepseek-chat" (a
+// reseller's hosting, no DeepSeek thinking param) are deliberately excluded. This keeps
+// DeepSeek thinking + effort enabled even when routed through a non-DeepSeek base URL
+// (e.g. the onecreat platform AI gateway), so behavior matches a direct connection.
+func isDeepSeekModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-")
 }
 
 func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {

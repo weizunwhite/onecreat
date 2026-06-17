@@ -70,6 +70,40 @@ func platformBaseURL() string {
 	return "https://t.weizunxy.com"
 }
 
+// 「网关模式」用的两个进程环境变量。boot.go 的 applyOnecreatGateway 看到 URL 非空,就把模型
+// 请求改走平台 AI 网关、用 TOKEN 当 key(B 端客户不必自带 DeepSeek key,用量统一走平台计费)。
+const (
+	gatewayEnvURL   = "ONECREAT_GATEWAY_URL"
+	gatewayEnvToken = "ONECREAT_GATEWAY_TOKEN"
+)
+
+// applyGatewayEnvFromSession 按当前会话设/清网关环境变量:已登录 → 指向平台 AI 网关 +
+// 写入 token;未登录 → 清空(回到 config 里的直连 provider)。每次 boot.Build 之前都要保证
+// 它已被调用过(startup 里调一次),登录/登出后再调一次并重建 controller 让其立即生效。
+func applyGatewayEnvFromSession() {
+	clear := func() {
+		_ = os.Unsetenv(gatewayEnvURL)
+		_ = os.Unsetenv(gatewayEnvToken)
+	}
+	path, err := accountSessionPath()
+	if err != nil {
+		clear()
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		clear()
+		return
+	}
+	var p persistedSession
+	if json.Unmarshal(b, &p) != nil || p.Token == "" {
+		clear()
+		return
+	}
+	_ = os.Setenv(gatewayEnvURL, platformBaseURL()+"/api/onecreat/v1")
+	_ = os.Setenv(gatewayEnvToken, p.Token)
+}
+
 // accountAuthenticate 调 teacher 平台 /api/onecreat/login(手机号+密码)拿 token + 功能权限。
 // 返回会话和错误信息(errMsg=="" 表示成功)。这是"问后端要账号+权限"的唯一入口。
 func accountAuthenticate(account, password string) (persistedSession, string) {
@@ -122,14 +156,20 @@ func (a *App) AccountLogin(account, password string) AccountLoginResult {
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return AccountLoginResult{Error: err.Error()}
 	}
+	// 登录后启用网关:设 env + 重建活动标签的 controller,让 AI 立即改走平台网关(用本次
+	// token 鉴权),无需重启 app。
+	applyGatewayEnvFromSession()
+	a.rebuildActiveTab()
 	return AccountLoginResult{OK: true}
 }
 
-// AccountLogout 清除会话。
+// AccountLogout 清除会话,并把 AI 切回直连(清网关 env + 重建 controller)。
 func (a *App) AccountLogout() {
 	if path, err := accountSessionPath(); err == nil {
 		_ = os.Remove(path)
 	}
+	applyGatewayEnvFromSession()
+	a.rebuildActiveTab()
 }
 
 // AccountSessionInfo 返回当前会话(未登录则 LoggedIn=false)。token 不外泄。
