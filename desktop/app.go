@@ -2320,7 +2320,7 @@ func (a *App) HardwareOTAUpload(input HardwareRunInput) HardwareRunResult {
 }
 
 // HardwarePublishFirmware 把固件发布到远程固件服务器(③ 云端拉取),板子自己来拉。
-// 服务器配置留空用 NAS 默认(nas:/share/Public/onecreat-firmware,http://192.168.6.131:9000)。
+// 服务器配置(SSH 目标 / 远程目录 / 公网 URL)由前端面板提供,各人填自己的 NAS/VPS。
 func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunResult {
 	command, err := a.requireHardwareMCP()
 	if err != nil {
@@ -2328,6 +2328,12 @@ func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunRes
 	}
 	if strings.TrimSpace(input.ProjectName) == "" || strings.TrimSpace(input.Version) == "" {
 		return HardwareRunResult{Status: "skipped", Summary: "缺少项目名或版本号", NextStep: "填项目名和版本号(如 1.0.2)后再发布。"}
+	}
+	sshHost := strings.TrimSpace(input.SSHHost)
+	remoteDir := strings.TrimSpace(input.RemoteDir)
+	baseURL := strings.TrimSpace(input.BaseURL)
+	if sshHost == "" || remoteDir == "" || baseURL == "" {
+		return HardwareRunResult{Status: "skipped", Summary: "未配置固件服务器", NextStep: "在「发布固件」里填好 服务器URL / SSH目标 / 远程目录(填你自己的 NAS 或 VPS)后再发布。"}
 	}
 	projectDir := resolveHardwareProjectDir(input.ProjectDir)
 	fqbn := arduinoFQBNFromBoard(input.Board)
@@ -2337,9 +2343,9 @@ func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunRes
 	args := map[string]any{
 		"project_name":    strings.TrimSpace(input.ProjectName),
 		"version":         strings.TrimSpace(input.Version),
-		"ssh_host":        firstNonEmptyStr(input.SSHHost, "nas"),
-		"remote_dir":      firstNonEmptyStr(input.RemoteDir, "/share/Public/onecreat-firmware"),
-		"base_url":        firstNonEmptyStr(input.BaseURL, "http://192.168.6.131:9000"),
+		"ssh_host":        sshHost,
+		"remote_dir":      remoteDir,
+		"base_url":        baseURL,
 		"sketch_dir":      projectDir,
 		"fqbn":            fqbn,
 		"timeout_seconds": 300,

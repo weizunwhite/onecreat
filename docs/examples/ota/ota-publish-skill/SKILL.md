@@ -11,7 +11,7 @@ allowed-tools: mcp__hardware__hardware_detect, mcp__hardware__hardware_board_pro
 
 ## 前提(不满足就先说明)
 - 板子已经刷过「云端拉取 agent」底座(onecreat 硬件面板 →「远程烧录 → 新建 OTA 项目 → 云端拉取」生成,第一次 USB 烧一次)。
-- 固件服务器默认是用户的 NAS:`http://192.168.6.131:9000/`,目录 `/share/Public/onecreat-firmware/<项目>/`(nginx 容器 `onecreat-fw`)。换 VPS 时改下面的参数。
+- 固件服务器默认是用户的 NAS:`http://你的服务器IP:9000/`,目录 `/share/Public/onecreat-firmware/<项目>/`(nginx 容器 `onecreat-fw`)。换 VPS 时改下面的参数。
 
 ## 步骤
 1. 调 `mcp__hardware__hardware_detect` 确认当前硬件项目目录;板卡 fqbn 默认 `esp32:esp32:esp32`(必要时 `hardware_board_profile` 确认)。
@@ -20,7 +20,7 @@ allowed-tools: mcp__hardware__hardware_detect, mcp__hardware__hardware_board_pro
    - **version**:新版本号,**要比板子当前版本大**(如 `1.0.2`),否则板子不会更新。
 3. 调 `mcp__hardware__firmware_publish`:
    - `project_name`、`version`
-   - `ssh_host=nas`、`remote_dir=/share/Public/onecreat-firmware`、`base_url=http://192.168.6.131:9000`
+   - `ssh_host=nas`、`remote_dir=/share/Public/onecreat-firmware`、`base_url=http://你的服务器IP:9000`
    - `sketch_dir=<当前项目目录>`、`fqbn=<板卡 fqbn>`(不传 bin_path 就让它现编)
 4. 把返回的固件 URL、版本号如实转述给用户。
 5. 提醒:板子(已刷 agent)会在**下次轮询**(底座默认 30 秒)自动拉取升级;同时记得把板子 agent 源码里的 `CURRENT_VERSION` 在下次编译时对齐,避免反复升级。

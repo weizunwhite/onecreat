@@ -53,7 +53,7 @@ curl -F "firmware=@firmware.bin" http://板子IP/update
 onecreat 编译新固件 → 发布 firmware.bin + version.txt 到服务器 → 板子定时拉取更新
 ```
 
-- 服务器**先用 NAS**（192.168.6.131），跑通后改两个 URL 换成 VPS。
+- 服务器**先用 NAS**（你的服务器IP），跑通后改两个 URL 换成 VPS。
 - 发布新版本时：覆盖 `firmware.bin`，并把 `version.txt` 改大（板子靠版本号判断要不要更新）。
 - 这套会做成 onecreat 的一键「发布固件」+ 一个 CC skill（编译→发布→板子拉取一条龙）。
 
@@ -75,7 +75,7 @@ $DOCKER run -d --name onecreat-fw --restart unless-stopped \
   -p 9000:80 -v /share/Public/onecreat-firmware:/usr/share/nginx/html:ro nginx:alpine
 ```
 
-- 服务地址：`http://192.168.6.131:9000/`
+- 服务地址：`http://你的服务器IP:9000/`
 - 目录结构：每个项目一个子文件夹，各放 `firmware.bin` + `version.txt`
   ```
   /share/Public/onecreat-firmware/

@@ -54,7 +54,7 @@ func (a *App) HardwareScaffoldOTA(input OTAScaffoldInput) OTAScaffoldResult {
 		return OTAScaffoldResult{Error: "建目录失败:" + err.Error()}
 	}
 
-	baseURL := strings.TrimRight(firstNonEmptyStr(input.NasBaseURL, "http://192.168.6.131:9000"), "/")
+	baseURL := strings.TrimRight(firstNonEmptyStr(input.NasBaseURL, "http://你的固件服务器:9000"), "/")
 	code := tmpl
 	code = strings.ReplaceAll(code, "%WIFI_SSID%", escapeForC(input.WifiSSID))
 	code = strings.ReplaceAll(code, "%WIFI_PASSWORD%", escapeForC(input.WifiPassword))

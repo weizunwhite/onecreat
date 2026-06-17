@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, FolderPlus, Globe, Loader2, UploadCloud, Wifi } from "lucide-react";
 import { app, openExternal } from "../lib/bridge";
 import type { HardwareRunResult, OTAScaffoldResult } from "../lib/types";
@@ -57,11 +57,20 @@ export function OTAPanel({
   const [wifiUploading, setWifiUploading] = useState(false);
   const [wifiResult, setWifiResult] = useState<HardwareRunResult | null>(null);
 
-  // 发布固件(③)
+  // 发布固件(③)+ 固件服务器配置(各人填自己的 NAS/VPS,存 localStorage)
   const [pubName, setPubName] = useState("");
   const [pubVer, setPubVer] = useState("1.0.0");
+  const [pubServer, setPubServer] = useState(() => localStorage.getItem("ota.pub.server") ?? "");
+  const [pubSsh, setPubSsh] = useState(() => localStorage.getItem("ota.pub.ssh") ?? "");
+  const [pubDir, setPubDir] = useState(() => localStorage.getItem("ota.pub.dir") ?? "");
   const [publishing, setPublishing] = useState(false);
   const [pubResult, setPubResult] = useState<HardwareRunResult | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("ota.pub.server", pubServer);
+    localStorage.setItem("ota.pub.ssh", pubSsh);
+    localStorage.setItem("ota.pub.dir", pubDir);
+  }, [pubServer, pubSsh, pubDir]);
 
   const scaffold = useCallback(async () => {
     setScaffolding(true);
@@ -99,14 +108,22 @@ export function OTAPanel({
     setPublishing(true);
     setPubResult(null);
     try {
-      const r = await app.HardwarePublishFirmware({ projectDir, board, projectName: pubName.trim(), version: pubVer.trim() });
+      const r = await app.HardwarePublishFirmware({
+        projectDir,
+        board,
+        projectName: pubName.trim(),
+        version: pubVer.trim(),
+        baseURL: pubServer.trim(),
+        sshHost: pubSsh.trim(),
+        remoteDir: pubDir.trim(),
+      });
       setPubResult(r);
     } catch (e) {
       setPubResult({ status: "failed", summary: "调用失败", error: String((e as Error)?.message ?? e) });
     } finally {
       setPublishing(false);
     }
-  }, [projectDir, board, pubName, pubVer]);
+  }, [projectDir, board, pubName, pubVer, pubServer, pubSsh, pubDir]);
 
   return (
     <details className="hardware-section ota">
@@ -174,10 +191,16 @@ export function OTAPanel({
       {/* 发布固件(③) */}
       <div className="ota__card">
         <div className="ota__card-head">
-          <UploadCloud size={14} /> 发布固件到远程（NAS，板子自动拉取）
+          <UploadCloud size={14} /> 发布固件到远程（你的 NAS / VPS，板子自动拉取）
+        </div>
+        {/* 固件服务器配置(各人填自己的,存在本机) */}
+        <div className="ota__row">
+          <input className="ota__in" placeholder="服务器URL 如 http://192.168.1.9:9000" value={pubServer} onChange={(e) => setPubServer(e.target.value)} />
+          <input className="ota__in ota__in--sm" placeholder="SSH 目标 如 nas" value={pubSsh} onChange={(e) => setPubSsh(e.target.value)} />
+          <input className="ota__in" placeholder="远程目录 如 /share/Public/fw" value={pubDir} onChange={(e) => setPubDir(e.target.value)} />
         </div>
         <div className="ota__row">
-          <input className="ota__in" placeholder="项目名(= NAS 上的文件夹)" value={pubName} onChange={(e) => setPubName(e.target.value)} />
+          <input className="ota__in" placeholder="项目名(= 服务器上的文件夹)" value={pubName} onChange={(e) => setPubName(e.target.value)} />
           <input className="ota__in ota__in--sm" placeholder="版本号 1.0.1" value={pubVer} onChange={(e) => setPubVer(e.target.value)} />
           <button
             className="btn btn--primary"

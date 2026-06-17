@@ -9,7 +9,7 @@
 //   - 开学时把全班板子用 USB 刷一遍这个 agent（一次性）；
 //   - 之后所有更新都走服务器拉取，再不用插 USB。
 //
-// 服务器先用你的 NAS（192.168.6.131），跑通后再换 VPS——只改下面两个 URL 即可。
+// 服务器先用你的 NAS（你的服务器IP），跑通后再换 VPS——只改下面两个 URL 即可。
 //
 // 服务器上要放两个文件：
 //   version.txt   ：一行版本号，比如  1.0.1
@@ -27,8 +27,8 @@ const char* WIFI_PASSWORD = "你的WiFi密码";
 
 // ↓↓↓ 固件服务器：NAS 上的 nginx(端口 9000),按项目分子目录 ↓↓↓
 // 部署见本目录 README 的「NAS 固件服务器」一节。以后换 VPS 只改这两行域名。
-const char* FW_VERSION_URL = "http://192.168.6.131:9000/你的项目/version.txt";
-const char* FW_BIN_URL     = "http://192.168.6.131:9000/你的项目/firmware.bin";
+const char* FW_VERSION_URL = "http://你的服务器IP:9000/你的项目/version.txt";
+const char* FW_BIN_URL     = "http://你的服务器IP:9000/你的项目/firmware.bin";
 
 // 这块板子当前烧的是哪个版本（每次发布新固件时把它改大）
 const char* CURRENT_VERSION = "1.0.0";
