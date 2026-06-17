@@ -65,6 +65,7 @@ import { HardwarePanel } from "./components/HardwarePanel";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
+import { FolderPicker } from "./components/FolderPicker";
 import { app, onEvent } from "./lib/bridge";
 import { parseTodos } from "./lib/tools";
 import { useDetailMode, toggleDetailMode } from "./lib/detailMode";
@@ -1668,6 +1669,9 @@ export default function App() {
       )}
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onChanged={() => void refreshMeta()} />}
+
+      {/* app 内置文件夹选择器(承诺式,全局一个;绕开 macOS 原生对话框跑窗口后面的 bug) */}
+      <FolderPicker />
 
       {capsOpen && (
         <CapabilitiesPanel

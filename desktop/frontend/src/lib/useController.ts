@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { app, onEvent, onReady } from "./bridge";
+import { openFolderPicker } from "./folderPicker";
 import type {
   BalanceInfo,
   ContextInfo,
@@ -675,8 +676,12 @@ export function useController(tabId: string) {
   // backend rebuilds the controller (new model/config) with a fresh session, so
   // reset and refresh meta/context. Returns the chosen path ("" if cancelled).
   const pickWorkspace = useCallback(async (): Promise<string> => {
-    const path = await app.PickWorkspace().catch(() => "");
-    return refreshWorkspaceState(path);
+    // 用 app 内置文件夹选择器(绕开 macOS 原生对话框会跑到窗口后面的 bug),
+    // 选好后再走 SwitchWorkspace 重建控制器。
+    const path = await openFolderPicker();
+    if (!path) return refreshWorkspaceState(""); // 取消
+    const next = await app.SwitchWorkspace(path).catch(() => "");
+    return refreshWorkspaceState(next);
   }, [refreshWorkspaceState]);
 
   const switchWorkspace = useCallback(async (path: string): Promise<string> => {

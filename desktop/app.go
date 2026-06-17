@@ -3077,6 +3077,58 @@ func workspacePath(rel string) (string, bool, error) {
 // alphabetical) for the "@" file-reference menu. rel resolves against the process
 // cwd; "" lists the cwd. The menu navigates one level at a time, never
 // recursively — bounded for huge trees.
+// FolderListing 是内置文件夹选择器的一页:某个绝对路径下的子文件夹列表 + 导航锚点。
+type FolderListing struct {
+	Path    string   `json:"path"`    // 当前绝对路径
+	Parent  string   `json:"parent"`  // 上级目录(已在根则等于自身)
+	Dirs    []string `json:"dirs"`    // 子文件夹名(排序后)
+	Home    string   `json:"home"`    // 用户主目录(快捷入口)
+	Desktop string   `json:"desktop"` // 桌面(快捷入口)
+	Error   string   `json:"error,omitempty"`
+}
+
+// BrowseDir 列出某个绝对路径下的子文件夹,供 app 内置文件夹选择器导航——绕开 macOS
+// 原生选择对话框在隐藏标题栏窗口下会开到窗口后面的 bug。path 为空时从主目录开始。
+func (a *App) BrowseDir(path string) FolderListing {
+	home, _ := os.UserHomeDir()
+	desktop := ""
+	if home != "" {
+		desktop = filepath.Join(home, "Desktop")
+	}
+	p := strings.TrimSpace(path)
+	if p == "" {
+		p = home
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return FolderListing{Path: home, Parent: home, Home: home, Desktop: desktop, Error: err.Error()}
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		// 打不开(权限/不存在)就退回上级,别让用户卡死
+		return FolderListing{Path: abs, Parent: filepath.Dir(abs), Home: home, Desktop: desktop, Error: "打不开这个目录:" + err.Error()}
+	}
+	dirs := []string{}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue // 隐藏目录不显示,减少噪音
+		}
+		if e.IsDir() {
+			dirs = append(dirs, name)
+			continue
+		}
+		// 软链可能指向目录
+		if e.Type()&os.ModeSymlink != 0 {
+			if info, serr := os.Stat(filepath.Join(abs, name)); serr == nil && info.IsDir() {
+				dirs = append(dirs, name)
+			}
+		}
+	}
+	sort.Strings(dirs)
+	return FolderListing{Path: abs, Parent: filepath.Dir(abs), Dirs: dirs, Home: home, Desktop: desktop}
+}
+
 func (a *App) ListDir(rel string) []DirEntry {
 	base, err := os.Getwd()
 	if err != nil {

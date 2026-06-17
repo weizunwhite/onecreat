@@ -12,6 +12,7 @@ import type {
   CommandInfo,
   ContextInfo,
   DirEntry,
+  FolderListing,
   EffortInfo,
   FilePreview,
   HistoryMessage,
@@ -102,6 +103,8 @@ export interface AppBindings {
   ListWorkspaces(): Promise<WorkspaceView[]>;
   PickWorkspace(): Promise<string>;
   SwitchWorkspace(path: string): Promise<string>;
+  // 内置文件夹选择器列目录(绕开 macOS 原生对话框跑到窗口后面的 bug)。
+  BrowseDir(path: string): Promise<FolderListing>;
   ContextUsage(): Promise<ContextInfo>;
   // Balance queries the active provider's wallet balance (a network call);
   // returns an unavailable readout when no balance_url is configured or it fails.
@@ -655,6 +658,17 @@ function makeMockApp(): AppBindings {
       // Browser dev has no native dialog; simulate picking a folder and re-root so
       // the topbar folder chip visibly changes.
       return mockSwitchWorkspace(cwd.endsWith("another-project") ? "~/projects/reasonix" : "~/projects/another-project");
+    },
+    async BrowseDir(path: string) {
+      // 浏览器 dev 模式给一组假目录,方便不在 shell 里也能调界面。
+      const p = path || "/Users/dev";
+      return {
+        path: p,
+        parent: p === "/" ? "/" : p.split("/").slice(0, -1).join("/") || "/",
+        dirs: ["项目A", "项目B", "超声波小车", "Desktop", "Documents"],
+        home: "/Users/dev",
+        desktop: "/Users/dev/Desktop",
+      } as FolderListing;
     },
     async SwitchWorkspace(path: string) {
       return mockSwitchWorkspace(path);

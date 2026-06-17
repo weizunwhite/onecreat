@@ -564,6 +564,16 @@ export interface OTAScaffoldResult {
   error?: string;
 }
 
+// 内置文件夹选择器的一页(BrowseDir 返回),绕开 macOS 原生对话框的"开到窗口后面"bug。
+export interface FolderListing {
+  path: string;
+  parent: string;
+  dirs: string[];
+  home: string;
+  desktop: string;
+  error?: string;
+}
+
 export interface HardwareRunResult {
   status: "passed" | "failed" | "skipped" | string;
   // 验证子类（如 python_syntax）：前端据此区分「真编译通过」与「仅 py_compile 语法通过」。
