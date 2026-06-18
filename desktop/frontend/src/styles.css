@@ -4244,7 +4244,7 @@ button.session-file-summary:hover {
 }
 .modelsw__item {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 14px;
+  grid-template-columns: minmax(0, 1fr) 14px;
   align-items: start;
   gap: 8px;
   width: 100%;
