@@ -3,6 +3,7 @@ import { Cpu, GraduationCap, Wallet } from "lucide-react";
 import { EffortSwitcher } from "./EffortSwitcher";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
+import { useSession } from "../lib/account";
 import type { BalanceInfo, ContextInfo, EffortInfo, JobView, Meta, Mode, WireUsage } from "../lib/types";
 
 // JobsChip is the status-bar background-jobs indicator: a count that opens an
@@ -115,6 +116,8 @@ export function StatusBar({
   const pct = context.window ? Math.min(100, Math.round((context.used / context.window) * 100)) : null;
   const nowPct = nowRate(usage);
   const avgPct = avgRate(usage);
+  // 网关订阅模式(已登录):隐藏 effort 推理强度——B 端用户看不懂,且属内部模型参数。
+  const gatewayMode = !!useSession()?.loggedIn;
 
   // While a turn runs, the status line shows live activity (word · elapsed ·
   // tokens) in place of the static context gauge.
@@ -131,7 +134,7 @@ export function StatusBar({
     <div className="statusbar">
       <span className={`statusbar__dot ${running ? "statusbar__dot--busy" : ""}`} />
       <ModelSwitcher label={meta?.label ?? t("status.connecting")} onPick={onSwitchModel} />
-      {effort?.supported && (
+      {effort?.supported && !gatewayMode && (
         <>
           <span className="statusbar__sep">·</span>
           <EffortSwitcher effort={effort} disabled={running} onPick={onSetEffort} />
