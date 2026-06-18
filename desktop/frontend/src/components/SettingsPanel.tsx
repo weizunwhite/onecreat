@@ -15,6 +15,7 @@ import {
 } from "../lib/theme";
 import type { NetworkView, ProviderView, SettingsView } from "../lib/types";
 import { ResizableDrawer } from "./ResizableDrawer";
+import { useSession } from "../lib/account";
 
 type SettingsTab = "models" | "providers" | "network" | "permissions" | "sandbox" | "agent" | "appearance" | "updates";
 
@@ -31,12 +32,22 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
   const [err, setErr] = useState<string | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
-  const [tab, setTab] = useState<SettingsTab>("models");
+  // 网关模式(已登录,AI 由平台统一分配)隐藏「模型 / 模型服务」——客户端不自己配 key/模型。
+  const session = useSession();
+  const gatewayMode = !!session?.loggedIn;
+  const visibleTabs = gatewayMode
+    ? SETTINGS_TABS.filter((id) => id !== "models" && id !== "providers")
+    : SETTINGS_TABS;
+  const [tab, setTab] = useState<SettingsTab>(gatewayMode ? "network" : "models");
 
   const reload = async () => setS(await app.Settings().catch(() => null));
   useEffect(() => {
     void reload();
   }, []);
+  // 兜底:若会话晚于面板加载(或登录态变化),把停在已隐藏分区的 tab 切回可见分区。
+  useEffect(() => {
+    if (gatewayMode && (tab === "models" || tab === "providers")) setTab("network");
+  }, [gatewayMode, tab]);
 
   // apply runs a mutation, re-reads settings, and refreshes the topbar/model. A
   // rejected binding (validation / rebuild failure) surfaces as an inline banner.
@@ -69,7 +80,7 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
           <div className="drawer__body drawer__body--settings">
             <div className="settings-shell">
               <nav className="settings-nav" aria-label={t("settings.title")}>
-                {SETTINGS_TABS.map((id) => (
+                {visibleTabs.map((id) => (
                   <button
                     key={id}
                     className={`settings-nav__item${tab === id ? " settings-nav__item--active" : ""}`}
