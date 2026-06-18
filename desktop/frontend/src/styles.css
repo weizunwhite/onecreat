@@ -4192,6 +4192,13 @@ button.session-file-summary:hover {
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
 }
+/* 本轮消耗的点数(余额旁) */
+.modelsw__used {
+  margin-left: 5px;
+  font-style: normal;
+  color: var(--accent);
+  opacity: 0.95;
+}
 .modelsw__trigger-file {
   min-width: 0;
   display: grid;

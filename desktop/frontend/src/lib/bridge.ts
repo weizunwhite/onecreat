@@ -113,6 +113,8 @@ export interface AppBindings {
   AccountSessionInfo(): Promise<AccountSession>;
   // 订阅制:切换当前档位(1/2/3);背后映射到哪个模型由平台决定,客户端不知道。
   SetOnecreatTier(index: number): Promise<void>;
+  // 每轮对话结束后向平台拉最新 points/tiers(让余额实时下降、看到消耗)。
+  RefreshAccountSession(): Promise<AccountSession>;
   ContextUsage(): Promise<ContextInfo>;
   // Balance queries the active provider's wallet balance (a network call);
   // returns an unavailable readout when no balance_url is configured or it fails.
@@ -714,6 +716,13 @@ function makeMockApp(): AppBindings {
     },
     async SetOnecreatTier(index: number) {
       if (index >= 1 && index <= 3) mockSession = { ...mockSession, selectedTier: index };
+    },
+    async RefreshAccountSession() {
+      // 浏览器 dev:模拟每轮扣几点
+      if (typeof mockSession.points === "number") {
+        mockSession = { ...mockSession, points: Math.max(0, mockSession.points - 3) };
+      }
+      return mockSession;
     },
     async SwitchWorkspace(path: string) {
       return mockSwitchWorkspace(path);

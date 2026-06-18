@@ -246,3 +246,57 @@ func (a *App) SetOnecreatTier(index int) {
 	applyGatewayEnvFromSession()
 	a.rebuildActiveTab()
 }
+
+// RefreshAccountSession 向平台 /api/onecreat/session 拉最新 points/tiers(每轮对话结束后调,
+// 让余额实时下降、看得到消耗)。网络问题或 token 失效则保持本地快照不变(AI 调用自己会报
+// 401 提示重登)。不重建 controller,纯刷新展示数据。
+func (a *App) RefreshAccountSession() AccountSession {
+	path, err := accountSessionPath()
+	if err != nil {
+		return AccountSession{}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return AccountSession{}
+	}
+	var p persistedSession
+	if json.Unmarshal(b, &p) != nil || p.Token == "" {
+		return AccountSession{}
+	}
+	req, err := http.NewRequest(http.MethodGet, platformBaseURL()+"/api/onecreat/session", nil)
+	if err != nil {
+		return a.AccountSessionInfo()
+	}
+	req.Header.Set("Authorization", "Bearer "+p.Token)
+	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	if err != nil {
+		return a.AccountSessionInfo() // 网络问题:回退本地快照
+	}
+	defer resp.Body.Close()
+	var r struct {
+		LoggedIn bool          `json:"loggedIn"`
+		IsAdmin  bool          `json:"isAdmin"`
+		Features []string      `json:"features"`
+		Tiers    []AccountTier `json:"tiers"`
+		Points   *float64      `json:"points"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	if !r.LoggedIn {
+		return a.AccountSessionInfo() // token 失效:保持本地
+	}
+	p.Points = r.Points
+	if len(r.Tiers) > 0 {
+		p.Tiers = r.Tiers
+	}
+	if len(r.Features) > 0 {
+		p.Permissions = r.Features
+	}
+	if nb, err := json.Marshal(p); err == nil {
+		_ = os.WriteFile(path, nb, 0o600)
+	}
+	sel := p.SelectedTier
+	if sel < 1 || sel > 3 {
+		sel = 1
+	}
+	return AccountSession{LoggedIn: true, Account: p.Account, IsAdmin: r.IsAdmin, Permissions: p.Permissions, Tiers: p.Tiers, Points: p.Points, SelectedTier: sel}
+}

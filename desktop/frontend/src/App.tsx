@@ -694,6 +694,15 @@ export default function App() {
     if (!state.running) void refreshTabs();
   }, [state.running, refreshTabs]);
 
+  // 每轮对话结束(running 由 true→false)后,已登录则向平台刷新点数,让消耗实时可见。
+  const prevRunningRef = useRef(false);
+  useEffect(() => {
+    if (prevRunningRef.current && !state.running && session?.loggedIn) {
+      void app.RefreshAccountSession().then(setSessionStore).catch(() => {});
+    }
+    prevRunningRef.current = state.running;
+  }, [state.running, session]);
+
   // 当前活动标签从「装配中」变为就绪时,刷新标签栏以清掉它的 loading 小圈。
   useEffect(() => {
     if (state.meta?.ready) void refreshTabs();
@@ -1438,7 +1447,11 @@ export default function App() {
             </button>
             <button
               className="sidebar__navitem"
-              onClick={() => app.AccountLogout().then(refreshSession)}
+              onClick={() => {
+                if (window.confirm(`确定退出登录吗？\n\n当前账号：${session.account}\n退出后需重新登录才能继续使用 AI。`)) {
+                  void app.AccountLogout().then(refreshSession);
+                }
+              }}
               title={`当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""} — 点击退出登录`}
             >
               <LogOut size={15} />

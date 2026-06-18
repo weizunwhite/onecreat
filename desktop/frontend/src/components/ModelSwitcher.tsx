@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ChevronsUpDown, Coins } from "lucide-react";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
@@ -21,6 +21,17 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
     if (open && !tierMode) app.Models().then(setModels).catch(() => {});
   }, [open, tierMode]);
 
+  // 本轮消耗:监测 points 下降显示"本轮 -N"(每轮结束 App 会向平台刷新点数)。
+  const prevPoints = useRef<number | null>(null);
+  const [lastUsed, setLastUsed] = useState(0);
+  useEffect(() => {
+    const p = session?.points ?? null;
+    if (typeof p === "number" && typeof prevPoints.current === "number" && p < prevPoints.current) {
+      setLastUsed(Math.round((prevPoints.current - p) * 10) / 10);
+    }
+    if (typeof p === "number") prevPoints.current = p;
+  }, [session?.points]);
+
   // —— 网关订阅模式:档位 + 点数 ——
   if (tierMode && session) {
     const tiers = session.tiers;
@@ -35,9 +46,14 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
       <div className="modelsw">
         <button className="modelsw__trigger" onClick={() => setOpen((v) => !v)} title="切换档位">
           <span className="modelsw__label">{curName}</span>
-          {typeof session.points === "number" && (
+          {session.points === null ? (
+            <span className="modelsw__points" title="超级管理员不限额度">
+              不限
+            </span>
+          ) : (
             <span className="modelsw__points">
               <Coins size={10} /> {Math.round(session.points).toLocaleString()}
+              {lastUsed > 0 && <em className="modelsw__used">本轮 -{lastUsed}</em>}
             </span>
           )}
           <ChevronsUpDown size={11} />
