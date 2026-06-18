@@ -4199,6 +4199,15 @@ button.session-file-summary:hover {
   color: var(--accent);
   opacity: 0.95;
 }
+
+/* 使用教程抽屉里的内嵌 guide.html,填满抽屉正文 */
+.help-iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: none;
+  background: #faf8f4;
+}
 .modelsw__trigger-file {
   min-width: 0;
   display: grid;

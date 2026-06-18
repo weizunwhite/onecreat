@@ -61,6 +61,7 @@ import { StatusBar } from "./components/StatusBar";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { HelpDrawer } from "./components/HelpDrawer";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
 import { HardwarePanel } from "./components/HardwarePanel";
 import { KnowledgePanel } from "./components/KnowledgePanel";
@@ -437,6 +438,7 @@ export default function App() {
   const [workspacePanelMaximized, setWorkspacePanelMaximized] = useState(false);
   const [workspacePreviewModeActive, setWorkspacePreviewModeActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
   // 账号会话(登录门控)。session=null 加载中;未登录挡登录页;登录后按权限显示功能。
   const session = useSession();
@@ -1436,6 +1438,10 @@ export default function App() {
               <Blocks size={15} />
               <span>{t("caps.title")}</span>
             </button>
+            <button className="sidebar__navitem" onClick={() => setHelpOpen(true)} title="使用教程 / 帮助">
+              <BookOpen size={15} />
+              <span>使用教程</span>
+            </button>
             <button
               className="sidebar__navitem"
               onClick={() => setSettingsOpen(true)}
@@ -1715,6 +1721,7 @@ export default function App() {
       )}
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onChanged={() => void refreshMeta()} />}
+      {helpOpen && <HelpDrawer onClose={() => setHelpOpen(false)} />}
 
       {/* app 内置文件夹选择器(承诺式,全局一个;绕开 macOS 原生对话框跑窗口后面的 bug) */}
       <FolderPicker />

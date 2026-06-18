@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>onecreat 使用教程 · 从下载到第一个硬件项目</title>
+<style>
+  :root {
+    --fg: #2b2b2b; --dim: #6b6b6b; --bg: #faf8f4; --card: #fff;
+    --line: #e7e2d8; --accent: #b9742e; --warn-bg: #fff6e8; --warn-line: #f0c88a;
+    --ok-bg: #eef6ee; --ok-line: #bcd9bc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.7 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  .sub { color: var(--dim); margin: 0 0 28px; }
+  h2 {
+    font-size: 18px; margin: 34px 0 12px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .step-no {
+    display: inline-flex; width: 24px; height: 24px; margin-right: 8px;
+    align-items: center; justify-content: center; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 13px; font-weight: 600;
+    vertical-align: middle;
+  }
+  ol, ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  .os {
+    margin: 12px 0; padding: 12px 14px; background: var(--card);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  .os__name { font-weight: 600; margin-bottom: 4px; }
+  .os--mac .os__name::before { content: "  "; }
+  .os--win .os__name::before { content: "⊞  "; }
+  .warn {
+    margin: 10px 0; padding: 10px 14px; border-radius: 8px;
+    background: var(--warn-bg); border: 1px solid var(--warn-line); font-size: 14px;
+  }
+  .warn b { color: var(--accent); }
+  .ok {
+    margin: 10px 0; padding: 10px 14px; border-radius: 8px;
+    background: var(--ok-bg); border: 1px solid var(--ok-line); font-size: 14px;
+  }
+  code {
+    background: #efe9df; padding: 1px 5px; border-radius: 4px;
+    font: 13px/1 "SF Mono", Consolas, monospace;
+  }
+  .faq dt { font-weight: 600; margin-top: 12px; }
+  .faq dd { margin: 2px 0 0; padding-left: 0; color: var(--dim); }
+  footer { margin-top: 40px; color: var(--dim); font-size: 13px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>onecreat 使用教程</h1>
+  <p class="sub">从下载安装到完成第一个硬件项目。凡是系统要你「手动点同意」的地方都用 <b style="color:var(--accent)">⚠️</b> 标了出来,照着做就行。</p>
+
+  <h2>开始前你需要</h2>
+  <ul>
+    <li>一台 Mac 或 Windows 电脑;</li>
+    <li>一块 ESP32 或 Arduino 开发板 + 一根能传数据的 USB 线;</li>
+    <li>管理员发给你的登录账号(<b>手机号 + 密码</b>)。</li>
+  </ul>
+
+  <h2><span class="step-no">1</span>下载并安装 onecreat</h2>
+  <div class="os os--mac">
+    <div class="os__name">macOS</div>
+    <ol>
+      <li>下载 <code>onecreat-mac.dmg</code>,双击打开,把 <b>onecreat</b> 图标拖进「应用程序」。</li>
+      <li>到「应用程序」里,<b>右键点 onecreat → 打开</b>,弹窗里再点一次「打开」。</li>
+    </ol>
+    <div class="warn">⚠️ <b>第一次必须右键打开</b>,不能直接双击——直接双击 macOS 会拦,提示「来自身份不明的开发者」或「已损坏」。<br>
+      如果右键也打不开:打开「系统设置 → 隐私与安全性」,拉到最下面,点「<b>仍要打开</b>」,再回去打开 onecreat。</div>
+  </div>
+  <div class="os os--win">
+    <div class="os__name">Windows</div>
+    <ol>
+      <li>下载 <code>onecreat-setup.exe</code>,双击运行。</li>
+      <li>按提示一路「下一步」装完,桌面/开始菜单会出现 onecreat。</li>
+    </ol>
+    <div class="warn">⚠️ 如果弹出蓝色窗口「<b>Windows 已保护你的电脑</b>」:点「<b>更多信息</b>」→「<b>仍要运行</b>」。这是因为软件还没买微软签名,不影响使用。</div>
+  </div>
+
+  <h2><span class="step-no">2</span>登录</h2>
+  <ol>
+    <li>打开 onecreat,输入管理员发给你的 <b>手机号 + 密码</b>,点登录。</li>
+    <li>登录后,你只会看到管理员给你开通的功能(比如「硬件项目」);没开通的不显示,这是正常的。</li>
+  </ol>
+  <div class="ok">✅ 这一步不需要任何系统同意。</div>
+
+  <h2><span class="step-no">3</span>一键配好编译 / 烧录环境</h2>
+  <ol>
+    <li>进入「硬件」面板,点「<b>一键安装工具链</b>」。</li>
+    <li>它会自动下载编译/烧录所需的全部工具(arduino-cli + Arduino/ESP32 板卡核),装到你的用户目录里。</li>
+    <li>等进度条跑完(第一次几分钟,看网速),面板显示「已就绪」就好了。</li>
+  </ol>
+  <div class="ok">✅ 这一步<b>不需要管理员权限、不需要任何同意</b>——它只是下载文件到你自己的目录。中途卡住多半是网络问题,等一等或重点一次。</div>
+
+  <h2><span class="step-no">4</span>插上开发板</h2>
+  <ol>
+    <li>用 USB 数据线把 ESP32 / Arduino 板子插到电脑。</li>
+    <li>回到硬件面板,正常情况下能看到识别出的「串口」。</li>
+  </ol>
+  <div class="warn">⚠️ <b>如果识别不到串口</b>,多半是缺 USB 串口驱动(便宜板子常用 CH340 芯片)。按你的系统装一下:
+    <div class="os os--mac" style="margin-top:10px">
+      <div class="os__name">macOS</div>
+      <ul>
+        <li>近几年的 macOS 大多<b>自带</b> CH34x 驱动,通常<b>免装</b>——先换根好的数据线、换个 USB 口试试。</li>
+        <li>仍识别不到:从 WCH 官网(wch.cn)下载 <b>CH34x macOS 驱动</b>,装完打开「系统设置 → 隐私与安全性」,会看到「已阻止来自开发者…的系统软件」,点「<b>允许</b>」,然后<b>重启电脑</b>,重新插板子。</li>
+      </ul>
+    </div>
+    <div class="os os--win">
+      <div class="os__name">Windows</div>
+      <ul>
+        <li>从 WCH 官网下载 <b>CH340 Windows 驱动</b>(<code>CH341SER.EXE</code>),运行 → 点「INSTALL」。</li>
+        <li>装完拔掉再插上板子。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2><span class="step-no">5</span>做第一个项目</h2>
+  <ol>
+    <li>在硬件项目里,用<b>大白话</b>描述你要做什么。例如:「让 ESP32 板载 LED 每秒闪一次」。</li>
+    <li>AI 会生成对应的 Arduino 代码。</li>
+    <li>点「<b>编译</b>」,等编译通过(第一次稍慢)。</li>
+    <li>点「<b>烧录</b>」,代码就写进板子了。</li>
+    <li>打开「<b>串口监视器</b>」,能看到板子的运行输出。</li>
+  </ol>
+  <p style="color:var(--dim)">想改效果?改一句描述 → 重新生成 → 编译 → 烧录,这样一轮轮迭代就行。</p>
+
+  <h2>常见问题 · 手动同意一览</h2>
+  <dl class="faq">
+    <dt>onecreat 打不开(Mac)</dt>
+    <dd>右键 → 打开;还不行就去「系统设置 → 隐私与安全性 → 仍要打开」。</dd>
+    <dt>onecreat 打不开(Windows)</dt>
+    <dd>「Windows 已保护你的电脑」→ 更多信息 → 仍要运行。</dd>
+    <dt>一键装工具链卡住</dt>
+    <dd>它在下官方安装包,网络慢会久一点;等一会儿或重新点一次。</dd>
+    <dt>板子识别不到串口</dt>
+    <dd>装 CH340 / CP2102 USB 驱动(见第 4 步);Mac 装完要在「隐私与安全性」点允许并重启。</dd>
+    <dt>AI 提示「点数已用完」</dt>
+    <dd>联系管理员充值后即可继续。</dd>
+    <dt>提示「登录已失效」</dt>
+    <dd>退出重新登录即可。</dd>
+  </dl>
+
+  <footer>遇到搞不定的,联系你的管理员 · 零一优创 onecreat</footer>
+</div>
+</body>
+</html>
