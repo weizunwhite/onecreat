@@ -541,6 +541,11 @@ func applyOnecreatGateway(e *config.ProviderEntry) {
 	e.BaseURL = gw
 	e.APIKeyEnv = "ONECREAT_GATEWAY_TOKEN" // APIKey() 读这个 env 拿登录 token
 	e.BalanceURL = ""                      // 网关模式下不直连厂商查余额
+	// 档位模式:把发给上游的 model 改成选中的档位 "tier-N",平台网关再映射到真实模型
+	//(对用户隐藏)。未设档位则保持原 model(过渡期:旧版客户端仍发 deepseek-*,网关兼容)。
+	if tier := strings.TrimSpace(os.Getenv("ONECREAT_TIER")); tier != "" {
+		e.Model = tier
+	}
 }
 
 // NewProvider builds a provider.Provider from a configured entry. Exported so

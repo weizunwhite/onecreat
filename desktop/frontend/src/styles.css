@@ -4178,6 +4178,20 @@ button.session-file-summary:hover {
   white-space: nowrap;
   min-width: 0;
 }
+
+/* 订阅模式:档位旁的剩余点数小徽标 */
+.modelsw__points {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.14));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
 .modelsw__trigger-file {
   min-width: 0;
   display: grid;

@@ -111,6 +111,8 @@ export interface AppBindings {
   AccountLogin(account: string, password: string): Promise<AccountLoginResult>;
   AccountLogout(): Promise<void>;
   AccountSessionInfo(): Promise<AccountSession>;
+  // 订阅制:切换当前档位(1/2/3);背后映射到哪个模型由平台决定,客户端不知道。
+  SetOnecreatTier(index: number): Promise<void>;
   ContextUsage(): Promise<ContextInfo>;
   // Balance queries the active provider's wallet balance (a network call);
   // returns an unavailable readout when no balance_url is configured or it fails.
@@ -287,7 +289,20 @@ let mockSerialN = 0;
 
 // 账号 mock 会话(浏览器 dev / 无后端时):AccountLogin 改它,AccountSessionInfo 读它。
 const MOCK_ALL_FEATURES = ["hardware", "proposal", "paper", "lesson", "tutorial", "log", "jinpeng", "knowledge", "ota", "skills"];
-let mockSession: AccountSession = { loggedIn: false, account: "", isAdmin: false, permissions: [] };
+const MOCK_TIERS = [
+  { index: 1, name: "标准" },
+  { index: 2, name: "高级" },
+  { index: 3, name: "旗舰" },
+];
+let mockSession: AccountSession = {
+  loggedIn: false,
+  account: "",
+  isAdmin: false,
+  permissions: [],
+  tiers: [],
+  points: null,
+  selectedTier: 1,
+};
 
 export function onSerialData(cb: (chunk: string) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
@@ -682,20 +697,23 @@ function makeMockApp(): AppBindings {
     },
     async AccountLogin(account: string, password: string) {
       if (account === "admin" && password === "admin") {
-        mockSession = { loggedIn: true, account: "超级管理员", isAdmin: true, permissions: [...MOCK_ALL_FEATURES] };
+        mockSession = { loggedIn: true, account: "超级管理员", isAdmin: true, permissions: [...MOCK_ALL_FEATURES], tiers: MOCK_TIERS, points: null, selectedTier: 1 };
         return { ok: true } as AccountLoginResult;
       }
       if (account === "demo" && password === "demo") {
-        mockSession = { loggedIn: true, account: "演示客户", isAdmin: false, permissions: ["hardware", "proposal", "paper", "knowledge"] };
+        mockSession = { loggedIn: true, account: "演示客户", isAdmin: false, permissions: ["hardware", "proposal", "paper", "knowledge"], tiers: MOCK_TIERS, points: 8500, selectedTier: 1 };
         return { ok: true } as AccountLoginResult;
       }
       return { ok: false, error: "账号或密码不对" } as AccountLoginResult;
     },
     async AccountLogout() {
-      mockSession = { loggedIn: false, account: "", isAdmin: false, permissions: [] };
+      mockSession = { loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1 };
     },
     async AccountSessionInfo() {
       return mockSession;
+    },
+    async SetOnecreatTier(index: number) {
+      if (index >= 1 && index <= 3) mockSession = { ...mockSession, selectedTier: index };
     },
     async SwitchWorkspace(path: string) {
       return mockSwitchWorkspace(path);

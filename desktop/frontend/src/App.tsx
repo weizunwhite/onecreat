@@ -444,7 +444,9 @@ export default function App() {
     app
       .AccountSessionInfo()
       .then(setSessionStore)
-      .catch(() => setSessionStore({ loggedIn: false, account: "", isAdmin: false, permissions: [] }));
+      .catch(() =>
+        setSessionStore({ loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1 })
+      );
   }, []);
   useEffect(() => {
     refreshSession();

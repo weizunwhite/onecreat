@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,12 +32,21 @@ var allFeatureKeys = []string{
 	"skills",    // MCP 与技能
 }
 
+// AccountTier 是一个档位(订阅制)。客户端只见 index+name,不知道背后是什么模型(平台映射)。
+type AccountTier struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
+}
+
 // AccountSession 是发给前端的会话(不含 token)。
 type AccountSession struct {
-	LoggedIn    bool     `json:"loggedIn"`
-	Account     string   `json:"account"`
-	IsAdmin     bool     `json:"isAdmin"`
-	Permissions []string `json:"permissions"`
+	LoggedIn     bool          `json:"loggedIn"`
+	Account      string        `json:"account"`
+	IsAdmin      bool          `json:"isAdmin"`
+	Permissions  []string      `json:"permissions"`
+	Tiers        []AccountTier `json:"tiers"`        // 三档(订阅制);超管 / 未配为空
+	Points       *float64      `json:"points"`       // 机构点数余额(登录时快照);超管=null 不限
+	SelectedTier int           `json:"selectedTier"` // 当前选中档位 1/2/3
 }
 
 // AccountLoginResult 是登录返回。
@@ -47,10 +57,13 @@ type AccountLoginResult struct {
 
 // persistedSession 落盘的会话(含 token,内部用,不发前端)。
 type persistedSession struct {
-	Account     string   `json:"account"`
-	IsAdmin     bool     `json:"isAdmin"`
-	Permissions []string `json:"permissions"`
-	Token       string   `json:"token"`
+	Account      string        `json:"account"`
+	IsAdmin      bool          `json:"isAdmin"`
+	Permissions  []string      `json:"permissions"`
+	Token        string        `json:"token"`
+	Tiers        []AccountTier `json:"tiers"`
+	Points       *float64      `json:"points"`
+	SelectedTier int           `json:"selectedTier"`
 }
 
 func accountSessionPath() (string, error) {
@@ -75,6 +88,7 @@ func platformBaseURL() string {
 const (
 	gatewayEnvURL   = "ONECREAT_GATEWAY_URL"
 	gatewayEnvToken = "ONECREAT_GATEWAY_TOKEN"
+	gatewayEnvTier  = "ONECREAT_TIER" // 选中档位 "tier-1/2/3";boot 用它覆盖网关 provider 的 model
 )
 
 // applyGatewayEnvFromSession 按当前会话设/清网关环境变量:已登录 → 指向平台 AI 网关 +
@@ -84,6 +98,7 @@ func applyGatewayEnvFromSession() {
 	clear := func() {
 		_ = os.Unsetenv(gatewayEnvURL)
 		_ = os.Unsetenv(gatewayEnvToken)
+		_ = os.Unsetenv(gatewayEnvTier)
 	}
 	path, err := accountSessionPath()
 	if err != nil {
@@ -102,6 +117,11 @@ func applyGatewayEnvFromSession() {
 	}
 	_ = os.Setenv(gatewayEnvURL, platformBaseURL()+"/api/onecreat/v1")
 	_ = os.Setenv(gatewayEnvToken, p.Token)
+	tier := p.SelectedTier
+	if tier < 1 || tier > 3 {
+		tier = 1
+	}
+	_ = os.Setenv(gatewayEnvTier, fmt.Sprintf("tier-%d", tier))
 }
 
 // accountAuthenticate 调 teacher 平台 /api/onecreat/login(手机号+密码)拿 token + 功能权限。
@@ -119,12 +139,14 @@ func accountAuthenticate(account, password string) (persistedSession, string) {
 	}
 	defer resp.Body.Close()
 	var r struct {
-		OK       bool     `json:"ok"`
-		Token    string   `json:"token"`
-		Account  string   `json:"account"`
-		IsAdmin  bool     `json:"isAdmin"`
-		Features []string `json:"features"`
-		Error    string   `json:"error"`
+		OK       bool          `json:"ok"`
+		Token    string        `json:"token"`
+		Account  string        `json:"account"`
+		IsAdmin  bool          `json:"isAdmin"`
+		Features []string      `json:"features"`
+		Tiers    []AccountTier `json:"tiers"`
+		Points   *float64      `json:"points"`
+		Error    string        `json:"error"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
 	if !r.OK || r.Token == "" {
@@ -133,7 +155,10 @@ func accountAuthenticate(account, password string) (persistedSession, string) {
 		}
 		return persistedSession{}, "登录失败"
 	}
-	return persistedSession{Account: r.Account, IsAdmin: r.IsAdmin, Permissions: r.Features, Token: r.Token}, ""
+	return persistedSession{
+		Account: r.Account, IsAdmin: r.IsAdmin, Permissions: r.Features, Token: r.Token,
+		Tiers: r.Tiers, Points: r.Points, SelectedTier: 1, // 默认选第一档
+	}, ""
 }
 
 // AccountLogin 校验账号密码,成功则持久化会话。
@@ -186,5 +211,38 @@ func (a *App) AccountSessionInfo() AccountSession {
 	if json.Unmarshal(b, &p) != nil || p.Token == "" {
 		return AccountSession{}
 	}
-	return AccountSession{LoggedIn: true, Account: p.Account, IsAdmin: p.IsAdmin, Permissions: p.Permissions}
+	sel := p.SelectedTier
+	if sel < 1 || sel > 3 {
+		sel = 1
+	}
+	return AccountSession{
+		LoggedIn: true, Account: p.Account, IsAdmin: p.IsAdmin, Permissions: p.Permissions,
+		Tiers: p.Tiers, Points: p.Points, SelectedTier: sel,
+	}
+}
+
+// SetOnecreatTier 切换当前档位(1/2/3):写回 session.json + 刷新网关 env + 重建 controller,
+// 让下一条消息按新档位走。背后是什么模型客户端不知道(平台映射)。
+func (a *App) SetOnecreatTier(index int) {
+	if index < 1 || index > 3 {
+		return
+	}
+	path, err := accountSessionPath()
+	if err != nil {
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var p persistedSession
+	if json.Unmarshal(b, &p) != nil || p.Token == "" {
+		return
+	}
+	p.SelectedTier = index
+	if nb, err := json.Marshal(p); err == nil {
+		_ = os.WriteFile(path, nb, 0o600)
+	}
+	applyGatewayEnvFromSession()
+	a.rebuildActiveTab()
 }
