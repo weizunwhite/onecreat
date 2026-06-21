@@ -686,19 +686,33 @@ export function useController(tabId: string) {
   // Workspace: open a folder chooser and switch to that project. On a pick the
   // backend rebuilds the controller (new model/config) with a fresh session, so
   // reset and refresh meta/context. Returns the chosen path ("" if cancelled).
+  // doSwitchWorkspace 切到指定文件夹,失败时把后端原因显示出来(而不是静默吞掉)——
+  // 例如「开着多个任务标签时不允许切文件夹」这种守卫,吞掉就表现为「选了没反应/选不了」。
+  const doSwitchWorkspace = useCallback(
+    async (path: string): Promise<string> => {
+      try {
+        const next = await app.SwitchWorkspace(path);
+        return refreshWorkspaceState(next);
+      } catch (e) {
+        notice("切换文件夹失败:" + String((e as Error)?.message ?? e), "warn");
+        return refreshWorkspaceState("");
+      }
+    },
+    [refreshWorkspaceState, notice],
+  );
+
   const pickWorkspace = useCallback(async (): Promise<string> => {
     // 用 app 内置文件夹选择器(绕开 macOS 原生对话框会跑到窗口后面的 bug),
     // 选好后再走 SwitchWorkspace 重建控制器。
     const path = await openFolderPicker();
     if (!path) return refreshWorkspaceState(""); // 取消
-    const next = await app.SwitchWorkspace(path).catch(() => "");
-    return refreshWorkspaceState(next);
-  }, [refreshWorkspaceState]);
+    return doSwitchWorkspace(path);
+  }, [refreshWorkspaceState, doSwitchWorkspace]);
 
-  const switchWorkspace = useCallback(async (path: string): Promise<string> => {
-    const next = await app.SwitchWorkspace(path).catch(() => "");
-    return refreshWorkspaceState(next);
-  }, [refreshWorkspaceState]);
+  const switchWorkspace = useCallback(
+    (path: string): Promise<string> => doSwitchWorkspace(path),
+    [doSwitchWorkspace],
+  );
 
   const compact = useCallback(() => {
     app.Compact().catch(() => {});
