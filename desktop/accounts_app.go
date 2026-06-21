@@ -18,21 +18,6 @@ import (
 	"time"
 )
 
-// allFeatureKeys 是全部可被门控的功能 key(超管拥有全部)。和前端首页卡片 key + 各功能
-// 入口一一对应:没在权限清单里的,客户端不显示 / 点不动。
-var allFeatureKeys = []string{
-	"hardware",  // 硬件项目 / 硬件编程工作台
-	"proposal",  // 技术方案
-	"paper",     // 竞赛论文
-	"lesson",    // 课程教案
-	"tutorial",  // 教师辅导手册
-	"log",       // 研究日志
-	"jinpeng",   // 金鹏材料
-	"knowledge", // 知识库
-	"ota",       // OTA 远程烧录
-	"skills",    // MCP 与技能
-}
-
 // AccountTier 是一个档位(订阅制)。客户端只见 index+name,不知道背后是什么模型(平台映射)。
 type AccountTier struct {
 	Index int    `json:"index"`

@@ -8,6 +8,31 @@ import (
 
 // TestRenderTOMLRoundTrips ensures the annotated TOML we emit parses back into
 // an equivalent config — i.e. the wizard never writes a file it can't read.
+// H5 回归:system_prompt 含 TOML 多行 basic string 的危险字符(""" 三引号、代码围栏、
+// 末尾反斜杠、双引号)时,渲染结果必须仍是合法 TOML 且精确 round-trip —— 否则下次 Load
+// 解析失败,把配置写 brick、app/CLI 起不来。
+func TestRenderTOMLEscapesSystemPrompt(t *testing.T) {
+	tricky := []string{
+		"Use \"\"\" triple quotes in docstrings.",
+		"Code fence:\n```py\nx = \"\"\"hi\"\"\"\n```\n",
+		"Trailing backslash\\",
+		"Path C:\\Users\\x and a quote \" here",
+		"plain, no specials",
+	}
+	for _, sp := range tricky {
+		c := Default()
+		c.Agent.SystemPrompt = sp
+		rendered := RenderTOML(c)
+		var got Config
+		if _, err := toml.Decode(rendered, &got); err != nil {
+			t.Fatalf("system_prompt %q 渲染出非法 TOML: %v\n---\n%s", sp, err, rendered)
+		}
+		if got.Agent.SystemPrompt != sp {
+			t.Fatalf("system_prompt 未精确 round-trip:\n got %q\nwant %q", got.Agent.SystemPrompt, sp)
+		}
+	}
+}
+
 func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig := Default()
 	orig.DefaultModel = "mimo-pro"

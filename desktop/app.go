@@ -2151,7 +2151,8 @@ type HardwareRunInput struct {
 }
 
 // HardwarePublishInput 是「发布固件到远程服务器」(③ 云端拉取)的入参。
-// 服务器配置(ssh/目录/URL)留空时用 NAS 默认值。
+// 服务器配置(ssh/目录/URL)留空时跳过发布(不再有内置 NAS 默认值,去内网化后各人填自己
+// 的 NAS/VPS,见 HardwarePublishFirmware)。
 type HardwarePublishInput struct {
 	ProjectDir  string `json:"projectDir"`
 	Board       string `json:"board,omitempty"`
@@ -3374,8 +3375,14 @@ func (a *App) RevealWorkspacePath(rel string) error {
 }
 
 func (a *App) notice(text string) {
-	if a.sink != nil {
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
+	// a.sink 在 buildTab/CreateTab/SetActiveTab/CloseTab 里都在 a.mu 下被改写,故这里必须
+	// 持锁读(M3:/effort 命令经 Submit→runEffortCommand 调到这里,与 tab 生命周期方法
+	// 并发会构成对 a.sink 指针的数据竞态)。
+	a.mu.RLock()
+	sink := a.sink
+	a.mu.RUnlock()
+	if sink != nil {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
 	}
 }
 

@@ -40,9 +40,14 @@ func (a *App) CheckUpdate() (*UpdateInfo, error) {
 // path and a fallback link elsewhere.
 func (a *App) OpenDownloadPage() {
 	page := defaultDownloadPage
-	if c, err := httpClient(); err == nil {
-		if m, err := fetchManifest(a.reqCtx(), c); err == nil && m.DownloadPage != "" {
-			page = m.DownloadPage
+	// 自更新在本 fork 已禁用(见 CheckUpdate),manifest 端点为空,fetchManifest 必然失败。
+	// 仅当 manifest 端点真的配置了(将来重新接入 onecreat 自己的更新通道时)才去取它的
+	// DownloadPage 覆盖,否则直接开默认发布页 —— 省掉每次点击两次必败的请求(L7)。
+	if manifestPrimary != "" || manifestFallback != "" {
+		if c, err := httpClient(); err == nil {
+			if m, err := fetchManifest(a.reqCtx(), c); err == nil && m.DownloadPage != "" {
+				page = m.DownloadPage
+			}
 		}
 	}
 	if a.ctx != nil {

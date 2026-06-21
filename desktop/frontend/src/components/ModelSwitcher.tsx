@@ -15,11 +15,14 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
 
-  const tierMode = !!session?.loggedIn && (session.tiers?.length ?? 0) > 0;
+  // 登录即走平台网关(API 由平台统一分配),与 SettingsPanel 的 gatewayMode 谓词保持一致。
+  const gatewayMode = !!session?.loggedIn;
+  const tierMode = gatewayMode && (session?.tiers?.length ?? 0) > 0;
 
   useEffect(() => {
-    if (open && !tierMode) app.Models().then(setModels).catch(() => {});
-  }, [open, tierMode]);
+    // 仅未登录(直连)模式才列出 config 模型;网关模式下绝不拉真实模型名(M2:防泄露 + 防误切)。
+    if (open && !gatewayMode) app.Models().then(setModels).catch(() => {});
+  }, [open, gatewayMode]);
 
   // 本轮消耗:监测 points 下降显示"本轮 -N"(每轮结束 App 会向平台刷新点数)。
   const prevPoints = useRef<number | null>(null);
@@ -77,6 +80,29 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
             </div>
           </>
         )}
+      </div>
+    );
+  }
+
+  // —— 网关模式但平台未配档位(超管 / 未配机构):AI 仍走网关,绝不回退到真实模型选择器。
+  //    此前这种情况 tierMode=false 会落到下面普通模式,露出 app.Models() 的真实模型名并允许
+  //    SetModel(M2/L3)。这里只显示点数 / 不限,不可展开、不泄露模型。
+  if (gatewayMode && session) {
+    return (
+      <div className="modelsw">
+        <button className="modelsw__trigger" title="AI 由平台统一分配" disabled>
+          <span className="modelsw__label">智能</span>
+          {session.points === null ? (
+            <span className="modelsw__points" title="超级管理员不限额度">
+              不限
+            </span>
+          ) : (
+            <span className="modelsw__points">
+              <Coins size={10} /> {Math.round(session.points).toLocaleString()}
+              {lastUsed > 0 && <em className="modelsw__used">本轮 -{lastUsed}</em>}
+            </span>
+          )}
+        </button>
       </div>
     );
   }

@@ -389,6 +389,10 @@ export default function App() {
   // A2:每个「非活动」标签挂一个轻量订阅,只为在标签栏上提示「该标签有待审批」。活动标签
   // 的弹窗由 useController 处理(并在切回时由 PendingPrompts 补显),这里跳过它避免重复。
   const [pendingTabs, setPendingTabs] = useState<Record<string, boolean>>({});
+  // 已登录态镜像到 ref:后台 tab 的事件订阅(下面)据此决定是否刷新余额,但不能把 session
+  // 放进该订阅 effect 的依赖里(否则每次刷新点数都会重订阅所有标签)。在下面 session 那个
+  // effect 里更新它。
+  const loggedInRef = useRef(false);
   useEffect(() => {
     const offs = tabs
       .filter((tab) => tab.id !== activeTabId)
@@ -398,6 +402,8 @@ export default function App() {
             setPendingTabs((p) => (p[tab.id] ? p : { ...p, [tab.id]: true }));
           } else if (e.kind === "turn_done") {
             setPendingTabs((p) => (p[tab.id] ? { ...p, [tab.id]: false } : p));
+            // L1:后台 tab 烧点也要刷新余额,否则只在活动 tab 下次结束时才更新、余额显示偏高。
+            if (loggedInRef.current) void app.RefreshAccountSession().then(setSessionStore).catch(() => {});
           }
         }),
       );
@@ -605,7 +611,9 @@ export default function App() {
         return;
       }
       if (trimmed === "/knowledge") {
-        setKnowledgeOpen(true);
+        // L2:/knowledge 命令与侧栏按钮一样受功能门控,未开通的机构点不动。
+        if (canFeature("knowledge")) setKnowledgeOpen(true);
+        else notice("本机构未开通知识库功能", "warn");
         return;
       }
       const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -635,7 +643,7 @@ export default function App() {
       const rawSubmit = submitText.trim();
       // 知识库默认「自动」:开关打开时,任何非斜杠消息都自动检索——没手动选库就检索全部;
       // 选了就只用选中的;检索不到相关片段则原样发送(零副作用)。关闭开关则完全不检索。
-      if (knowledgeEnabled && trimmed && !trimmed.startsWith("/") && !rawSubmit.startsWith("/")) {
+      if (canFeature("knowledge") && knowledgeEnabled && trimmed && !trimmed.startsWith("/") && !rawSubmit.startsWith("/")) {
         void (async () => {
           let baseIds = selectedKnowledgeBaseIds;
           try {
@@ -661,7 +669,7 @@ export default function App() {
       }
       send(trimmed, rawSubmit);
     },
-    [switchModel, openMemory, send, selectedKnowledgeBaseIds, knowledgeEnabled, notice, t],
+    [switchModel, openMemory, send, selectedKnowledgeBaseIds, knowledgeEnabled, notice, t, canFeature],
   );
 
   const refreshSessions = useCallback(async () => {
@@ -703,6 +711,7 @@ export default function App() {
       void app.RefreshAccountSession().then(setSessionStore).catch(() => {});
     }
     prevRunningRef.current = state.running;
+    loggedInRef.current = !!session?.loggedIn; // 供后台 tab 订阅判断是否刷新余额(L1)
   }, [state.running, session]);
 
   // 当前活动标签从「装配中」变为就绪时,刷新标签栏以清掉它的 loading 小圈。
@@ -1517,13 +1526,15 @@ export default function App() {
               <button className="chip chip--icon" onClick={() => setCapsOpen(true)} title={t("caps.title")}>
                 <Blocks size={13} />
               </button>
-              <button
-                className={selectedKnowledgeBaseIds.length ? "chip chip--icon chip--on" : "chip chip--icon"}
-                onClick={() => setKnowledgeOpen(true)}
-                title={selectedKnowledgeBaseIds.length ? `知识库 · 已用于聊天 ${selectedKnowledgeBaseIds.length}` : "知识库"}
-              >
-                <BookOpen size={13} />
-              </button>
+              {canFeature("knowledge") && (
+                <button
+                  className={selectedKnowledgeBaseIds.length ? "chip chip--icon chip--on" : "chip chip--icon"}
+                  onClick={() => setKnowledgeOpen(true)}
+                  title={selectedKnowledgeBaseIds.length ? `知识库 · 已用于聊天 ${selectedKnowledgeBaseIds.length}` : "知识库"}
+                >
+                  <BookOpen size={13} />
+                </button>
+              )}
               <button
                 className="chip chip--icon"
                 onClick={() => setSettingsOpen(true)}
