@@ -295,6 +295,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		cleanup = func() { prev(); lspMgr.Close() }
 	}
 
+	// 在 control.New 成功接管 cleanup 之前的任何错误返回,都必须释放已经启动的资源
+	// (eager MCP 子进程、LSP manager)。否则它们泄漏 —— desktop 用永不取消的 ctx 调
+	// Build,失败的 SetModel / 标签重建每次都漏一组子进程(M1)。控制器接管后置 success=true,
+	// 由 Controller.Close() 负责调 cleanup。
+	success := false
+	defer func() {
+		if !success {
+			cleanup()
+		}
+	}()
+
 	maxSteps := cfg.Agent.MaxSteps
 	if opts.MaxSteps > 0 {
 		maxSteps = opts.MaxSteps
@@ -482,6 +493,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if classifier != nil {
 		ctrlOpts.Classifier = classifier
 	}
+	success = true // 控制器接管 cleanup;defer 不再兜底释放
 	return control.New(ctrlOpts), nil
 }
 

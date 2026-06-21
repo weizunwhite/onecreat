@@ -2914,21 +2914,27 @@ func (a *App) SetModel(name string) error {
 	return nil
 }
 
-// rebuildActiveTab 用当前 config + 环境(含网关 env)重建活动标签的 controller,沿用同一
-// model 并带过历史。登录/登出切换 AI 网关后调用,让新 provider(走网关 / 直连)立即生效,
-// 无需重启 app。逻辑同 SetModel,但模型不变、强制重建。boot.Build 是秒级操作,同步执行
-// (调用方 AccountLogin/Logout 是 Wails 绑定方法,前端登录按钮有 loading 态)。
-func (a *App) rebuildActiveTab() {
+// rebuildTabByID 用当前 config + 环境(含网关 env)重建「指定」标签的 controller,沿用该
+// 标签自己的 model 并带过它的历史。boot.Build 是秒级操作,绝不持 a.mu 跨它:锁内只快照
+// 该 tab 的 ctrl/model/sink,锁外重建,再回锁写回(boot.Build-under-a.mu 红线)。
+func (a *App) rebuildTabByID(tabID string) {
 	if a.ctx == nil {
 		return
 	}
 	a.mu.RLock()
-	ctrl := a.ctrl
-	model := a.model
-	targetTab := a.activeTab
-	targetSink := a.sink
-	if rt := a.tabs[targetTab]; rt != nil && rt.sink != nil {
-		targetSink = rt.sink
+	rt := a.tabs[tabID]
+	if rt == nil {
+		a.mu.RUnlock()
+		return
+	}
+	ctrl := rt.ctrl
+	model := rt.model
+	targetSink := rt.sink
+	if targetSink == nil {
+		targetSink = a.sink
+	}
+	if model == "" {
+		model = a.model // 该 tab 尚未记录 model 时退回活动镜像
 	}
 	a.mu.RUnlock()
 	if model == "" {
@@ -2946,11 +2952,11 @@ func (a *App) rebuildActiveTab() {
 		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
 	}
 	a.mu.Lock()
-	if rt := a.tabs[targetTab]; rt != nil {
+	if rt := a.tabs[tabID]; rt != nil {
 		rt.ctrl = newCtrl
 		rt.label = newCtrl.Label()
 	}
-	if a.activeTab == targetTab {
+	if a.activeTab == tabID {
 		a.ctrl = newCtrl
 		a.label = newCtrl.Label()
 	}
@@ -2965,6 +2971,28 @@ func (a *App) rebuildActiveTab() {
 		newCtrl.Resume(&agent.Session{Messages: carried}, path)
 	} else if path != "" {
 		newCtrl.SetSessionPath(path)
+	}
+}
+
+// rebuildAllTabs 用当前网关 env 重建「每一个」标签的 controller —— 不止活动 tab。切档 /
+// 登录 / 登出后必须全量重建:tier/token/URL 在 boot.Build 时被固化进每个 tab 的 provider
+// (boot.go applyOnecreatGateway 把 model 烤成 tier-N、key 烤成网关 token,provider 不按
+// 每条请求重读),只重建活动 tab 会让后台 tab 继续按「旧档」计费、甚至登出后仍持已撤销
+// 的 token 继续打计费端点(H2)。boot.Build 秒级,锁内只快照 tab id 列表,锁外逐个重建。
+// 注:正在跑的后台 tab 会被 Close 重建(其历史已带过)—— 登出时这正是要的(撤销 token 不
+// 能再被使用);切档时会中断该 tab 当前这一轮,与既有「活动 tab 切模型即重建」行为一致。
+func (a *App) rebuildAllTabs() {
+	if a.ctx == nil {
+		return
+	}
+	a.mu.RLock()
+	ids := make([]string, 0, len(a.tabs))
+	for id := range a.tabs {
+		ids = append(ids, id)
+	}
+	a.mu.RUnlock()
+	for _, id := range ids {
+		a.rebuildTabByID(id)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,46 @@ const (
 	gatewayEnvTier  = "ONECREAT_TIER" // 选中档位 "tier-1/2/3";boot 用它覆盖网关 provider 的 model
 )
 
+// sessionFileMu 串行化对 session.json 的所有读-改-写。session.json 是单文件(每个系统用户
+// 一份):切档(SetOnecreatTier)与每轮结束触发的 RefreshAccountSession 会并发读改写它。无锁
+// 时 refresh 会把「进入时读到的旧 SelectedTier」连同整个结构体回写,覆盖掉用户刚切的新档
+// (H3:UI 显示新档、实际下次按旧档送模型 + 计费)。所有读改写都必须在持有本锁时进行。
+var sessionFileMu sync.Mutex
+
+// loadSessionFileLocked 读取持久化会话;调用方必须已持有 sessionFileMu。ok=false 表示
+// 文件不存在 / 解析失败 / 无 token(视为未登录)。
+func loadSessionFileLocked() (persistedSession, bool) {
+	path, err := accountSessionPath()
+	if err != nil {
+		return persistedSession{}, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return persistedSession{}, false
+	}
+	var p persistedSession
+	if json.Unmarshal(b, &p) != nil || p.Token == "" {
+		return persistedSession{}, false
+	}
+	return p, true
+}
+
+// saveSessionFileLocked 落盘会话(0600);调用方必须已持有 sessionFileMu。
+func saveSessionFileLocked(p persistedSession) error {
+	path, err := accountSessionPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
+}
+
 // applyGatewayEnvFromSession 按当前会话设/清网关环境变量:已登录 → 指向平台 AI 网关 +
 // 写入 token;未登录 → 清空(回到 config 里的直连 provider)。每次 boot.Build 之前都要保证
 // 它已被调用过(startup 里调一次),登录/登出后再调一次并重建 controller 让其立即生效。
@@ -100,18 +141,10 @@ func applyGatewayEnvFromSession() {
 		_ = os.Unsetenv(gatewayEnvToken)
 		_ = os.Unsetenv(gatewayEnvTier)
 	}
-	path, err := accountSessionPath()
-	if err != nil {
-		clear()
-		return
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		clear()
-		return
-	}
-	var p persistedSession
-	if json.Unmarshal(b, &p) != nil || p.Token == "" {
+	sessionFileMu.Lock()
+	p, ok := loadSessionFileLocked()
+	sessionFileMu.Unlock()
+	if !ok {
 		clear()
 		return
 	}
@@ -167,48 +200,38 @@ func (a *App) AccountLogin(account, password string) AccountLoginResult {
 	if errMsg != "" {
 		return AccountLoginResult{Error: errMsg}
 	}
-	path, err := accountSessionPath()
+	sessionFileMu.Lock()
+	err := saveSessionFileLocked(sess)
+	sessionFileMu.Unlock()
 	if err != nil {
 		return AccountLoginResult{Error: err.Error()}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return AccountLoginResult{Error: err.Error()}
-	}
-	b, err := json.Marshal(sess)
-	if err != nil {
-		return AccountLoginResult{Error: err.Error()}
-	}
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		return AccountLoginResult{Error: err.Error()}
-	}
-	// 登录后启用网关:设 env + 重建活动标签的 controller,让 AI 立即改走平台网关(用本次
-	// token 鉴权),无需重启 app。
+	// 登录后启用网关:设 env + 重建「所有」标签的 controller,让 AI 立即改走平台网关(用本次
+	// token 鉴权),无需重启 app。重建所有 tab(非仅活动 tab):否则后台 tab 仍走直连 / 旧态。
 	applyGatewayEnvFromSession()
-	a.rebuildActiveTab()
+	a.rebuildAllTabs()
 	return AccountLoginResult{OK: true}
 }
 
 // AccountLogout 清除会话,并把 AI 切回直连(清网关 env + 重建 controller)。
 func (a *App) AccountLogout() {
+	sessionFileMu.Lock()
 	if path, err := accountSessionPath(); err == nil {
 		_ = os.Remove(path)
 	}
+	sessionFileMu.Unlock()
+	// 清网关 env + 重建「所有」标签:登出后撤销的 token 不能再被任何后台 tab 使用(否则
+	// 后台 tab 仍持旧 token 继续打计费端点)。
 	applyGatewayEnvFromSession()
-	a.rebuildActiveTab()
+	a.rebuildAllTabs()
 }
 
 // AccountSessionInfo 返回当前会话(未登录则 LoggedIn=false)。token 不外泄。
 func (a *App) AccountSessionInfo() AccountSession {
-	path, err := accountSessionPath()
-	if err != nil {
-		return AccountSession{}
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return AccountSession{}
-	}
-	var p persistedSession
-	if json.Unmarshal(b, &p) != nil || p.Token == "" {
+	sessionFileMu.Lock()
+	p, ok := loadSessionFileLocked()
+	sessionFileMu.Unlock()
+	if !ok {
 		return AccountSession{}
 	}
 	sel := p.SelectedTier
@@ -227,40 +250,30 @@ func (a *App) SetOnecreatTier(index int) {
 	if index < 1 || index > 3 {
 		return
 	}
-	path, err := accountSessionPath()
-	if err != nil {
+	sessionFileMu.Lock()
+	p, ok := loadSessionFileLocked()
+	if ok {
+		p.SelectedTier = index
+		_ = saveSessionFileLocked(p)
+	}
+	sessionFileMu.Unlock()
+	if !ok {
 		return
 	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var p persistedSession
-	if json.Unmarshal(b, &p) != nil || p.Token == "" {
-		return
-	}
-	p.SelectedTier = index
-	if nb, err := json.Marshal(p); err == nil {
-		_ = os.WriteFile(path, nb, 0o600)
-	}
+	// 切档后重建「所有」标签:tier 在 boot.Build 时被烤进每个 tab 的 provider,只重建活动 tab
+	// 会让后台 tab 继续按旧档计费(H2)。
 	applyGatewayEnvFromSession()
-	a.rebuildActiveTab()
+	a.rebuildAllTabs()
 }
 
 // RefreshAccountSession 向平台 /api/onecreat/session 拉最新 points/tiers(每轮对话结束后调,
 // 让余额实时下降、看得到消耗)。网络问题或 token 失效则保持本地快照不变(AI 调用自己会报
 // 401 提示重登)。不重建 controller,纯刷新展示数据。
 func (a *App) RefreshAccountSession() AccountSession {
-	path, err := accountSessionPath()
-	if err != nil {
-		return AccountSession{}
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return AccountSession{}
-	}
-	var p persistedSession
-	if json.Unmarshal(b, &p) != nil || p.Token == "" {
+	sessionFileMu.Lock()
+	p, ok := loadSessionFileLocked()
+	sessionFileMu.Unlock()
+	if !ok {
 		return AccountSession{}
 	}
 	req, err := http.NewRequest(http.MethodGet, platformBaseURL()+"/api/onecreat/session", nil)
@@ -284,19 +297,28 @@ func (a *App) RefreshAccountSession() AccountSession {
 	if !r.LoggedIn {
 		return a.AccountSessionInfo() // token 失效:保持本地
 	}
-	p.Points = r.Points
+	// 关键(H3):网络调用期间用户可能切了档(SetOnecreatTier 已把新 SelectedTier 落盘)。
+	// 这里必须重新读盘拿最新会话,只把服务端字段(points/tiers/features)合并进去回写,绝不
+	// 用进入本函数时读到的旧 SelectedTier 覆盖它 —— 否则就把用户刚切的新档冲回旧值了。
+	sessionFileMu.Lock()
+	cur, stillIn := loadSessionFileLocked()
+	if !stillIn {
+		sessionFileMu.Unlock()
+		return AccountSession{} // 刷新期间登出了
+	}
+	cur.Points = r.Points
 	if len(r.Tiers) > 0 {
-		p.Tiers = r.Tiers
+		cur.Tiers = r.Tiers
 	}
 	if len(r.Features) > 0 {
-		p.Permissions = r.Features
+		cur.Permissions = r.Features
 	}
-	if nb, err := json.Marshal(p); err == nil {
-		_ = os.WriteFile(path, nb, 0o600)
-	}
-	sel := p.SelectedTier
+	_ = saveSessionFileLocked(cur)
+	sessionFileMu.Unlock()
+
+	sel := cur.SelectedTier
 	if sel < 1 || sel > 3 {
 		sel = 1
 	}
-	return AccountSession{LoggedIn: true, Account: p.Account, IsAdmin: r.IsAdmin, Permissions: p.Permissions, Tiers: p.Tiers, Points: p.Points, SelectedTier: sel}
+	return AccountSession{LoggedIn: true, Account: cur.Account, IsAdmin: r.IsAdmin, Permissions: cur.Permissions, Tiers: cur.Tiers, Points: cur.Points, SelectedTier: sel}
 }
