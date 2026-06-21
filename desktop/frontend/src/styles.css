@@ -3298,7 +3298,72 @@ button.session-file-summary:hover {
   margin: 8px auto;
   color: var(--fg-dim);
   white-space: pre-wrap;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  /* 与消息正文(markdown,14px sans)完全一致:此前用 mono,同 14px 下比 sans 正文显得更大,
+     一条长提示(如「登录已过期」)夹在对话里上下字号不一致。靠 --fg-dim 颜色区分次要信息。 */
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ── 应用内确认 / 提示弹窗(Wails webview 没有可用的 window.confirm/alert)──────── */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.38);
+}
+.confirm-box {
+  width: 100%;
+  max-width: 420px;
+  padding: 20px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.confirm-box__title {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--fg);
+}
+.confirm-box__msg {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+.confirm-box__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.confirm-box__btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--button-bg, transparent);
+  color: var(--fg);
+  cursor: pointer;
+}
+.confirm-box__btn:hover {
+  background: var(--button-bg-hover, rgba(127, 127, 127, 0.12));
+}
+.confirm-box__btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.confirm-box__btn--danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
 }
 .phase {
   margin: 14px auto;

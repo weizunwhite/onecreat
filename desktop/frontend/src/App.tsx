@@ -70,6 +70,7 @@ import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/Workspac
 import { FolderPicker } from "./components/FolderPicker";
 import { LoginGate } from "./components/LoginGate";
 import { useSession, setSessionStore } from "./lib/account";
+import { ConfirmHost, confirmDialog } from "./lib/confirm";
 import { app, onEvent } from "./lib/bridge";
 import { parseTodos } from "./lib/tools";
 import { useDetailMode, toggleDetailMode } from "./lib/detailMode";
@@ -1109,9 +1110,13 @@ export default function App() {
           className="sidebar-session__delete"
           onClick={(e) => {
             e.stopPropagation();
-            if (window.confirm(t("sidebar.deleteSessionConfirm", { title: sessionTitle(session, t("history.emptySession")) }))) {
-              void onDeleteSession(session.path);
-            }
+            void confirmDialog({
+              message: t("sidebar.deleteSessionConfirm", { title: sessionTitle(session, t("history.emptySession")) }),
+              confirmText: t("common.delete"),
+              danger: true,
+            }).then((ok) => {
+              if (ok) void onDeleteSession(session.path);
+            });
           }}
           disabled={state.running || session.current}
           title="删除"
@@ -1155,7 +1160,12 @@ export default function App() {
       notice(t("sidebar.noRemovable"), "warn");
       return;
     }
-    if (!window.confirm(t("sidebar.deleteFolderConfirm", { name: folderDisplayName(group.cwd, group.label), count: removable.length }))) return;
+    const ok = await confirmDialog({
+      message: t("sidebar.deleteFolderConfirm", { name: folderDisplayName(group.cwd, group.label), count: removable.length }),
+      confirmText: t("common.delete"),
+      danger: true,
+    });
+    if (!ok) return;
     for (const s of removable) await deleteSession(s.path).catch(() => {});
     await refreshSessions();
   };
@@ -1463,9 +1473,14 @@ export default function App() {
             <button
               className="sidebar__navitem"
               onClick={() => {
-                if (window.confirm(`确定退出登录吗？\n\n当前账号：${session.account}\n退出后需重新登录才能继续使用 AI。`)) {
-                  void app.AccountLogout().then(refreshSession);
-                }
+                void confirmDialog({
+                  title: "退出登录",
+                  message: `当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""}\n退出后需重新登录才能继续使用 AI。`,
+                  confirmText: "退出",
+                  danger: true,
+                }).then((ok) => {
+                  if (ok) void app.AccountLogout().then(refreshSession);
+                });
               }}
               title={`当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""} — 点击退出登录`}
             >
@@ -1757,6 +1772,7 @@ export default function App() {
         />
       )}
 
+      <ConfirmHost />
     </div>
   );
 }

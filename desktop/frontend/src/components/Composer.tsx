@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { ArrowUp, BookOpen, Check, ChevronDown, Eye, FileText, FolderGit2, FolderPlus, GraduationCap, Loader2, Paperclip, Search, Sparkles, Square, Trash2, X } from "lucide-react";
 import { app } from "../lib/bridge";
+import { alertDialog } from "../lib/confirm";
 import { useT } from "../lib/i18n";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createPastedTextBlock, renderPastedTextBlock, shouldFoldPastedText, type PastedTextBlock } from "../lib/pastedText";
@@ -160,7 +161,7 @@ export function Composer({
         node.selectionStart = node.selectionEnd = pos;
       });
     } catch (e) {
-      window.alert("上传参考资料失败: " + String((e as Error)?.message ?? e));
+      void alertDialog("上传参考资料失败: " + String((e as Error)?.message ?? e));
     } finally {
       setUploadingReference(false);
     }
