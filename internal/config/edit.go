@@ -359,12 +359,14 @@ func (c *Config) SaveTo(path string) error {
 }
 
 // Save writes the configuration back to the file it was loaded from
-// (SourcePath), or to ./reasonix.toml when none exists yet — the conventional
-// project-local target a fresh GUI session would create.
+// (SourcePath), or to ./onecreat.toml when none exists yet — the conventional
+// project-local target a fresh GUI session would create. SourcePath still finds a
+// legacy ./reasonix.toml, so an existing project keeps writing its old file (read
+// old / write new); only brand-new projects get onecreat.toml.
 func (c *Config) Save() error {
 	path := SourcePath()
 	if path == "" {
-		path = "reasonix.toml"
+		path = "onecreat.toml"
 	}
 	return c.SaveTo(path)
 }

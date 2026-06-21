@@ -7,9 +7,9 @@ import (
 )
 
 // TestCommandDirsIncludeConventions verifies command discovery covers the
-// cross-tool convention dirs (so .claude/commands etc. migrate in) and that the
-// canonical .reasonix project dir is highest priority (last, since command.Load
-// lets a later dir win on a name clash).
+// cross-tool convention dirs (so .claude/commands etc. migrate in) plus the legacy
+// .reasonix dir, and that the canonical .onecreat project dir is highest priority
+// (last, since command.Load lets a later dir win on a name clash).
 func TestCommandDirsIncludeConventions(t *testing.T) {
 	dirs := CommandDirs()
 	joined := strings.Join(dirs, "\n")
@@ -17,14 +17,15 @@ func TestCommandDirsIncludeConventions(t *testing.T) {
 		filepath.Join(".claude", "commands"),
 		filepath.Join(".agents", "commands"),
 		filepath.Join(".agent", "commands"),
-		filepath.Join(".reasonix", "commands"),
+		filepath.Join(".reasonix", "commands"), // 旧名仍被发现
+		filepath.Join(".onecreat", "commands"), // 新 canonical
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("CommandDirs missing %q\ngot:\n%s", want, joined)
 		}
 	}
-	// The project's .reasonix/commands must be the highest-priority (last) entry.
-	if last := dirs[len(dirs)-1]; last != filepath.Join(".reasonix", "commands") {
-		t.Errorf("project .reasonix/commands should be highest priority (last), got %q", last)
+	// The project's .onecreat/commands must be the highest-priority (last) entry.
+	if last := dirs[len(dirs)-1]; last != filepath.Join(".onecreat", "commands") {
+		t.Errorf("project .onecreat/commands should be highest priority (last), got %q", last)
 	}
 }

@@ -10,7 +10,7 @@ CODEGRAPH_VERSION := v0.9.7
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix ./cmd/reasonix
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix-plugin-example ./cmd/reasonix-plugin-example
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix-hardware-mcp ./cmd/reasonix-hardware-mcp
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/onecreat-hardware-mcp ./cmd/reasonix-hardware-mcp
 
 vet:
 	go vet ./...
@@ -40,7 +40,7 @@ cross:
 		os=$${p%/*}; arch=$${p#*/}; ext=; [ $$os = windows ] && ext=.exe; \
 		echo "build $$os/$$arch"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o dist/reasonix-$$os-$$arch$$ext ./cmd/reasonix; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o dist/reasonix-hardware-mcp-$$os-$$arch$$ext ./cmd/reasonix-hardware-mcp; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o dist/onecreat-hardware-mcp-$$os-$$arch$$ext ./cmd/reasonix-hardware-mcp; \
 	done
 
 clean:

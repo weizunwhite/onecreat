@@ -8,7 +8,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_DIR="${REASONIX_HARDWARE_VERIFY_DIR:-$ROOT/dist/hardware-verify-$(date +%Y%m%d-%H%M%S)}"
-MCP="$ROOT/bin/reasonix-hardware-mcp"
+MCP="$ROOT/bin/onecreat-hardware-mcp"
 
 mkdir -p "$RUN_DIR"
 

@@ -26,7 +26,7 @@ export function UserMessage({
   const t = useT();
   const canRewind = onRewind != null && turn != null;
   const rewind = (scope: string) => onRewind?.(turn as number, scope);
-  const displayText = text.replace(/@\.reasonix\/attachments\/[^\s]+/g, "[image]");
+  const displayText = text.replace(/@\.(?:onecreat|reasonix)\/attachments\/[^\s]+/g, "[image]");
   return (
     <div className="msg msg--user">
       <span className="msg__caret">›</span>

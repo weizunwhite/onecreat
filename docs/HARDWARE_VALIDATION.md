@@ -77,19 +77,19 @@ programming platform work.
 - `scripts/desktop-build.sh darwin/arm64 hardware-runtime-evidence`
 - `scripts/desktop-build.sh darwin/arm64 hardware-runtime-output`
 - Bundled macOS app contains:
-  - `Reasonix.app/Contents/MacOS/reasonix-desktop`
-  - `Reasonix.app/Contents/MacOS/reasonix-hardware-mcp`
+  - `OneCreat.app/Contents/MacOS/onecreat-desktop`
+  - `OneCreat.app/Contents/MacOS/onecreat-hardware-mcp`
 - Bundled macOS zip was checked after extraction and no `._*` AppleDouble files
   were present.
-- Bundled `reasonix-hardware-mcp` responds to MCP `tools/list`.
-- Bundled `reasonix-hardware-mcp` responds to `hardware_detect`.
-- Installed `/Applications/Reasonix.app` now contains the hardware platform
+- Bundled `onecreat-hardware-mcp` responds to MCP `tools/list`.
+- Bundled `onecreat-hardware-mcp` responds to `hardware_detect`.
+- Installed `/Applications/OneCreat.app` now contains the hardware platform
   build:
   - bundle name: `Reasonix`
   - bundle identifier: `dev.reasonix.desktop`
-  - executable: `/Applications/Reasonix.app/Contents/MacOS/reasonix-desktop`
-  - bundled MCP: `/Applications/Reasonix.app/Contents/MacOS/reasonix-hardware-mcp`
-  - `codesign --verify --deep --strict --verbose=2 /Applications/Reasonix.app`
+  - executable: `/Applications/OneCreat.app/Contents/MacOS/onecreat-desktop`
+  - bundled MCP: `/Applications/OneCreat.app/Contents/MacOS/onecreat-hardware-mcp`
+  - `codesign --verify --deep --strict --verbose=2 /Applications/OneCreat.app`
     passed.
   - CoreGraphics reports the Reasonix window onscreen at `1240 x 720`.
   - The visible sidebar includes the `硬件` entry.
@@ -129,11 +129,11 @@ programming platform work.
     `dist/hardware-device-verify-20260603-104247/summary.json`, final
     status `hardware_pending`, `currentRecordCount=1`, `staleRecordCount=4`,
     missing `device_upload` and `runtime_log`.
-- Installed `/Applications/Reasonix.app` package-local MCP checks:
+- Installed `/Applications/OneCreat.app` package-local MCP checks:
   - has bundle name `Reasonix`.
   - has bundle identifier `dev.reasonix.desktop`.
-  - is running from `/Applications/Reasonix.app/Contents/MacOS/reasonix-desktop`.
-  - contains `reasonix-hardware-mcp`, which responds to MCP `tools/list`.
+  - is running from `/Applications/OneCreat.app/Contents/MacOS/onecreat-desktop`.
+  - contains `onecreat-hardware-mcp`, which responds to MCP `tools/list`.
   - package-local `tools/list` includes `hardware_project_audit`.
   - package-local `tools/list` includes `hardware_evidence_record`.
   - package-local `tools/list` includes `hardware_evidence_status`.
@@ -168,16 +168,16 @@ programming platform work.
   - package-local `arduino_monitor_sample` on a missing port returns
     `isError=true` with the full command and the no-serial-output diagnostic.
   - contains no `._*` AppleDouble files.
-- Windows NSIS packaging is configured to install `reasonix-hardware-mcp.exe`
+- Windows NSIS packaging is configured to install `onecreat-hardware-mcp.exe`
   next to the desktop executable.
 - Windows package verification:
   - `dist/Reasonix-windows-amd64-installer.exe` was built by
     `scripts/desktop-build.sh windows/amd64 windows-package-verify`.
   - `7zz` recognizes the installer as an NSIS archive and extracts it.
-  - extracted payload contains `reasonix-desktop.exe`.
-  - extracted payload contains `reasonix-hardware-mcp.exe`.
-  - extracted `reasonix-hardware-mcp.exe` checksum matches the NSIS payload
-    built at `desktop/build/windows/installer/reasonix-hardware-mcp.exe`.
+  - extracted payload contains `onecreat-desktop.exe`.
+  - extracted payload contains `onecreat-hardware-mcp.exe`.
+  - extracted `onecreat-hardware-mcp.exe` checksum matches the NSIS payload
+    built at `desktop/build/windows/installer/onecreat-hardware-mcp.exe`.
   - `go version -m` confirms the hardware MCP payload is
     `reasonix/cmd/reasonix-hardware-mcp`, `GOOS=windows`, `GOARCH=amd64`.
   - NSIS config uses `$LOCALAPPDATA` per-user install and HKCU uninstall
@@ -186,9 +186,9 @@ programming platform work.
 - Windows native smoke runner:
   - `scripts/windows-native-smoke.ps1` installs the NSIS package silently into a
     temporary per-user directory.
-  - verifies `reasonix-desktop.exe`, `reasonix-hardware-mcp.exe`, and
+  - verifies `onecreat-desktop.exe`, `onecreat-hardware-mcp.exe`, and
     `uninstall.exe` exist after install.
-  - calls bundled `reasonix-hardware-mcp.exe` with `tools/list` and
+  - calls bundled `onecreat-hardware-mcp.exe` with `tools/list` and
     `hardware_detect`.
   - launches the desktop process briefly.
   - runs silent uninstall and checks payload removal.

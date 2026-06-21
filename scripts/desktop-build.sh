@@ -21,7 +21,7 @@ arch="${PLATFORM#*/}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APPNAME="onecreat"            # wails.json productName -> onecreat.app
-BINNAME="reasonix-desktop"    # wails.json outputfilename -> linux binary name
+BINNAME="onecreat-desktop"    # wails.json outputfilename -> linux binary name
 
 cd "$ROOT/desktop"
 
@@ -44,7 +44,7 @@ hardware_ext=""
 # payload must exist before Wails invokes makensis. macOS/Linux package the MCP
 # after Wails finishes.
 if [ "$os" = windows ]; then
-	hardware_installer_payload="build/windows/installer/reasonix-hardware-mcp.exe"
+	hardware_installer_payload="build/windows/installer/onecreat-hardware-mcp.exe"
 	echo "==> building bundled hardware MCP for NSIS -> $hardware_installer_payload"
 	CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "-s -w -X main.version=$VERSION" \
 		-o "$hardware_installer_payload" ../cmd/reasonix-hardware-mcp
@@ -57,7 +57,7 @@ build_args=(-clean -platform "$PLATFORM" -ldflags "-X main.version=$VERSION")
 echo "==> $WAILS build ${build_args[*]}"
 "$WAILS" build "${build_args[@]}"
 
-hardware_bin="build/bin/reasonix-hardware-mcp${hardware_ext}"
+hardware_bin="build/bin/onecreat-hardware-mcp${hardware_ext}"
 if [ "$os" != windows ]; then
 	echo "==> building bundled hardware MCP -> $hardware_bin"
 	CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "-s -w -X main.version=$VERSION" \
@@ -75,8 +75,8 @@ darwin)
 	# users may still need to clear the quarantine attribute (see desktop/README.md).
 	staging=$(mktemp -d)
 	app="$staging/${APPNAME}.app"
-	cp -R "build/bin/reasonix-desktop.app" "$app"
-	cp "$hardware_bin" "$app/Contents/MacOS/reasonix-hardware-mcp"
+	cp -R "build/bin/onecreat-desktop.app" "$app"
+	cp "$hardware_bin" "$app/Contents/MacOS/onecreat-hardware-mcp"
 	find "$app" -name '._*' -delete
 	codesign --force --deep -s - "$app"
 	COPYFILE_DISABLE=1 ditto -c -k --norsrc --noextattr --keepParent "$app" "$ROOT/dist/${APPNAME}-darwin-${arch}.zip"
@@ -90,7 +90,7 @@ windows)
 	cp "$installer" "$ROOT/dist/${APPNAME}-windows-${arch}-installer.exe"
 	;;
 linux)
-	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin "$BINNAME" "reasonix-hardware-mcp"
+	tar -czf "$ROOT/dist/${APPNAME}-linux-${arch}.tar.gz" -C build/bin "$BINNAME" "onecreat-hardware-mcp"
 	;;
 *)
 	echo "unsupported os: $os" >&2

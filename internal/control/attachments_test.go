@@ -17,7 +17,7 @@ func TestSaveImageDataURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveImageDataURL: %v", err)
 	}
-	if !strings.HasPrefix(got, ".reasonix/attachments/clipboard-") || !strings.HasSuffix(got, ".png") {
+	if !strings.HasPrefix(got, ".onecreat/attachments/clipboard-") || !strings.HasSuffix(got, ".png") {
 		t.Fatalf("path = %q, want attachment png path", got)
 	}
 }
@@ -97,7 +97,7 @@ func TestSaveImageFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveImageFile: %v", err)
 	}
-	if !strings.HasPrefix(got, ".reasonix/attachments/clipboard-") || !strings.HasSuffix(got, ".png") {
+	if !strings.HasPrefix(got, ".onecreat/attachments/clipboard-") || !strings.HasSuffix(got, ".png") {
 		t.Fatalf("path = %q, want attachment png path", got)
 	}
 }

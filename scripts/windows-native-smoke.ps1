@@ -112,8 +112,8 @@ try {
     $install = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
     Add-Check "silent install exit code" ($install.ExitCode -eq 0) "exitCode=$($install.ExitCode)"
 
-    $desktopExe = Join-Path $InstallDir "reasonix-desktop.exe"
-    $hardwareExe = Join-Path $InstallDir "reasonix-hardware-mcp.exe"
+    $desktopExe = Join-Path $InstallDir "onecreat-desktop.exe"
+    $hardwareExe = Join-Path $InstallDir "onecreat-hardware-mcp.exe"
     $uninstallExe = Join-Path $InstallDir "uninstall.exe"
     Add-Check "desktop executable installed" (Test-Path $desktopExe) $desktopExe
     Add-Check "hardware MCP executable installed" (Test-Path $hardwareExe) $hardwareExe

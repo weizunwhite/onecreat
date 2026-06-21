@@ -3003,7 +3003,8 @@ func (a *App) rebuildAllTabs() {
 }
 
 func resolveHardwareMCP() (command, source string, err error) {
-	const bin = "reasonix-hardware-mcp"
+	// 新名优先,回退旧名:老安装的 .app 内 / PATH 上可能仍是 reasonix-hardware-mcp(读旧)。
+	bins := []string{"onecreat-hardware-mcp", "reasonix-hardware-mcp"}
 	if override := strings.TrimSpace(os.Getenv("REASONIX_HARDWARE_MCP")); override != "" {
 		if executable(override) {
 			return override, "REASONIX_HARDWARE_MCP", nil
@@ -3012,39 +3013,46 @@ func resolveHardwareMCP() (command, source string, err error) {
 	}
 	if exe, e := os.Executable(); e == nil {
 		exeDir := filepath.Dir(exe)
-		// Dev 模式优先回溯到 repo 根的 bin/(make build 的产物)。
-		// wails dev 的 bundle 是 reasonix-desktop.app(production 是 onecreat.app),
-		// dev bundle 在重建/cp 后路径不稳定,而 repo/bin/ 是稳定的开发期路径。
-		// production 走原 exe-based 路径,这段不会命中。
-		if strings.Contains(exeDir, "reasonix-desktop.app") {
-			// .../desktop/build/bin/reasonix-desktop.app/Contents/MacOS → 回溯 6 层到 repo 根
-			devCandidate := filepath.Join(exeDir, "..", "..", "..", "..", "..", "..", "bin", bin)
-			if executable(devCandidate) {
-				return filepath.Clean(devCandidate), "dev bin", nil
+		// Dev 模式优先回溯到 repo 根的 bin/(make build 的产物)。wails dev 的 bundle 名随
+		// outputfilename(onecreat-desktop;旧版 reasonix-desktop),production 是 onecreat.app
+		// 走下面 exe-based 路径,这段不命中。
+		if strings.Contains(exeDir, "onecreat-desktop.app") || strings.Contains(exeDir, "reasonix-desktop.app") {
+			for _, bin := range bins {
+				// .../desktop/build/bin/<name>.app/Contents/MacOS → 回溯 6 层到 repo 根
+				devCandidate := filepath.Join(exeDir, "..", "..", "..", "..", "..", "..", "bin", bin)
+				if executable(devCandidate) {
+					return filepath.Clean(devCandidate), "dev bin", nil
+				}
 			}
 		}
-		for _, candidate := range []string{
-			filepath.Join(exeDir, bin),
-			filepath.Join(exeDir, bin+".exe"),
-			filepath.Join(exeDir, "..", "Resources", bin),
-			filepath.Join(exeDir, "..", "Resources", bin+".exe"),
-		} {
-			if executable(candidate) {
-				return filepath.Clean(candidate), "app bundle", nil
+		for _, bin := range bins {
+			for _, candidate := range []string{
+				filepath.Join(exeDir, bin),
+				filepath.Join(exeDir, bin+".exe"),
+				filepath.Join(exeDir, "..", "Resources", bin),
+				filepath.Join(exeDir, "..", "Resources", bin+".exe"),
+			} {
+				if executable(candidate) {
+					return filepath.Clean(candidate), "app bundle", nil
+				}
 			}
 		}
 	}
-	if p, e := exec.LookPath(bin); e == nil {
-		return p, "PATH", nil
+	for _, bin := range bins {
+		if p, e := exec.LookPath(bin); e == nil {
+			return p, "PATH", nil
+		}
 	}
 	if cwd, e := os.Getwd(); e == nil {
-		for _, candidate := range []string{
-			filepath.Join(cwd, "bin", bin),
-			filepath.Join(cwd, "..", "bin", bin),
-			filepath.Join(cwd, "..", "..", "bin", bin),
-		} {
-			if executable(candidate) {
-				return filepath.Clean(candidate), "workspace bin", nil
+		for _, bin := range bins {
+			for _, candidate := range []string{
+				filepath.Join(cwd, "bin", bin),
+				filepath.Join(cwd, "..", "bin", bin),
+				filepath.Join(cwd, "..", "..", "bin", bin),
+			} {
+				if executable(candidate) {
+					return filepath.Clean(candidate), "workspace bin", nil
+				}
 			}
 		}
 	}

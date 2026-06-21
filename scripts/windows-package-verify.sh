@@ -40,9 +40,9 @@ mkdir -p "$EXTRACT_DIR"
 7zz x -y "-o$EXTRACT_DIR" "$INSTALLER" >"$RUN_DIR/7zz-extract.log"
 7zz l "$INSTALLER" >"$RUN_DIR/7zz-list.log"
 
-DESKTOP_EXE="$EXTRACT_DIR/reasonix-desktop.exe"
-HARDWARE_EXE="$EXTRACT_DIR/reasonix-hardware-mcp.exe"
-SOURCE_HARDWARE_EXE="$ROOT/desktop/build/windows/installer/reasonix-hardware-mcp.exe"
+DESKTOP_EXE="$EXTRACT_DIR/onecreat-desktop.exe"
+HARDWARE_EXE="$EXTRACT_DIR/onecreat-hardware-mcp.exe"
+SOURCE_HARDWARE_EXE="$ROOT/desktop/build/windows/installer/onecreat-hardware-mcp.exe"
 
 for path in "$DESKTOP_EXE" "$HARDWARE_EXE" "$SOURCE_HARDWARE_EXE"; do
 	test -s "$path" || { echo "missing expected Windows payload: $path" >&2; exit 1; }
@@ -65,8 +65,8 @@ grep -q "GOARCH=$ARCH" "$RUN_DIR/hardware-go-version.txt" || {
 	echo "hardware MCP payload arch mismatch" >&2
 	exit 1
 }
-grep -q 'File "reasonix-hardware-mcp.exe"' "$ROOT/desktop/build/windows/installer/project.nsi" || {
-	echo "NSIS script does not install reasonix-hardware-mcp.exe" >&2
+grep -q 'File "onecreat-hardware-mcp.exe"' "$ROOT/desktop/build/windows/installer/project.nsi" || {
+	echo "NSIS script does not install onecreat-hardware-mcp.exe" >&2
 	exit 1
 }
 grep -q 'InstallDir "$LOCALAPPDATA\\Programs\\${INFO_PRODUCTNAME}"' "$ROOT/desktop/build/windows/installer/project.nsi" || {
@@ -124,12 +124,12 @@ summary = {
         "desktop-build windows installer succeeded",
         "installer recognized as NSIS self-extracting archive",
         "installer extracts with 7zz",
-        "reasonix-desktop.exe is present",
-        "reasonix-hardware-mcp.exe is present",
+        "onecreat-desktop.exe is present",
+        "onecreat-hardware-mcp.exe is present",
         "extracted hardware MCP checksum matches NSIS payload",
         "hardware MCP Go metadata is reasonix/cmd/reasonix-hardware-mcp",
         "hardware MCP Go metadata is GOOS=windows and matching GOARCH",
-        "NSIS installs reasonix-hardware-mcp.exe next to the desktop executable",
+        "NSIS installs onecreat-hardware-mcp.exe next to the desktop executable",
         "NSIS uses LOCALAPPDATA per-user install directory and HKCU uninstall registry",
     ],
     "notVerifiedHere": [

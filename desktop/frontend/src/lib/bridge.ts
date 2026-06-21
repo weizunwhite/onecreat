@@ -372,9 +372,9 @@ function delay(ms: number): Promise<void> {
 
 function makeMockApp(): AppBindings {
   let cancelled = false;
-  let cwd = "~/projects/reasonix"; // mutable so PickWorkspace is visible in dev
+  let cwd = "~/projects/onecreat"; // mutable so PickWorkspace is visible in dev
   let workspaces = [
-    "~/projects/reasonix",
+    "~/projects/onecreat",
     "~/Documents/hardware/esp32_snake_web",
     "~/Documents/hardware/hardware_lessons",
     "~/projects/blade",
@@ -411,9 +411,9 @@ function makeMockApp(): AppBindings {
     { name: "init", description: "Scaffold a ONECREAT.md for this repo", scope: "builtin", runAs: "inline" },
   ];
   let capSkillRoots: SkillRootView[] = [
-    { dir: "~/projects/reasonix/.reasonix/skills", scope: "project", priority: 1, status: "missing", configured: false, skills: 0 },
+    { dir: "~/projects/onecreat/.onecreat/skills", scope: "project", priority: 1, status: "missing", configured: false, skills: 0 },
     { dir: "~/my-skills", scope: "custom", priority: 5, status: "ok", configured: true, skills: 1 },
-    { dir: "~/.reasonix/skills", scope: "global", priority: 6, status: "ok", configured: false, skills: 2 },
+    { dir: "~/.onecreat/skills", scope: "global", priority: 6, status: "ok", configured: false, skills: 2 },
   ];
   const mockSwitchWorkspace = async (path: string) => {
     cwd = path || "~";
@@ -444,7 +444,7 @@ function makeMockApp(): AppBindings {
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
     agent: { temperature: 0.2, maxSteps: 0, systemPrompt: "You are onecreat, a coding agent." },
-    configPath: "~/projects/reasonix/reasonix.toml",
+    configPath: "~/projects/onecreat/onecreat.toml",
     providerKinds: ["openai"],
     bypass: false,
   };
@@ -684,7 +684,7 @@ function makeMockApp(): AppBindings {
     async PickWorkspace() {
       // Browser dev has no native dialog; simulate picking a folder and re-root so
       // the topbar folder chip visibly changes.
-      return mockSwitchWorkspace(cwd.endsWith("another-project") ? "~/projects/reasonix" : "~/projects/another-project");
+      return mockSwitchWorkspace(cwd.endsWith("another-project") ? "~/projects/onecreat" : "~/projects/another-project");
     },
     async BrowseDir(path: string) {
       // 浏览器 dev 模式给一组假目录,方便不在 shell 里也能调界面。
@@ -787,7 +787,7 @@ function makeMockApp(): AppBindings {
       return {
         name: "hardware",
         available: true,
-        command: "reasonix-hardware-mcp",
+        command: "onecreat-hardware-mcp",
         source: "browser mock",
         configured: Boolean(server),
         connected: server?.status === "connected",
@@ -974,7 +974,7 @@ function makeMockApp(): AppBindings {
       return this.AddMCPServer({
         name: "hardware",
         transport: "stdio",
-        command: "reasonix-hardware-mcp",
+        command: "onecreat-hardware-mcp",
         args: [],
         url: "",
         env: {},
@@ -1156,10 +1156,10 @@ function makeMockApp(): AppBindings {
       console.info("mock RevealWorkspacePath", rel);
     },
     async SavePastedImage(_dataUrl: string) {
-      return ".reasonix/attachments/mock.png";
+      return ".onecreat/attachments/mock.png";
     },
     async SavePastedFile(name: string, _dataUrl: string) {
-      return `.reasonix/attachments/mock-${name}`;
+      return `.onecreat/attachments/mock-${name}`;
     },
     async AttachmentDataURL(_path: string) {
       return "data:image/png;base64,iVBORw0KGgo=";
@@ -1180,7 +1180,7 @@ function makeMockApp(): AppBindings {
     async Memory() {
       return {
         available: true,
-        storeDir: "~/.config/reasonix/projects/-mock/memory",
+        storeDir: "~/.config/onecreat/projects/-mock/memory",
         docs: [
           {
             path: "ONECREAT.md",
@@ -1188,7 +1188,7 @@ function makeMockApp(): AppBindings {
             body: "# onecreat project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
           },
           {
-            path: "~/.config/reasonix/ONECREAT.md",
+            path: "~/.config/onecreat/ONECREAT.md",
             scope: "user",
             body: "# User memory\n\nAlways respond in 中文.",
           },
@@ -1202,7 +1202,7 @@ function makeMockApp(): AppBindings {
           },
         ],
         scopes: [
-          { scope: "user", path: "~/.config/reasonix/ONECREAT.md" },
+          { scope: "user", path: "~/.config/onecreat/ONECREAT.md" },
           { scope: "project", path: "ONECREAT.md" },
           { scope: "local", path: "ONECREAT.local.md" },
         ],

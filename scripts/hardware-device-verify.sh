@@ -8,7 +8,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_DIR="${REASONIX_HARDWARE_DEVICE_VERIFY_DIR:-$ROOT/dist/hardware-device-verify-$(date +%Y%m%d-%H%M%S)}"
-MCP="${REASONIX_HARDWARE_MCP:-$ROOT/bin/reasonix-hardware-mcp}"
+MCP="${REASONIX_HARDWARE_MCP:-$ROOT/bin/onecreat-hardware-mcp}"
 
 if [[ ! -x "$MCP" ]]; then
 	echo "==> building hardware MCP -> $MCP"
