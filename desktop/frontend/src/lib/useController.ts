@@ -7,7 +7,6 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { app, onEvent, onReady } from "./bridge";
-import { openFolderPicker } from "./folderPicker";
 import type {
   BalanceInfo,
   ContextInfo,
@@ -701,14 +700,8 @@ export function useController(tabId: string) {
     [refreshWorkspaceState, notice],
   );
 
-  const pickWorkspace = useCallback(async (): Promise<string> => {
-    // 用 app 内置文件夹选择器(绕开 macOS 原生对话框会跑到窗口后面的 bug),
-    // 选好后再走 SwitchWorkspace 重建控制器。
-    const path = await openFolderPicker();
-    if (!path) return refreshWorkspaceState(""); // 取消
-    return doSwitchWorkspace(path);
-  }, [refreshWorkspaceState, doSwitchWorkspace]);
-
+  // 注:文件夹选择 + 多标签确认/关闭都在 App.tsx 的 switchFolder 里处理(那里有 tabs 状态),
+  // 这里只暴露纯粹的「切到指定目录」。
   const switchWorkspace = useCallback(
     (path: string): Promise<string> => doSwitchWorkspace(path),
     [doSwitchWorkspace],
@@ -804,7 +797,6 @@ export function useController(tabId: string) {
     deleteSession,
     renameSession,
     refreshMeta,
-    pickWorkspace,
     switchWorkspace,
     compact,
     rewind,

@@ -71,6 +71,7 @@ import { FolderPicker } from "./components/FolderPicker";
 import { LoginGate } from "./components/LoginGate";
 import { useSession, setSessionStore } from "./lib/account";
 import { ConfirmHost, confirmDialog } from "./lib/confirm";
+import { openFolderPicker } from "./lib/folderPicker";
 import { app, onEvent } from "./lib/bridge";
 import { parseTodos } from "./lib/tools";
 import { useDetailMode, toggleDetailMode } from "./lib/detailMode";
@@ -356,7 +357,6 @@ export default function App() {
     deleteSession,
     renameSession,
     refreshMeta,
-    pickWorkspace,
     switchWorkspace,
     rewind,
 	setModel,
@@ -1009,10 +1009,30 @@ export default function App() {
   // transcript and refreshes meta on a pick; refresh the sidebar sessions too so
   // the recent list belongs to the newly selected workspace. A cancel is a no-op.
   const switchFolder = useCallback(async (path?: string) => {
-    const picked = path === undefined ? await pickWorkspace() : await switchWorkspace(path);
+    // 拿到目标路径(无 path = 弹内置文件夹选择器,绕开 macOS 原生对话框跑窗口后面的 bug)。
+    let target = path;
+    if (target === undefined) {
+      target = await openFolderPicker();
+      if (!target) return ""; // 取消
+    }
+    // 工作目录(cwd)是全进程共享的:开着多个任务标签时切文件夹会让后台标签读写到错目录,
+    // 后端会直接拒绝。这里弹确认 → 自动关掉其它标签(只留当前活动标签)→ 再切。
+    const others = tabs.filter((tb) => tb.id !== activeTabId);
+    if (others.length > 0) {
+      const ok = await confirmDialog({
+        title: "切换项目文件夹",
+        message: `工作目录是全局的,切换前需要先关闭其它 ${others.length} 个任务标签(否则后台任务会读写到错误的目录)。\n\n关闭它们并切换?`,
+        confirmText: "关闭并切换",
+        danger: true,
+      });
+      if (!ok) return "";
+      for (const tb of others) await app.CloseTab(tb.id).catch(() => {});
+      await refreshTabs();
+    }
+    const picked = await switchWorkspace(target);
     if (picked) await refreshSessions();
     return picked;
-  }, [pickWorkspace, switchWorkspace, refreshSessions]);
+  }, [tabs, activeTabId, switchWorkspace, refreshSessions, refreshTabs]);
 
   const onRemember = useCallback(
     async (scope: string, note: string) => {
