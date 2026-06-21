@@ -108,6 +108,84 @@ func TestGatewayModeBlocksProviderMutations(t *testing.T) {
 	}
 }
 
+// 自动续期:access token 快过期(<20min)时用 refresh_token 静默换新,不动 SelectedTier,
+// 并把新 token 写进 ONECREAT_GATEWAY_TOKEN env。
+func TestEnsureFreshTokenRefreshes(t *testing.T) {
+	seedTempConfigDir(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/onecreat/refresh" {
+			http.Error(w, "no", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "token": "NEW", "refresh_token": "RT2", "expires_in": 3600})
+	}))
+	defer srv.Close()
+	t.Setenv("ONECREAT_PLATFORM_URL", srv.URL)
+	t.Setenv(gatewayEnvURL, "")
+	t.Setenv(gatewayEnvToken, "")
+
+	sessionFileMu.Lock()
+	_ = saveSessionFileLocked(persistedSession{Token: "OLD", RefreshToken: "RT1", ExpiresAt: time.Now().Unix() + 5*60, SelectedTier: 2})
+	sessionFileMu.Unlock()
+
+	ensureFreshToken()
+
+	sessionFileMu.Lock()
+	p, ok := loadSessionFileLocked()
+	sessionFileMu.Unlock()
+	if !ok || p.Token != "NEW" {
+		t.Fatalf("token 未续期: %+v", p)
+	}
+	if p.RefreshToken != "RT2" {
+		t.Fatalf("refresh_token 未轮换: %q", p.RefreshToken)
+	}
+	if p.ExpiresAt <= time.Now().Unix()+30*60 {
+		t.Fatalf("ExpiresAt 未推进: %d", p.ExpiresAt)
+	}
+	if p.SelectedTier != 2 {
+		t.Fatalf("续期不应动 SelectedTier: %d", p.SelectedTier)
+	}
+	if os.Getenv(gatewayEnvToken) != "NEW" {
+		t.Fatalf("env token 未更新为新值: %q", os.Getenv(gatewayEnvToken))
+	}
+}
+
+// 还早(离过期 >20min)不刷;没有 refresh_token 也不刷 —— 都不该打 refresh 端点。
+func TestEnsureFreshTokenSkips(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sess persistedSession
+	}{
+		{"还早", persistedSession{Token: "OLD", RefreshToken: "RT1", ExpiresAt: time.Now().Unix() + 60*60}},
+		{"无refresh_token", persistedSession{Token: "OLD", ExpiresAt: time.Now().Unix() - 10}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seedTempConfigDir(t)
+			called := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "token": "NEW"})
+			}))
+			defer srv.Close()
+			t.Setenv("ONECREAT_PLATFORM_URL", srv.URL)
+			sessionFileMu.Lock()
+			_ = saveSessionFileLocked(tc.sess)
+			sessionFileMu.Unlock()
+
+			ensureFreshToken()
+			if called {
+				t.Fatal("不该调用 refresh 端点")
+			}
+			sessionFileMu.Lock()
+			p, _ := loadSessionFileLocked()
+			sessionFileMu.Unlock()
+			if p.Token != "OLD" {
+				t.Fatalf("不该续期,token=%q", p.Token)
+			}
+		})
+	}
+}
+
 // M4:applyGatewayEnvFromSession 按会话设/清网关 env —— 登出清空、登录按档位写 tier-N。
 func TestApplyGatewayEnvFromSession(t *testing.T) {
 	seedTempConfigDir(t)

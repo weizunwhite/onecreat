@@ -190,10 +190,30 @@ func (a *App) buildController() {
 	a.activeTab = "main"
 	a.mu.Unlock()
 
-	// 启动时若已登录,先把网关 env 设好再 buildTab —— 首个 controller 即直接走平台 AI 网关。
+	// 启动时若已登录,先尝试续期(token 快过期则用 refresh_token 换新,避免一开 app 就过期),
+	// 再把网关 env 设好,这样首个 controller 即拿到有效 token、直接走平台 AI 网关。
+	ensureFreshToken()
 	applyGatewayEnvFromSession()
 
 	a.buildTab(rt)
+
+	// 后台定时续期:长时间开着 app 也不会因 access token 过期而掉线。
+	go a.tokenRefreshLoop()
+}
+
+// tokenRefreshLoop 每 10 分钟尝试续期网关 token。ensureFreshToken 内部判断「快过期才真刷」,
+// 所以多数 tick 只是廉价检查;refresh_token 缺失 / 失效时静默跳过。随 app 退出而结束。
+func (a *App) tokenRefreshLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			ensureFreshToken()
+		}
+	}
 }
 
 // buildTab 在一个标签运行时里装配一个独立 controller(boot.Build 可能较慢,所以由

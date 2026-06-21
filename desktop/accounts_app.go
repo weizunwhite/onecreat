@@ -47,6 +47,8 @@ type persistedSession struct {
 	IsAdmin      bool          `json:"isAdmin"`
 	Permissions  []string      `json:"permissions"`
 	Token        string        `json:"token"`
+	RefreshToken string        `json:"refreshToken"` // 长效刷新令牌:access token 快过期时用它静默换新,免重登
+	ExpiresAt    int64         `json:"expiresAt"`    // access token 过期时刻(unix 秒);0=未知
 	Tiers        []AccountTier `json:"tiers"`
 	Points       *float64      `json:"points"`
 	SelectedTier int           `json:"selectedTier"`
@@ -168,14 +170,16 @@ func accountAuthenticate(account, password string) (persistedSession, string) {
 	}
 	defer resp.Body.Close()
 	var r struct {
-		OK       bool          `json:"ok"`
-		Token    string        `json:"token"`
-		Account  string        `json:"account"`
-		IsAdmin  bool          `json:"isAdmin"`
-		Features []string      `json:"features"`
-		Tiers    []AccountTier `json:"tiers"`
-		Points   *float64      `json:"points"`
-		Error    string        `json:"error"`
+		OK           bool          `json:"ok"`
+		Token        string        `json:"token"`
+		RefreshToken string        `json:"refresh_token"`
+		ExpiresIn    int64         `json:"expires_in"` // access token 有效秒数
+		Account      string        `json:"account"`
+		IsAdmin      bool          `json:"isAdmin"`
+		Features     []string      `json:"features"`
+		Tiers        []AccountTier `json:"tiers"`
+		Points       *float64      `json:"points"`
+		Error        string        `json:"error"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
 	if !r.OK || r.Token == "" {
@@ -186,8 +190,80 @@ func accountAuthenticate(account, password string) (persistedSession, string) {
 	}
 	return persistedSession{
 		Account: r.Account, IsAdmin: r.IsAdmin, Permissions: r.Features, Token: r.Token,
+		RefreshToken: r.RefreshToken, ExpiresAt: expiresAtFrom(r.ExpiresIn),
 		Tiers: r.Tiers, Points: r.Points, SelectedTier: 1, // 默认选第一档
 	}, ""
+}
+
+// expiresAtFrom 把「有效秒数」换成 unix 过期时刻;<=0(平台没返回)时回退一个保守值(50 分钟),
+// 让续期逻辑仍能按时触发(Supabase access token 默认 1 小时)。
+func expiresAtFrom(expiresIn int64) int64 {
+	if expiresIn <= 0 {
+		expiresIn = 50 * 60
+	}
+	return time.Now().Unix() + expiresIn
+}
+
+// refreshMu 串行化 token 续期:避免后台 ticker / 启动 / 多处并发刷新导致 refresh_token 轮换
+// 冲突(Supabase refresh token 单次使用、会轮换)。整个续期(含网络)在本锁内,只刷新不阻塞
+// 其它会话操作。
+var refreshMu sync.Mutex
+
+// ensureFreshToken 在网关 access token 快过期时,用 refresh_token 静默换新——用户无需重新登录。
+// 阈值 20 分钟;refresh_token 缺失(未登录 / 老会话)或网络/令牌失效时静默保持原状(到期会有
+// 「请重新登录」提示兜底)。成功后刷新 ONECREAT_GATEWAY_TOKEN env;provider 请求时读 env,
+// 新 token 立即对所有标签生效,无需重建。
+func ensureFreshToken() {
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+
+	sessionFileMu.Lock()
+	p, ok := loadSessionFileLocked()
+	sessionFileMu.Unlock()
+	if !ok || p.RefreshToken == "" {
+		return // 未登录,或老会话没有 refresh_token(需手动重登一次以启用自动续期)
+	}
+	if p.ExpiresAt > 0 && time.Now().Unix() < p.ExpiresAt-20*60 {
+		return // 还早,不刷
+	}
+
+	payload, _ := json.Marshal(map[string]string{"refresh_token": p.RefreshToken})
+	req, err := http.NewRequest(http.MethodPost, platformBaseURL()+"/api/onecreat/refresh", bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return // 网络问题:保持原 token,到期再提示重登
+	}
+	defer resp.Body.Close()
+	var r struct {
+		OK           bool   `json:"ok"`
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	if !r.OK || r.Token == "" {
+		return // refresh_token 失效(太久没用):保持原状,到期提示重登
+	}
+
+	sessionFileMu.Lock()
+	cur, stillIn := loadSessionFileLocked()
+	if stillIn {
+		// 只更新令牌相关字段,其余(SelectedTier/Points 等)用重读到的最新值保留(H3 纪律)。
+		cur.Token = r.Token
+		if r.RefreshToken != "" {
+			cur.RefreshToken = r.RefreshToken
+		}
+		cur.ExpiresAt = expiresAtFrom(r.ExpiresIn)
+		_ = saveSessionFileLocked(cur)
+	}
+	sessionFileMu.Unlock()
+	if stillIn {
+		applyGatewayEnvFromSession() // 把新 token 写进 ONECREAT_GATEWAY_TOKEN
+	}
 }
 
 // AccountLogin 校验账号密码,成功则持久化会话。

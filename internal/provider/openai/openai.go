@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -90,6 +91,17 @@ type client struct {
 
 func (c *client) Name() string { return c.name }
 
+// authKey 返回当前请求要用的 API key。keyEnv 非空时**每次请求都从环境变量读**(而不是用 build
+// 时烤死的值):这样登录 token 续期 / 重新登录后(更新了 env)对所有已建好的 controller 立即
+// 生效,无需重建——对 onecreat 网关 token 的自动续期是关键。静态 key(如 DEEPSEEK_API_KEY)
+// 读 env 也是同一个值,无副作用。keyEnv 为空(直接给的 key)时用 build 时的值。
+func (c *client) authKey() string {
+	if c.keyEnv != "" {
+		return os.Getenv(c.keyEnv)
+	}
+	return c.apiKey
+}
+
 func isDeepSeekBaseURL(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -149,7 +161,7 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 			return nil, fmt.Errorf("%s: build request: %w", c.name, err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		httpReq.Header.Set("Authorization", "Bearer "+c.authKey())
 		httpReq.Header.Set("Accept", "text/event-stream")
 
 		resp, err := c.http.Do(httpReq)
