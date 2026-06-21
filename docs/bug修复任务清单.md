@@ -1,4 +1,4 @@
-# Reasonix Bug 修复任务清单（交付 Opus 4.8 执行）
+# OneCreat Bug 修复任务清单（交付 Opus 4.8 执行）
 
 > 生成日期：2026-06-10
 > 范围：DeepSeek-Reasonix 全项目审查（5 路并行 + 人工复核调用链）
@@ -237,12 +237,12 @@
   3. **加一个回归测试**：构造一个把这些字段都设为非默认的 `Config` → `RenderTOML` → 重新 `Load` → 断言字段一字不差地回来（round-trip 测试）。这是防止以后再漏字段的护栏。
 - **验证**：设 `codegraph.enabled=false` → 跑 `/effort` → 重启 → codegraph 仍关闭、无下载。round-trip 测试绿。
 
-### D2【medium】`.mcp.json` 的服务器条目被永久复制进 reasonix.toml
+### D2【medium】`.mcp.json` 的服务器条目被永久复制进 onecreat.toml
 
 - **位置**：`internal/config/config.go:505`（Load 把 .mcp.json 条目合并进 `cfg.Plugins`，无来源标记）+ `internal/control/controller.go:1215`（AddMCPServer：`config.Load()` → `cfg.Save()`）、`:1343`（RemoveMCPServer 同）
-- **现象**：`Load()` 把 `.mcp.json` 服务器合并进 `cfg.Plugins` 后，Add/Remove 调 `cfg.Save()` 把**所有** plugins（含来自 .mcp.json 的）写进 reasonix.toml。之后 TOML 副本在名字冲突时优先，用户改 `.mcp.json` 被静默遮蔽——与 controller.go:1333 注释（".mcp.json 不是我们能编辑的文件，下次启动会回来"）自相矛盾。
-- **修复**：给 `PluginEntry` 加来源标记（如 `source` 字段：`"toml"` / `"mcp.json"`，**不序列化**到 TOML，仅运行时用）。`Load` 合并 .mcp.json 时标记来源。`RenderTOML`/`Save` 跳过 `source=="mcp.json"` 的条目，不写进 reasonix.toml。
-- **验证**：项目根放 `.mcp.json` → 执行 `/mcp add` 加另一个 server → 检查 reasonix.toml **不含** .mcp.json 里的 server；改 .mcp.json 仍生效。
+- **现象**：`Load()` 把 `.mcp.json` 服务器合并进 `cfg.Plugins` 后，Add/Remove 调 `cfg.Save()` 把**所有** plugins（含来自 .mcp.json 的）写进 onecreat.toml。之后 TOML 副本在名字冲突时优先，用户改 `.mcp.json` 被静默遮蔽——与 controller.go:1333 注释（".mcp.json 不是我们能编辑的文件，下次启动会回来"）自相矛盾。
+- **修复**：给 `PluginEntry` 加来源标记（如 `source` 字段：`"toml"` / `"mcp.json"`，**不序列化**到 TOML，仅运行时用）。`Load` 合并 .mcp.json 时标记来源。`RenderTOML`/`Save` 跳过 `source=="mcp.json"` 的条目，不写进 onecreat.toml。
+- **验证**：项目根放 `.mcp.json` → 执行 `/mcp add` 加另一个 server → 检查 onecreat.toml **不含** .mcp.json 里的 server；改 .mcp.json 仍生效。
 
 ---
 

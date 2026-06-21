@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="Reasonix" width="640"/>
+  <img src="docs/logo.svg" alt="OneCreat" width="640"/>
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 </p>
 
 > [!IMPORTANT]
-> **Reasonix 1.0 is a ground-up rewrite in Go** — this branch (`main-v2`) is the new default and where development happens now.
+> **OneCreat 1.0 is a ground-up rewrite in Go** — this branch (`main-v2`) is the new default and where development happens now.
 > The earlier `0.x` TypeScript releases are **legacy**, living on the [`v1`](https://github.com/esengine/DeepSeek-Reasonix/tree/v1) branch (maintenance only).
 > See the **[migration guide](./docs/MIGRATING.md)**. `npm i -g reasonix` stays the install command — `1.0.0`+ delivers the Go binary, `0.x` is the legacy TS build. (Heads-up: 1.0.0 isn't on npm yet — build from source meanwhile.)
 
@@ -52,7 +52,7 @@
 ## Features
 
 - **Config-driven.** Providers, the agent, enabled tools, and plugins are all
-  declared in `reasonix.toml`. No hardcoded models.
+  declared in `onecreat.toml`. No hardcoded models.
 - **Multi-model & composable.** DeepSeek (flash/pro) and MiMo ship as presets;
   any OpenAI-compatible endpoint is a config entry, not new code. Optionally run
   two models together (executor + planner) in separate, cache-stable sessions.
@@ -71,7 +71,7 @@ make cross      # -> dist/ (darwin|linux|windows × amd64|arm64)
 ## Quick start
 
 ```sh
-reasonix setup                      # config wizard → ./reasonix.toml
+reasonix setup                      # config wizard → ./onecreat.toml
 export DEEPSEEK_API_KEY=sk-...  # or put it in .env (see .env.example)
 reasonix chat                       # then run /init to generate AGENTS.md (project memory)
 reasonix run "implement the TODOs in main.go"
@@ -81,7 +81,7 @@ echo "explain this code" | reasonix run
 
 ## Configuration
 
-Resolution order: **flag > `./reasonix.toml` > `~/.config/reasonix/config.toml` >
+Resolution order: **flag > `./onecreat.toml` > `~/.config/onecreat/config.toml` >
 built-in defaults**. Secrets come from the environment via `api_key_env` and are
 never stored in config files.
 
@@ -138,7 +138,7 @@ is set. Other platforms fall back to running unconfined for now (see
 
 ### Plugins (MCP)
 
-Reasonix is an MCP client. A `[[plugins]]` entry's `type` selects the transport:
+OneCreat is an MCP client. A `[[plugins]]` entry's `type` selects the transport:
 `stdio` (default) launches a local subprocess (`command`/`args`/`env`); `http`
 (Streamable HTTP) connects to a remote `url` with optional static `headers`
 (`${VAR}` / `${VAR:-default}` expanded from the environment, so tokens stay out
@@ -165,10 +165,10 @@ url     = "https://mcp.stripe.com"
 headers = { Authorization = "Bearer ${STRIPE_KEY}" }
 ```
 
-**Already have an `.mcp.json`?** Drop it in the project root and Reasonix
+**Already have an `.mcp.json`?** Drop it in the project root and OneCreat
 reads it as-is — the `mcpServers` spec (`command`/`args`/`env`, `type`/`url`/
 `headers`, `${VAR}` expansion) maps field-for-field onto `[[plugins]]`. Both
-sources are merged; on a name collision `reasonix.toml` wins.
+sources are merged; on a name collision `onecreat.toml` wins.
 
 ```json
 {
@@ -186,7 +186,7 @@ In `reasonix chat`, built-in commands (`/compact`, `/new`, `/rewind`, `/tree`,
 `/tree` shows saved conversation branches, `/branch [name]` forks the current
 conversation tip, `/branch <turn> [name]` forks from an earlier checkpointed turn,
 and `/switch <id|name>` loads another branch. **Custom commands** are Markdown files under
-`.reasonix/commands/` (project) or `~/.config/reasonix/commands/` (user) —
+`.onecreat/commands/` (project) or `~/.config/onecreat/commands/` (user) —
 `review.md` becomes `/review`, a subdirectory namespaces it (`git/commit.md` →
 `/git:commit`). The body is a prompt template; invoking the command sends it as a
 turn.
@@ -204,7 +204,7 @@ MCP prompts also appear here as `/mcp__<server>__<prompt>`.
 
 ### @ references
 
-Embed `@` references in a message and Reasonix resolves them before sending, as
+Embed `@` references in a message and OneCreat resolves them before sending, as
 tagged context blocks: `@path/to/file` (or `@dir`) injects a local file's
 contents (or a directory listing), and `@<server>:<uri>` injects an MCP
 resource. A local path is only treated as a reference when it actually exists,
@@ -229,7 +229,7 @@ run them on another configured model, or use `subagent_models` to override only
 specific skills such as `review` or `security_review`.
 
 For interactive frontends, `agent.auto_plan = "ask"` makes complex-looking tasks
-enter plan mode automatically: Reasonix first drafts a read-only plan, then waits
+enter plan mode automatically: OneCreat first drafts a read-only plan, then waits
 for approval before editing or running side-effecting commands. `auto_plan_classifier`
 can name a cheap provider such as `deepseek-flash`; it is only called for
 borderline inputs and falls back to the heuristic if classification fails.
@@ -262,7 +262,7 @@ rules hard-block everywhere), a **workspace sandbox** confining file-writers to
 the project (symlink/`..`-safe), an MCP client — **stdio + Streamable HTTP**
 transports, tools (`mcp__server__tool`, `readOnlyHint`-aware), prompts (slash
 commands), resources (`@`-references), and `/mcp`, configured via `[[plugins]]`
-or a project `.mcp.json` — custom slash commands (`.reasonix/commands/*.md`),
+or a project `.mcp.json` — custom slash commands (`.onecreat/commands/*.md`),
 `@file` / `@resource` references, plus a runnable reference plugin
 (`cmd/reasonix-plugin-example`), the harness loop, and CLI. A Wails desktop
 client (`desktop/`) drives the same kernel. Next: an OS-level sandbox for `bash`
@@ -285,7 +285,7 @@ legacy SSE. See `docs/SPEC.md` §9.
 
 ## Support
 
-If Reasonix has been useful and you'd like to say thanks, you can. It stays a coffee, not a contract — donations don't buy feature priority or change how issues get triaged.
+If OneCreat has been useful and you'd like to say thanks, you can. It stays a coffee, not a contract — donations don't buy feature priority or change how issues get triaged.
 
 - **International** — PayPal: [paypal.me/yuhuahui](https://paypal.me/yuhuahui)
 - **国内** — 微信支付（扫码）
@@ -298,7 +298,7 @@ If Reasonix has been useful and you'd like to say thanks, you can. It stays a co
 
 ## Acknowledgments
 
-A small list of folks whose work has shaped Reasonix the most — measured
+A small list of folks whose work has shaped OneCreat the most — measured
 by both commit count and code volume. **Listed alphabetically, no ordering
 of importance.** The full contributor graph is on
 [GitHub](https://github.com/esengine/DeepSeek-Reasonix/graphs/contributors).

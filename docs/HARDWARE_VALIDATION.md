@@ -2,7 +2,7 @@
 
 Date: 2026-06-03 (local machine, Asia/Shanghai)
 
-This document records the current verification status for the Reasonix hardware
+This document records the current verification status for the OneCreat hardware
 programming platform work.
 
 ## Verified
@@ -85,13 +85,13 @@ programming platform work.
 - Bundled `onecreat-hardware-mcp` responds to `hardware_detect`.
 - Installed `/Applications/OneCreat.app` now contains the hardware platform
   build:
-  - bundle name: `Reasonix`
+  - bundle name: `OneCreat`
   - bundle identifier: `dev.reasonix.desktop`
   - executable: `/Applications/OneCreat.app/Contents/MacOS/onecreat-desktop`
   - bundled MCP: `/Applications/OneCreat.app/Contents/MacOS/onecreat-hardware-mcp`
   - `codesign --verify --deep --strict --verbose=2 /Applications/OneCreat.app`
     passed.
-  - CoreGraphics reports the Reasonix window onscreen at `1240 x 720`.
+  - CoreGraphics reports the OneCreat window onscreen at `1240 x 720`.
   - The visible sidebar includes the `硬件` entry.
   - screenshot: `dist/reasonix-installed-current-window-20260603.png`
 - `hardware_project_audit` checks generated projects for manifest, wiring guide,
@@ -130,7 +130,7 @@ programming platform work.
     status `hardware_pending`, `currentRecordCount=1`, `staleRecordCount=4`,
     missing `device_upload` and `runtime_log`.
 - Installed `/Applications/OneCreat.app` package-local MCP checks:
-  - has bundle name `Reasonix`.
+  - has bundle name `OneCreat`.
   - has bundle identifier `dev.reasonix.desktop`.
   - is running from `/Applications/OneCreat.app/Contents/MacOS/onecreat-desktop`.
   - contains `onecreat-hardware-mcp`, which responds to MCP `tools/list`.
@@ -171,7 +171,7 @@ programming platform work.
 - Windows NSIS packaging is configured to install `onecreat-hardware-mcp.exe`
   next to the desktop executable.
 - Windows package verification:
-  - `dist/Reasonix-windows-amd64-installer.exe` was built by
+  - `dist/OneCreat-windows-amd64-installer.exe` was built by
     `scripts/desktop-build.sh windows/amd64 windows-package-verify`.
   - `7zz` recognizes the installer as an NSIS archive and extracts it.
   - extracted payload contains `onecreat-desktop.exe`.
@@ -330,11 +330,11 @@ dist/hardware-verify-20260603-103946/summary.json
 
 ## ESP-IDF Official MCP
 
-`esp_idf_mcp_config` generated Reasonix `.mcp.json` and `reasonix.toml`
+`esp_idf_mcp_config` generated OneCreat `.mcp.json` and `onecreat.toml`
 snippets for the generated ESP-IDF scaffold.
 
 The official ESP-IDF MCP server was started from the generated ESP-IDF project
-with the Reasonix local ESP-IDF wrapper. Verified results:
+with the OneCreat local ESP-IDF wrapper. Verified results:
 
 - `list_tools` returned:
   - `build_project`

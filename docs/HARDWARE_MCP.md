@@ -1,7 +1,7 @@
-# Reasonix Hardware MCP
+# OneCreat Hardware MCP
 
 `onecreat-hardware-mcp` is a first-pass hardware programming tool server for
-Reasonix. It adds structured tools for AI hardware teaching workflows:
+OneCreat. It adds structured tools for AI hardware teaching workflows:
 
 - local toolchain and serial-port detection
 - teaching-friendly project scaffolds
@@ -29,7 +29,7 @@ The hardware MCP binary is generated at:
 bin/onecreat-hardware-mcp
 ```
 
-## Configure Reasonix
+## Configure OneCreat
 
 The macOS desktop package installs the hardware-enabled app as
 `/Applications/OneCreat.app`. In the desktop app, open **硬件** from the left
@@ -41,7 +41,7 @@ order:
 3. `onecreat-hardware-mcp` on `PATH`
 4. local `bin/onecreat-hardware-mcp` during development
 
-Add this to `reasonix.toml`:
+Add this to `onecreat.toml`:
 
 ```toml
 [[plugins]]
@@ -117,7 +117,7 @@ args = ["-C", "/path/to/project", "mcp-server"]
 
 ## Slash Commands
 
-Project commands are available under `.reasonix/commands/hardware/`:
+Project commands are available under `.onecreat/commands/hardware/`:
 
 - `/hardware:init`
 - `/hardware:plan`
@@ -126,7 +126,7 @@ Project commands are available under `.reasonix/commands/hardware/`:
 - `/hardware:review`
 
 They are prompt workflows. The actual device operations are exposed through the
-MCP tools, so they remain permission-gated by Reasonix.
+MCP tools, so they remain permission-gated by OneCreat.
 
 ## Automatic Validation
 
@@ -273,7 +273,7 @@ To verify the Windows installer packaging layer, run:
 make windows-package-verify
 ```
 
-This builds `dist/Reasonix-windows-amd64-installer.exe`, extracts it with
+This builds `dist/OneCreat-windows-amd64-installer.exe`, extracts it with
 `7zz`, checks that `onecreat-desktop.exe` and `onecreat-hardware-mcp.exe` are
 both present, verifies the hardware MCP Go metadata, and checks that the NSIS
 script installs the hardware MCP into the per-user install directory. A native
@@ -284,7 +284,7 @@ On a native Windows runner or VM, run:
 
 ```powershell
 scripts/windows-native-smoke.ps1 `
-  -InstallerPath "dist/Reasonix-windows-amd64-installer.exe" `
+  -InstallerPath "dist/OneCreat-windows-amd64-installer.exe" `
   -SummaryPath "$env:RUNNER_TEMP/windows-native-smoke-summary.json"
 ```
 

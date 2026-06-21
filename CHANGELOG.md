@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Go line (Reasonix 1.0+) are recorded here. The legacy
+All notable changes to the Go line (OneCreat 1.0+) are recorded here. The legacy
 `0.x` TypeScript history lives on the [`v1`](https://github.com/esengine/DeepSeek-Reasonix/tree/v1)
 branch.
 

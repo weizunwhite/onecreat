@@ -1,12 +1,12 @@
-# Migrating to Reasonix 1.0 (the Go rewrite)
+# Migrating to OneCreat 1.0 (the Go rewrite)
 
-Reasonix 1.0 is a **ground-up rewrite in Go**. It is a new codebase, not an
+OneCreat 1.0 is a **ground-up rewrite in Go**. It is a new codebase, not an
 incremental upgrade of the `0.x` TypeScript releases. This guide explains what
 changed and how to move over.
 
 ## TL;DR
 
-| | Legacy (v1) | Reasonix 1.0+ (v2) |
+| | Legacy (v1) | OneCreat 1.0+ (v2) |
 |---|---|---|
 | Language | TypeScript / Node | Go |
 | Branch | [`v1`](https://github.com/esengine/DeepSeek-Reasonix/tree/v1) (maintenance only) | `main-v2` (default, active) |
@@ -41,12 +41,12 @@ TypeScript build — build from source (above) for the Go version meanwhile.
 
 ## Configuration
 
-| Legacy | Reasonix 1.0 |
+| Legacy | OneCreat 1.0 |
 |---|---|
-| TS config files | `reasonix.toml` (project) / `~/.config/reasonix/config.toml` (user) — see `reasonix.example.toml` |
+| TS config files | `onecreat.toml` (project) / `~/.config/onecreat/config.toml` (user) — see `onecreat.example.toml` |
 | env / API keys | `.env` or the environment (`DEEPSEEK_API_KEY`, `MIMO_API_KEY`, …) via `api_key_env` |
 | project memory | `REASONIX.md` (+ auto-memory), Claude-Code-compatible |
-| MCP servers | `[[plugins]]` in `reasonix.toml`, or a Claude-Code `.mcp.json` (read as-is) |
+| MCP servers | `[[plugins]]` in `onecreat.toml`, or a Claude-Code `.mcp.json` (read as-is) |
 
 ## What's the same
 
@@ -67,7 +67,7 @@ and DeepSeek prefix-cache–oriented design.
 
 ## File encoding
 
-Reasonix 1.0 supports reading and editing files in UTF-8, UTF-8 BOM, UTF-16
+OneCreat 1.0 supports reading and editing files in UTF-8, UTF-8 BOM, UTF-16
 LE/BE, and GB18030 (a superset of GBK). This matches v1's behavior.
 
 - `read_file` decodes any supported encoding to UTF-8 for the model.
