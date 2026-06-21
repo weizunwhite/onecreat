@@ -2858,6 +2858,11 @@ func (a *App) SetModel(name string) error {
 	if a.ctx == nil || name == "" {
 		return nil
 	}
+	// 网关模式下模型由平台统一分配,拒绝本地切模型(H4 兜底;前端 ModelSwitcher 在网关模式
+	// 已不暴露真实模型,这里防直接调 IPC 绕过)。档位切换走 SetOnecreatTier,不经这里。
+	if gatewayActive() {
+		return errGatewayManaged
+	}
 	// 固定「发起切换时的活动标签」+ 它自己的 sink:boot.Build 是秒级操作,期间用户可能
 	// 切走 activeTab。build 完成后只回写这个标签,并用它的 sink 绑定新 controller,避免
 	// 新 controller 装进错误标签、事件串到别的标签通道(A5)。

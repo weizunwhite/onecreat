@@ -77,6 +77,17 @@ const (
 	gatewayEnvTier  = "ONECREAT_TIER" // 选中档位 "tier-1/2/3";boot 用它覆盖网关 provider 的 model
 )
 
+// gatewayActive 报告当前是否处于「onecreat 网关模式」(已登录、AI 走平台网关)。判据是
+// applyGatewayEnvFromSession 设的网关 URL env 是否存在。此模式下 provider / 模型 / 密钥由平台
+// 统一分配,客户端不得再自行改 —— 否则可加一个自带 key 的非网关 provider 完全绕开网关与计量
+// (H4)。前端已隐藏相关设置入口,这是后端兜底(防 devtools / 直接调 IPC 绕过)。
+func gatewayActive() bool {
+	return strings.TrimSpace(os.Getenv(gatewayEnvURL)) != ""
+}
+
+// errGatewayManaged 是网关模式下拒绝本地改 provider/模型/key 时返回的统一错误。
+var errGatewayManaged = fmt.Errorf("已登录账号:AI 由平台统一分配,无法在本地修改模型 / 服务商 / 密钥(如需自配请先退出登录)")
+
 // sessionFileMu 串行化对 session.json 的所有读-改-写。session.json 是单文件(每个系统用户
 // 一份):切档(SetOnecreatTier)与每轮结束触发的 RefreshAccountSession 会并发读改写它。无锁
 // 时 refresh 会把「进入时读到的旧 SelectedTier」连同整个结构体回写,覆盖掉用户刚切的新档

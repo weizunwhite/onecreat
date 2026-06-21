@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -77,6 +78,33 @@ func TestSetOnecreatTierClampsAndPersists(t *testing.T) {
 	a.SetOnecreatTier(0) // 越界:忽略,保持 2
 	if got := a.AccountSessionInfo().SelectedTier; got != 2 {
 		t.Fatalf("越界档位(0)应被忽略,tier=%d,想要 2", got)
+	}
+}
+
+// H4(客户端侧):网关模式下,本地改 provider / 模型 / key 必须被后端拒绝 —— 否则登录用户
+// 可加一个自带 key 的非网关 provider 完全绕开网关与计量。前端已隐藏 UI,这是后端兜底。
+func TestGatewayModeBlocksProviderMutations(t *testing.T) {
+	seedTempConfigDir(t)
+	// 未登录:守卫不激活。
+	t.Setenv(gatewayEnvURL, "")
+	if gatewayActive() {
+		t.Fatal("无网关 env 时 gatewayActive 应为 false")
+	}
+	// 网关模式(登录):provider / 模型 / key 改动全部被拒。
+	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
+	a := &App{ctx: context.Background()}
+	checks := map[string]error{
+		"SaveProvider":    a.SaveProvider(ProviderView{Name: "evil", Kind: "anthropic"}),
+		"SetProviderKey":  a.SetProviderKey("ANTHROPIC_API_KEY", "sk-x"),
+		"SetDefaultModel": a.SetDefaultModel("anthropic/claude"),
+		"SetPlannerModel": a.SetPlannerModel("anthropic/claude"),
+		"DeleteProvider":  a.DeleteProvider("deepseek"),
+		"SetModel":        a.SetModel("anthropic/claude"),
+	}
+	for name, err := range checks {
+		if err != errGatewayManaged {
+			t.Errorf("%s 网关模式应返回 errGatewayManaged,得到 %v", name, err)
+		}
 	}
 }
 
