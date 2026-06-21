@@ -1511,7 +1511,13 @@ export default function App() {
               <span className="topbar__title">
                 {state.meta?.cwd ? cwdFolderLabel(state.meta.cwd) : "onecreat"}
               </span>
-              <span className="topbar__model">{state.meta?.label ?? "…"}</span>
+              {/* 网关模式(已登录)只显示档位名,绝不显示真实模型 / planner 名(label 形如
+                  "tier-1 + planner deepseek-..."),与底栏档位切换器一致。 */}
+              <span className="topbar__model">
+                {session?.loggedIn
+                  ? (session.tiers?.find((tr) => tr.index === session.selectedTier)?.name ?? "智能")
+                  : (state.meta?.label ?? "…")}
+              </span>
             </div>
             {/* P1 翻面：顶部不再并列「对话 | 硬件编程」双 tab。对话是唯一主视图，
                 硬件工作台改为从首页「硬件项目」卡或侧栏按钮按需打开。 */}

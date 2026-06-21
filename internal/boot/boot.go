@@ -437,9 +437,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	label := entry.Model
 	var classifier *control.ProviderAutoPlanClassifier
 
+	// onecreat 网关模式下禁用客户端双模型/分类器:平台统一控制模型(档位),客户端再配一个
+	// planner / classifier 没有意义 —— 它们不走网关(applyOnecreatGateway 只改写主 provider),
+	// 会(1)在阶段标记/顶栏 label 里泄露真实模型名,(2)直连厂商绕过网关计量(或无 key 失败)。
+	gatewayActive := onecreatGatewayActive()
+
 	// Two-model collaboration: a distinct planner_model wraps the executor in a
 	// Coordinator with its own session, kept separate for cache stability.
-	if pm := cfg.Agent.PlannerModel; pm != "" {
+	if pm := cfg.Agent.PlannerModel; pm != "" && !gatewayActive {
 		pe, ok := cfg.ResolveModel(pm)
 		if !ok {
 			return nil, fmt.Errorf("planner_model %q is not a configured provider", pm)
@@ -454,7 +459,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			label = entry.Model + " + planner " + pe.Model
 		}
 	}
-	if !strings.EqualFold(strings.TrimSpace(cfg.Agent.AutoPlan), "off") && cfg.Agent.AutoPlanClassifier != "" {
+	if !strings.EqualFold(strings.TrimSpace(cfg.Agent.AutoPlan), "off") && cfg.Agent.AutoPlanClassifier != "" && !gatewayActive {
 		cm := cfg.Agent.AutoPlanClassifier
 		ce, ok := cfg.ResolveModel(cm)
 		if !ok {
@@ -539,6 +544,11 @@ func subagentModelKeys(name string) []string {
 		}
 	}
 	return keys
+}
+
+// onecreatGatewayActive 报告当前是否处于 onecreat 网关模式(桌面端登录后会设这个 env)。
+func onecreatGatewayActive() bool {
+	return strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL")) != ""
 }
 
 // applyOnecreatGateway 在「onecreat 网关模式」下改写已解析的 provider entry:BaseURL 指向
