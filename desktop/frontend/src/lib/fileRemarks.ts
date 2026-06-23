@@ -6,7 +6,7 @@ const pathRemarks: Record<string, string> = {
   "sdkconfig.defaults": "ESP-IDF 默认配置",
   "partitions.csv": "ESP32 分区表",
   "requirements.txt": "Python 依赖清单",
-  "reasonix.toml": "onecreat 配置文件",
+  "reasonix.toml": "OneCreat 配置文件",
   "AGENTS.md": "智能体协作指令",
   "agents.md": "智能体协作指令",
   "CLAUDE.md": "Claude Code 指令",

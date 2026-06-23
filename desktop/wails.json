@@ -7,10 +7,10 @@
   "frontend:dev:watcher": "pnpm dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "onecreat"
+    "name": "OneCreat"
   },
   "info": {
-    "productName": "onecreat",
-    "comments": "onecreat desktop — a Wails shell around the Go kernel."
+    "productName": "OneCreat",
+    "comments": "OneCreat desktop — a Wails shell around the Go kernel."
   }
 }

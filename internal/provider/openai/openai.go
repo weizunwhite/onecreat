@@ -186,6 +186,12 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 		// A rejected key is a configuration problem, not a transient one — give
 		// an actionable error instead of dumping the raw status body.
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			if c.keyEnv == "ONECREAT_GATEWAY_TOKEN" {
+				if message := openAIErrorMessage(msg); message != "" {
+					return nil, fmt.Errorf("%s: %s", c.name, message)
+				}
+				return nil, fmt.Errorf("%s: 登录已失效,请在 onecreat 重新登录", c.name)
+			}
 			return nil, &provider.AuthError{Provider: c.name, KeyEnv: c.keyEnv, Status: resp.StatusCode}
 		}
 		statusErr := fmt.Errorf("%s: status %d: %s", c.name, resp.StatusCode, strings.TrimSpace(string(msg)))
@@ -195,6 +201,18 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 		lastErr = statusErr
 	}
 	return nil, lastErr
+}
+
+func openAIErrorMessage(body []byte) string {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Error.Message)
 }
 
 // isRetryableStatus returns true for HTTP status codes a transient backoff can

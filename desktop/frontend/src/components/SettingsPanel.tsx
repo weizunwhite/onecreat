@@ -32,7 +32,7 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
   const [err, setErr] = useState<string | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
-  // 网关模式(已登录,AI 由平台统一分配)隐藏「模型 / 模型服务」——客户端不自己配 key/模型。
+  // 本地 API 模式显示「模型 / 模型服务」;平台账号登录后才隐藏它们,改由平台统一分配。
   const session = useSession();
   const gatewayMode = !!session?.loggedIn;
   const visibleTabs = gatewayMode

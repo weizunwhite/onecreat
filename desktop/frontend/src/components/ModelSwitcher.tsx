@@ -6,8 +6,8 @@ import { useSession, setSessionStore } from "../lib/account";
 import type { ModelInfo } from "../lib/types";
 
 // ModelSwitcher is the bottom-of-window picker. Two modes:
-//  - 普通(未登录/无档位):列出 config 里的模型,切换模型(原行为)。
-//  - 网关订阅模式(已登录且平台配了档位):显示「档位」(标准/高级/旗舰)+ 剩余点数,
+//  - 本地 API 模式(未登录):列出 config 里的模型,切换模型。
+//  - 平台网关模式(已登录且平台配了档位):显示「档位」(标准/高级/旗舰)+ 剩余点数,
 //    用户不知道背后是什么模型;切换调 SetOnecreatTier,由平台把档位映射到模型。
 export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name: string) => void }) {
   const t = useT();
@@ -15,7 +15,7 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
 
-  // 登录即走平台网关(API 由平台统一分配),与 SettingsPanel 的 gatewayMode 谓词保持一致。
+  // 只有平台账号登录后才走网关(API 由平台统一分配),与 SettingsPanel 的 gatewayMode 谓词保持一致。
   const gatewayMode = !!session?.loggedIn;
   const tierMode = gatewayMode && (session?.tiers?.length ?? 0) > 0;
 

@@ -190,15 +190,19 @@ func (a *App) buildController() {
 	a.activeTab = "main"
 	a.mu.Unlock()
 
-	// 启动时若已登录,先尝试续期(token 快过期则用 refresh_token 换新,避免一开 app 就过期),
-	// 再把网关 env 设好,这样首个 controller 即拿到有效 token、直接走平台 AI 网关。
-	ensureFreshToken()
+	// 默认 local-first:清掉任何旧网关 env,让首个 controller 使用本地 provider/API key。
+	// 只有显式 ONECREAT_ACCOUNT_MODE=platform 时才续期并改走平台 AI 网关。
+	if platformAccountEnabled() {
+		ensureFreshToken()
+	}
 	applyGatewayEnvFromSession()
 
 	a.buildTab(rt)
 
-	// 后台定时续期:长时间开着 app 也不会因 access token 过期而掉线。
-	go a.tokenRefreshLoop()
+	if platformAccountEnabled() {
+		// 后台定时续期:长时间开着 app 也不会因 access token 过期而掉线。
+		go a.tokenRefreshLoop()
+	}
 }
 
 // tokenRefreshLoop 每 10 分钟尝试续期网关 token。ensureFreshToken 内部判断「快过期才真刷」,
@@ -434,10 +438,19 @@ func (a *App) ctrlForTab(tabID string) *control.Controller {
 	return nil
 }
 
+func isGatewayManagedSlash(trimmed string) bool {
+	return trimmed == "/model" || strings.HasPrefix(trimmed, "/model ") ||
+		trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ")
+}
+
 // Submit runs raw user input as a turn; slash commands and @-references are
 // resolved by the controller. Output arrives asynchronously on eventChannel.
 func (a *App) Submit(input string) {
 	trimmed := strings.TrimSpace(input)
+	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
+		return
+	}
 	if trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ") {
 		a.runEffortCommand(trimmed)
 		return
@@ -453,6 +466,11 @@ func (a *App) Submit(input string) {
 // SubmitDisplay runs input as a turn while recording a shorter UI-only display
 // string for the saved desktop transcript. The model still receives input.
 func (a *App) SubmitDisplay(display, input string) {
+	trimmed := strings.TrimSpace(input)
+	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
+		return
+	}
 	// 取一次 ctrl 局部变量后全程用它,消除「检查与 Submit 之间 controller 被换/Close」
 	// 的 TOCTOU 数据竞争(A9)。SubmitDisplay 是知识库增强与硬件面板提交的主路径,频繁调用。
 	a.mu.RLock()
@@ -1112,6 +1130,9 @@ func (a *App) Meta() Meta {
 	ready := a.ready
 	ctrl := a.ctrl
 	a.mu.RUnlock()
+	if gatewayActive() {
+		label = "OneCreat 智能档位"
+	}
 	cwd, _ := os.Getwd()
 	return Meta{
 		Label:        label,
@@ -1157,14 +1178,20 @@ func (a *App) Commands() []CommandInfo {
 	out := []CommandInfo{
 		{Name: "new", Description: i18n.M.CmdNew, Kind: "builtin"},
 		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin"},
-		{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin"},
-		{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin"},
-		{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin"},
-		{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin"},
-		{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin"},
-		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
-		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
 	}
+	if !gatewayActive() {
+		out = append(out,
+			CommandInfo{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin"},
+			CommandInfo{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin"},
+		)
+	}
+	out = append(out,
+		CommandInfo{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin"},
+		CommandInfo{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin"},
+		CommandInfo{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin"},
+		CommandInfo{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
+		CommandInfo{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
+	)
 	a.mu.RLock()
 	ctrl := a.ctrl
 	a.mu.RUnlock()
@@ -1210,6 +1237,9 @@ type SlashArgsResult struct {
 // /skill, /hooks) for the composer — the same logic the chat TUI uses. Empty
 // Items means the input has no structured arguments to complete.
 func (a *App) SlashArgs(input string) SlashArgsResult {
+	if gatewayActive() && isGatewayManagedSlash(strings.TrimSpace(input)) {
+		return SlashArgsResult{Items: []SlashArgItem{}}
+	}
 	a.mu.RLock()
 	ctrl := a.ctrl
 	model := a.model
@@ -1221,8 +1251,10 @@ func (a *App) SlashArgs(input string) SlashArgsResult {
 		Skills:       ctrl.Skills(),
 		CurrentModel: model,
 	}
-	for _, m := range a.Models() {
-		data.ModelRefs = append(data.ModelRefs, m.Ref)
+	if !gatewayActive() {
+		for _, m := range a.Models() {
+			data.ModelRefs = append(data.ModelRefs, m.Ref)
+		}
 	}
 	if h := ctrl.Host(); h != nil {
 		data.ServerNames = h.ServerNames()
@@ -2849,6 +2881,9 @@ type EffortInfo struct {
 // providers are skipped. Result is non-nil: the frontend reads .length, so a nil
 // slice (JSON null) would crash the switcher on an empty list.
 func (a *App) Models() []ModelInfo {
+	if gatewayActive() {
+		return []ModelInfo{}
+	}
 	a.mu.RLock()
 	curModel := a.model
 	a.mu.RUnlock()

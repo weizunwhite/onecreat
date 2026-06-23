@@ -68,7 +68,6 @@ import { KnowledgePanel } from "./components/KnowledgePanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
 import { FolderPicker } from "./components/FolderPicker";
-import { LoginGate } from "./components/LoginGate";
 import { useSession, setSessionStore } from "./lib/account";
 import { ConfirmHost, confirmDialog } from "./lib/confirm";
 import { openFolderPicker } from "./lib/folderPicker";
@@ -175,6 +174,42 @@ function saveKnowledgeEnabled(on: boolean): void {
   } catch {
     /* ignore */
   }
+}
+
+function shouldBypassAutoKnowledge(rawText: string): boolean {
+  const compact = rawText
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[。！？!?，,；;：:.、]/g, "");
+
+  if (!compact || compact.length > 18) return false;
+
+  const exactFollowUps = new Set([
+    "上传",
+    "直接上传",
+    "帮我上传",
+    "你帮我上传",
+    "你直接帮我上传",
+    "烧录",
+    "直接烧录",
+    "帮我烧录",
+    "运行",
+    "直接运行",
+    "编译",
+    "验证",
+    "继续",
+    "可以",
+    "好的",
+    "重试",
+    "再试一次",
+  ]);
+  if (exactFollowUps.has(compact)) return true;
+
+  if (/^(你)?(直接)?(帮我)?(上传|烧录|运行|编译|验证|调试|继续|重试)(一下|下|吧)?$/.test(compact)) {
+    return true;
+  }
+
+  return /(上传|烧录).*(板子|开发板|设备)/.test(compact);
 }
 
 function loadSidebarWidth(): number {
@@ -447,7 +482,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
-  // 账号会话(登录门控)。session=null 加载中;未登录挡登录页;登录后按权限显示功能。
+  // 账号会话。session=null 表示加载中;未登录就是本地 API 模式,默认全功能。
   const session = useSession();
   const refreshSession = useCallback(() => {
     app
@@ -460,7 +495,10 @@ export default function App() {
   useEffect(() => {
     refreshSession();
   }, [refreshSession]);
-  const canFeature = useCallback((key: string) => !!session && (session.isAdmin || session.permissions.includes(key)), [session]);
+  const canFeature = useCallback(
+    (key: string) => !!session && (!session.loggedIn || session.isAdmin || session.permissions.includes(key)),
+    [session],
+  );
   // 主区域视图模式:'chat' = 普通对话(Transcript),'hardware' = 硬件 IDE 工作台。
   // 两个视图同时挂载用 display:none 切换,防止 chat 流式输出被中断。
   const [mainView, setMainView] = useState<"chat" | "hardware">("chat");
@@ -602,6 +640,10 @@ export default function App() {
   const handleSend = useCallback(
     (displayText: string, submitText = displayText) => {
       const trimmed = displayText.trim();
+      if (session?.loggedIn && (/^\/model(?:\s|$)/.test(trimmed) || /^\/effort(?:\s|$)/.test(trimmed))) {
+        notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。", "info");
+        return;
+      }
       const model = /^\/model\s+(\S+)$/.exec(trimmed);
       if (model) {
         void switchModel(model[1]);
@@ -644,7 +686,13 @@ export default function App() {
       const rawSubmit = submitText.trim();
       // 知识库默认「自动」:开关打开时,任何非斜杠消息都自动检索——没手动选库就检索全部;
       // 选了就只用选中的;检索不到相关片段则原样发送(零副作用)。关闭开关则完全不检索。
+      // “上传/烧录/继续”等短跟进动作必须优先沿用当前对话上下文,否则全库检索会把意图带偏。
       if (canFeature("knowledge") && knowledgeEnabled && trimmed && !trimmed.startsWith("/") && !rawSubmit.startsWith("/")) {
+        if (selectedKnowledgeBaseIds.length === 0 && shouldBypassAutoKnowledge(rawSubmit)) {
+          send(trimmed, rawSubmit);
+          return;
+        }
+
         void (async () => {
           let baseIds = selectedKnowledgeBaseIds;
           try {
@@ -670,7 +718,7 @@ export default function App() {
       }
       send(trimmed, rawSubmit);
     },
-    [switchModel, openMemory, send, selectedKnowledgeBaseIds, knowledgeEnabled, notice, t, canFeature],
+    [session?.loggedIn, switchModel, openMemory, send, selectedKnowledgeBaseIds, knowledgeEnabled, notice, t, canFeature],
   );
 
   const refreshSessions = useCallback(async () => {
@@ -1197,9 +1245,8 @@ export default function App() {
       ? t("sidebar.expand")
       : t("sidebar.collapse");
 
-  // 登录门控:会话还没拉到先空着;未登录挡登录页。登录后才进 app。
+  // 会话还没拉到先空着;未登录继续进入本地 API 模式。
   if (session === null) return <div className="app" />;
-  if (!session.loggedIn) return <LoginGate onLoggedIn={refreshSession} />;
 
   return (
     <div className="app">
@@ -1256,7 +1303,7 @@ export default function App() {
         <aside className={`sidebar${sidebarCollapsed ? " sidebar--collapsed" : ""}`} aria-label={t("sidebar.navigation")}>
           <div className="sidebar__brand">
             <img src={logo} alt="" className="sidebar__logo" />
-            <span>onecreat</span>
+            <span>OneCreat</span>
             <button
               className={`sidebar__toggle${sidebarExpandBlocked ? " sidebar__toggle--blocked" : ""}`}
               onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
@@ -1490,23 +1537,25 @@ export default function App() {
               <SettingsIcon size={15} />
               <span>{t("topbar.settings")}</span>
             </button>
-            <button
-              className="sidebar__navitem"
-              onClick={() => {
-                void confirmDialog({
-                  title: "退出登录",
-                  message: `当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""}\n退出后需重新登录才能继续使用 AI。`,
-                  confirmText: "退出",
-                  danger: true,
-                }).then((ok) => {
-                  if (ok) void app.AccountLogout().then(refreshSession);
-                });
-              }}
-              title={`当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""} — 点击退出登录`}
-            >
-              <LogOut size={15} />
-              <span>退出（{session.account}）</span>
-            </button>
+            {session.loggedIn && (
+              <button
+                className="sidebar__navitem"
+                onClick={() => {
+                  void confirmDialog({
+                    title: "退出登录",
+                    message: `当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""}\n退出后切回本地 API 模式。`,
+                    confirmText: "退出",
+                    danger: true,
+                  }).then((ok) => {
+                    if (ok) void app.AccountLogout().then(refreshSession);
+                  });
+                }}
+                title={`当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""} — 点击退出登录`}
+              >
+                <LogOut size={15} />
+                <span>退出（{session.account}）</span>
+              </button>
+            )}
           </nav>
 
         </aside>
@@ -1529,10 +1578,9 @@ export default function App() {
           <header className="topbar">
             <div className="topbar__identity" title={state.meta?.cwd || undefined}>
               <span className="topbar__title">
-                {state.meta?.cwd ? cwdFolderLabel(state.meta.cwd) : "onecreat"}
+                {state.meta?.cwd ? cwdFolderLabel(state.meta.cwd) : "OneCreat"}
               </span>
-              {/* 网关模式(已登录)只显示档位名,绝不显示真实模型 / planner 名(label 形如
-                  "tier-1 + planner deepseek-..."),与底栏档位切换器一致。 */}
+              {/* 网关模式(已登录)只显示档位名,绝不显示真实模型 / planner 名,与底栏档位切换器一致。 */}
               <span className="topbar__model">
                 {session?.loggedIn
                   ? (session.tiers?.find((tr) => tr.index === session.selectedTier)?.name ?? "智能")
@@ -1540,7 +1588,7 @@ export default function App() {
               </span>
             </div>
             {/* P1 翻面：顶部不再并列「对话 | 硬件编程」双 tab。对话是唯一主视图，
-                硬件工作台改为从首页「硬件项目」卡或侧栏按钮按需打开。 */}
+                设备实验台从侧栏按需打开。 */}
             <div className="topbar__spacer" />
             <button
               className="chip chip--icon topbar__workspace-toggle"
@@ -1618,7 +1666,6 @@ export default function App() {
                     footerHeight={footerHeight}
                     onPrompt={send}
                     onRewind={rewind}
-                    onOpenHardware={() => setMainView("hardware")}
                   />
                   {/* 待办清单:任务进行时浮在对话区右上角,不再挤占左侧会话栏 */}
                   {showTodos && (

@@ -5,8 +5,8 @@ import { useCan } from "../lib/account";
 import type { DictKey } from "../locales/en";
 
 // Welcome 是空状态首页：从「硬件优先」翻成「任务/技能启动台」。
-// 每张卡 = 一个教培垂直：硬件项目直接开工作台；其余发起对应 skill 的起手 prompt
-// （文案里带 skill 触发词，引擎会自动浮现对应技能）。下方输入框仍是通用对话入口。
+// 每张卡 = 一个教培垂直：发起对应任务的起手 prompt（文案里带 skill 触发词，
+// 引擎会自动浮现对应技能）。下方输入框仍是通用对话入口。
 // 卡片标题/描述走 i18n;prompt 是发给模型的指令,保持中文(产品与技能均中文优先)。
 
 type Vertical = {
@@ -14,10 +14,22 @@ type Vertical = {
   icon: LucideIcon;
   titleKey: DictKey;
   descKey: DictKey;
-  // hardware 卡打开硬件工作台；其余卡发一句起手 prompt 进对话。
   prompt?: string;
-  openHardware?: boolean;
 };
+
+const HARDWARE_PROJECT_START_PROMPT = [
+  "我要开始一个硬件项目。请按 OneCreat 的硬件项目线来推进，而不是一上来直接烧录。",
+  "",
+  "请先确认项目目标、板卡、外设、通信方式、是否已有代码和是否有真实开发板连接。",
+  "如果当前目录已有硬件项目，先调用硬件 MCP 的 hardware_detect、hardware_project_audit、hardware_evidence_status 了解现状；如果缺关键信息，最多问 3 个具体问题。",
+  "",
+  "请把后续流程分成三条线说明：",
+  "1. 项目线程：方案、代码、审查、软件验证。",
+  "2. 设备实验台：编译、烧录、串口、OTA 等真实设备动作。",
+  "3. 证据记录：软件验证、真机验证、过期证据和待补证据。",
+  "",
+  "本轮先给我项目计划、需要创建或检查的文件、验证路径，以及什么时候需要打开设备实验台。不要假装已经完成真机验证。",
+].join("\n");
 
 const VERTICALS: Vertical[] = [
   {
@@ -25,7 +37,7 @@ const VERTICALS: Vertical[] = [
     icon: Cpu,
     titleKey: "welcome.v.hardware.title",
     descKey: "welcome.v.hardware.desc",
-    openHardware: true,
+    prompt: HARDWARE_PROJECT_START_PROMPT,
   },
   {
     key: "proposal",
@@ -78,28 +90,26 @@ const OUTPUT_DIR_NOTE =
 
 export function Welcome({
   onPrompt,
-  onOpenHardware,
 }: {
   onPrompt: (text: string) => void;
-  onOpenHardware?: () => void;
 }) {
   const t = useT();
   const can = useCan();
-  // 只显示当前账号被分配了的功能卡(超管全显示)。没分配的,客户根本看不到。
+  // 本地 API 模式显示全部功能卡;平台账号模式才按权限清单收窄。
   const visible = VERTICALS.filter((v) => can(v.key));
 
   const launch = (v: Vertical) => {
-    if (v.openHardware) onOpenHardware?.();
-    else if (v.prompt) onPrompt(v.prompt + OUTPUT_DIR_NOTE);
+    if (!v.prompt) return;
+    onPrompt(v.key === "hardware" ? v.prompt : v.prompt + OUTPUT_DIR_NOTE);
   };
 
   return (
     <div className="welcome">
-      <img src={logo} className="welcome__logo" alt="onecreat" />
-      <div className="welcome__title">onecreat</div>
+      <img src={logo} className="welcome__logo" alt="OneCreat" />
+      <div className="welcome__title">OneCreat</div>
       <div className="welcome__tag">{t("welcome.tagline")}</div>
 
-      {/* 垂直启动台：点一张卡开始一个任务（只显示已分配的功能） */}
+      {/* 垂直启动台：点一张卡开始一个任务 */}
       <div className="welcome__verticals">
         {visible.map((v) => {
           const Icon = v.icon;

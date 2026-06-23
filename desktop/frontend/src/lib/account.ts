@@ -24,8 +24,8 @@ export function useSession(): AccountSession | null {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
-// useCan 返回一个判定函数:超管(isAdmin)拥有全部;否则看 permissions 里有没有这个 key。
+// useCan 返回一个判定函数:本地 API 模式(未登录)默认全功能;平台模式才按权限清单门控。
 export function useCan(): (key: string) => boolean {
   const s = useSession();
-  return (key: string) => !!s && (s.isAdmin || s.permissions.includes(key));
+  return (key: string) => !!s && (!s.loggedIn || s.isAdmin || s.permissions.includes(key));
 }

@@ -68,6 +68,12 @@ func TestKnowledgeCreateImportSearchAndPrompt(t *testing.T) {
 	if !strings.Contains(prompt.Prompt, "本地知识库片段") || !strings.Contains(prompt.Prompt, "UART") {
 		t.Fatalf("prompt = %q, want local knowledge context", prompt.Prompt)
 	}
+	if !strings.Contains(prompt.Prompt, "用户问题和当前对话上下文优先") {
+		t.Fatalf("prompt = %q, want user intent priority guard", prompt.Prompt)
+	}
+	if strings.Index(prompt.Prompt, "# 用户问题") > strings.Index(prompt.Prompt, "# 本地知识库片段") {
+		t.Fatalf("prompt = %q, want user question before knowledge snippets", prompt.Prompt)
+	}
 }
 
 // 中文分词回归:纯中文、无空格的查询，旧实现会把整句当成一个超长 token

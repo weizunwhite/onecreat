@@ -1,5 +1,5 @@
 /*
- * onecreat desktop — single-column, developer-dense, terminal-flavored chat UI.
+ * OneCreat desktop — single-column, developer-dense, terminal-flavored chat UI.
  *
  * Multi-platform notes:
  *  - System font stack only; no web-font fetches (offline-first, consistent).
@@ -321,9 +321,11 @@ body {
   font-weight: 650;
 }
 .sidebar__logo {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #fff;
+  object-fit: contain;
 }
 .sidebar__toggle {
   --wails-draggable: no-drag;
@@ -1715,11 +1717,12 @@ body {
   color: var(--fg-faint);
 }
 .welcome__logo {
-  width: 54px;
-  height: 54px;
+  width: 74px;
+  height: 74px;
   margin-bottom: 16px;
-  border-radius: 13px;
+  border-radius: 16px;
   object-fit: contain;
+  background: #fff;
 }
 .welcome__title {
   font-size: 22px;
@@ -10240,6 +10243,17 @@ button.session-file-summary:hover {
   cursor: pointer;
 }
 
+.hardware-view__port-picker {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.hardware-view__port-refresh {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+
 .hardware-view__btn {
   display: inline-flex;
   align-items: center;
@@ -10333,6 +10347,102 @@ button.session-file-summary:hover {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.hardware-workflow {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.9fr) minmax(0, 1.4fr);
+  gap: 14px;
+  align-items: stretch;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+
+.hardware-workflow__intro {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hardware-workflow__eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.hardware-workflow__intro h2 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 17px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.hardware-workflow__intro p {
+  margin: 0;
+  color: var(--fg-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.hardware-workflow__lanes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.hardware-workflow__lane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+}
+
+.hardware-workflow__lane--active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.hardware-workflow__lane--ok {
+  border-color: color-mix(in srgb, var(--ok, #2da44e) 45%, var(--border));
+}
+
+.hardware-workflow__lane--pending {
+  border-color: color-mix(in srgb, var(--warn, #d29922) 45%, var(--border));
+}
+
+.hardware-workflow__lane--warn {
+  border-color: color-mix(in srgb, var(--danger, #cf222e) 32%, var(--border));
+}
+
+.hardware-workflow__lane-label {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.hardware-workflow__lane strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hardware-workflow__lane small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 项目路径条 — 项目已识别时显示,一行精简 */
@@ -10483,13 +10593,48 @@ button.session-file-summary:hover {
   opacity: 0.7;
   cursor: progress;
 }
-/* 一键安装实时进度卡片(醒目、常驻 body 顶部) */
+.hardware-view__install-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 240px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg);
+  font-size: 11.5px;
+  line-height: 1;
+}
+.hardware-view__install-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hardware-view__install-pill--running {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  animation: hardware-install-pulse 1.2s ease-in-out infinite;
+}
+.hardware-view__install-pill--ok {
+  border-color: color-mix(in srgb, var(--ok, #2da44e) 45%, var(--border));
+  background: color-mix(in srgb, var(--ok, #2da44e) 9%, transparent);
+}
+.hardware-view__install-pill--warn {
+  border-color: color-mix(in srgb, var(--warn, #d29922) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn, #d29922) 10%, transparent);
+}
+/* 一键安装实时进度卡片(项目条下方就地显示) */
 .hardware-view__install-card {
-  margin: 0 0 10px;
+  flex-shrink: 0;
+  margin: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
   background: var(--bg-soft, rgba(127, 127, 127, 0.06));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
 }
 .hardware-view__install-card--running {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
@@ -10574,6 +10719,11 @@ button.session-file-summary:hover {
 }
 .hardware-view__install-step--failed .hardware-view__install-step-msg {
   color: var(--danger, #d9534f);
+}
+
+@keyframes hardware-install-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 24%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
 }
 
 /* 空状态 — 没识别到项目时显示 */
@@ -10832,6 +10982,11 @@ button.session-file-summary:hover {
 }
 
 @media (max-width: 760px) {
+  .hardware-workflow,
+  .hardware-workflow__lanes {
+    grid-template-columns: 1fr;
+  }
+
   .hardware-quickrun {
     grid-template-columns: 1fr;
   }
@@ -12054,9 +12209,11 @@ button.session-file-summary:hover {
   box-shadow: 0 10px 36px rgba(0, 0, 0, 0.18);
 }
 .login__logo {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  width: 68px;
+  height: 68px;
+  border-radius: 15px;
+  background: #fff;
+  object-fit: contain;
 }
 .login__title {
   font-size: 20px;

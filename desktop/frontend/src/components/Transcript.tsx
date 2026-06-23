@@ -45,14 +45,12 @@ export function Transcript({
   footerHeight = 0,
   onPrompt,
   onRewind,
-  onOpenHardware,
 }: {
   items: Item[];
   live?: LiveStream;
   footerHeight?: number;
   onPrompt: (text: string) => void;
   onRewind?: (turn: number, scope: string) => void;
-  onOpenHardware?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // stick tracks whether the view is pinned to the bottom; once the user scrolls
@@ -161,7 +159,7 @@ export function Transcript({
 
   return (
     <div className="transcript" ref={scrollRef} onScroll={onScroll}>
-      {items.length === 0 && <Welcome onPrompt={onPrompt} onOpenHardware={onOpenHardware} />}
+      {items.length === 0 && <Welcome onPrompt={onPrompt} />}
 
       {items.map((it) => {
         switch (it.kind) {

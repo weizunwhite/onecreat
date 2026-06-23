@@ -25,9 +25,9 @@ import type {
 
 export type ToolStatus = "running" | "done" | "error" | "stopped";
 
-// friendlyTurnError 把内核的死胡同错误文案换成对 B 端客户可操作的提示。网关 token
-// (ONECREAT_GATEWAY_TOKEN)过期时,内核 AuthError 说「在 .env / 环境里更新它,或跑
-// reasonix setup」—— 走平台账号登录的客户没有 .env token、也没有 setup 向导,这是死路。
+// friendlyTurnError 把内核的死胡同错误文案换成对 B 端客户可操作的提示。旧版网关 token
+// 过期时,内核 AuthError 说「在 .env / 环境里更新它,或跑 reasonix setup」—— 走平台账号
+// 登录的客户没有 .env token、也没有 setup 向导,这是死路。
 // 识别出来换成「登录已过期,请退出后重新登录」(H6 客户端侧;平台侧 TTL/刷新另做)。
 function friendlyTurnError(err: string): string {
   if (err.includes("ONECREAT_GATEWAY_TOKEN")) {

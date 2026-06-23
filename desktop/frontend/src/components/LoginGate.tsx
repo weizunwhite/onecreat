@@ -29,8 +29,8 @@ export function LoginGate({ onLoggedIn }: { onLoggedIn: () => void }) {
   return (
     <div className="login">
       <div className="login__card">
-        <img src={logo} className="login__logo" alt="onecreat" />
-        <div className="login__title">onecreat</div>
+        <img src={logo} className="login__logo" alt="OneCreat" />
+        <div className="login__title">OneCreat</div>
         <div className="login__sub">登录以使用 · 功能由管理员分配</div>
         <input
           className="login__in"

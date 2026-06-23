@@ -62,8 +62,14 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	if !strings.Contains(sys, "BASE SYSTEM PROMPT") {
 		t.Fatalf("base prompt missing from system message:\n%s", sys)
 	}
+	if !strings.Contains(sys, config.ModelPrivacyPolicy) {
+		t.Fatalf("model privacy policy missing from system message:\n%s", sys)
+	}
 	if !strings.Contains(sys, "always run go vet before committing") {
 		t.Fatalf("project REASONIX.md not folded into system message:\n%s", sys)
+	}
+	if strings.Index(sys, config.ModelPrivacyPolicy) < strings.Index(sys, "always run go vet") {
+		t.Fatalf("model privacy policy should follow project memory so it wins identity conflicts:\n%s", sys)
 	}
 	// Base must come first so it stays a valid cache prefix when memory changes.
 	if strings.Index(sys, "BASE SYSTEM PROMPT") > strings.Index(sys, "always run go vet") {

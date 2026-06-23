@@ -842,7 +842,7 @@ function makeMockApp(): AppBindings {
             name: "ESP-IDF idf.py",
             command: "idf.py --version",
             available: false,
-            hint: "Install ESP-IDF, then activate the environment before launching onecreat.",
+            hint: "Install ESP-IDF, then activate the environment before launching OneCreat.",
           },
         ],
         recommendations: ["ESP-IDF 工程建议优先接入官方 Tools MCP。"],
@@ -901,7 +901,7 @@ function makeMockApp(): AppBindings {
     },
     async HardwareEvidenceExport() {
       return [
-        "# 真机验证证据（onecreat 自动导出）",
+        "# 真机验证证据（OneCreat 自动导出）",
         "",
         "共 1 条验证记录。",
         "",
@@ -1040,9 +1040,10 @@ function makeMockApp(): AppBindings {
       if (!search.matches.length) return { prompt: question, sources: [] };
       return {
         prompt:
-          "你正在回答用户问题。下面是用户在 onecreat 知识库中显式选择的本地资料片段。\n\n" +
-          search.matches.map((m, index) => `[${index + 1}] ${m.baseName} / ${m.documentName}\n${m.text}`).join("\n\n") +
-          `\n\n# 用户问题\n${question}`,
+          "你正在回答用户问题。用户问题和当前对话上下文优先；下面的本地知识库片段只是候选参考，可能与当前问题无关。\n" +
+          "隐私与事实规则：这些片段只来自客户本机知识库；只在片段明显相关时使用；资料不相关时忽略；不得把片段中的任务类型、项目名称或提交要求强行套到用户问题上；引用资料事实时标注来源编号，如 [1]。\n\n" +
+          `# 用户问题\n${question}\n\n# 本地知识库片段\n` +
+          search.matches.map((m, index) => `[${index + 1}] ${m.baseName} / ${m.documentName}\n${m.text}`).join("\n\n"),
         sources: search.matches,
       };
     },
@@ -1133,7 +1134,7 @@ function makeMockApp(): AppBindings {
     },
     async ReadFile(rel: string) {
       const samples: Record<string, string> = {
-        "README.md": "# onecreat\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
+        "README.md": "# OneCreat\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
         "go.mod": "module reasonix\n\ngo 1.23\n",
         "desktop/file.go": "package desktop\n\nfunc main() {\n\tprintln(\"workspace preview\")\n}\n",
         "internal/event.go": "package internal\n\n// mock file used by the browser dev seam\n",
@@ -1185,7 +1186,7 @@ function makeMockApp(): AppBindings {
           {
             path: "ONECREAT.md",
             scope: "project",
-            body: "# onecreat project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
+            body: "# OneCreat project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
           },
           {
             path: "~/.config/onecreat/ONECREAT.md",

@@ -83,7 +83,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return nil, fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
 	}
 	// onecreat 网关模式:桌面端登录后会设 ONECREAT_GATEWAY_URL/_TOKEN,把模型请求改走
-	// 平台 AI 网关(用登录 token 鉴权、平台统一拿 DeepSeek key 计费),而非客户端直连厂商。
+	// 平台 AI 网关(用登录 token 鉴权、平台统一拿上游 key 计费),而非客户端直连厂商。
 	applyOnecreatGateway(entry)
 	if opts.RequireKey {
 		if err := cfg.Validate(modelName); err != nil {
@@ -149,6 +149,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	skillStore := skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: cfg.SkillCustomPaths(), Stderr: opts.Stderr})
 	skills := skillStore.List()
 	sysPrompt = skill.ApplyIndex(sysPrompt, skills)
+	sysPrompt += "\n\n" + config.ModelPrivacyPolicy
 
 	reg := tool.NewRegistry()
 	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: cfg.WriteRoots(), Network: cfg.Sandbox.Network}
@@ -554,17 +555,18 @@ func onecreatGatewayActive() bool {
 // applyOnecreatGateway 在「onecreat 网关模式」下改写已解析的 provider entry:BaseURL 指向
 // 平台 AI 网关、API key 取登录 token、关掉直连余额查询。仅当 ONECREAT_GATEWAY_URL 存在且该
 // provider 是 openai 兼容类型时生效 —— 只有桌面端登录后才会设这两个 env,命令行/其他前端不
-// 设则完全无副作用(零耦合)。模型名不变,网关侧负责把 deepseek-flash/pro 转发到上游。
+// 设则完全无副作用(零耦合)。对外 provider 名也统一成 onecreat,避免错误提示泄露底层模型族。
 func applyOnecreatGateway(e *config.ProviderEntry) {
 	gw := strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL"))
 	if gw == "" || e == nil || e.Kind != "openai" {
 		return
 	}
+	e.Name = "onecreat"
 	e.BaseURL = gw
 	e.APIKeyEnv = "ONECREAT_GATEWAY_TOKEN" // APIKey() 读这个 env 拿登录 token
 	e.BalanceURL = ""                      // 网关模式下不直连厂商查余额
 	// 档位模式:把发给上游的 model 改成选中的档位 "tier-N",平台网关再映射到真实模型
-	//(对用户隐藏)。未设档位则保持原 model(过渡期:旧版客户端仍发 deepseek-*,网关兼容)。
+	//(对用户隐藏)。未设档位则保持原 model(过渡期:旧版客户端仍发旧模型名,网关兼容)。
 	if tier := strings.TrimSpace(os.Getenv("ONECREAT_TIER")); tier != "" {
 		e.Model = tier
 	}

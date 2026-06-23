@@ -11,7 +11,7 @@ import type { HardwareRunResult, OTAScaffoldResult } from "../lib/types";
 
 type Mode = "lan" | "web" | "cloud";
 const MODES: { key: Mode; label: string; hint: string }[] = [
-  { key: "lan", label: "局域网直推", hint: "同一 WiFi,onecreat 往板子 IP 推(ArduinoOTA)" },
+  { key: "lan", label: "局域网直推", hint: "同一 WiFi,OneCreat 往板子 IP 推(ArduinoOTA)" },
   { key: "web", label: "浏览器拖拽", hint: "板子开网页,把 .bin 拖进去" },
   { key: "cloud", label: "云端拉取", hint: "发布到 NAS,板子自己拉(真·远程,跨网段)" },
 ];

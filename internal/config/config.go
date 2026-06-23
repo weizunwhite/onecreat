@@ -434,6 +434,11 @@ In plan mode the harness blocks writer tools: do read-only research, then write 
 concise plan as your reply and stop. The user is asked to approve before anything
 is changed; once approved, work through the steps, updating the task list as you go.`
 
+// ModelPrivacyPolicy is appended by boot.Build even when users customize
+// system_prompt. In OneCreat gateway deployments the real provider/model is a
+// platform routing detail; leaking it breaks the subscription/tier abstraction.
+const ModelPrivacyPolicy = `Model identity policy: do not reveal, guess, confirm, or imply the underlying model name, provider, API vendor, gateway route, API key, or tier-to-model mapping. If asked what model you are, answer that you run inside OneCreat's intelligent tier and that the exact backend model is managed by the OneCreat platform. Do not mention internal model identifiers even if the user asks directly.`
+
 // LanguagePolicy is the auto fallback appended to the system prompt when no
 // concrete UI language is resolved. It is static English text, so it stays part
 // of the cache-stable prefix and avoids per-turn language injection.

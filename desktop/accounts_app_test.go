@@ -21,11 +21,17 @@ func seedTempConfigDir(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
 }
 
+func enablePlatformAccountMode(t *testing.T) {
+	t.Helper()
+	t.Setenv(accountModeEnv, "platform")
+}
+
 // M4 + H3 回归:RefreshAccountSession 的网络调用期间用户切了档,刷新回写绝不能把新档冲回
 // 旧值。旧代码:refresh 读 tier=1 → 网络 → 回写整个结构体(含进入时的 tier=1),覆盖掉中途
 // 的 SetOnecreatTier(3) —— UI 显示新档、下次实际按旧档送模型 + 计费。
 func TestRefreshDoesNotClobberConcurrentTierChange(t *testing.T) {
 	seedTempConfigDir(t)
+	enablePlatformAccountMode(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(60 * time.Millisecond) // 制造一个能被 SetOnecreatTier 抢入的窗口
 		_ = json.NewEncoder(w).Encode(map[string]any{"loggedIn": true, "points": 42.0})
@@ -62,6 +68,7 @@ func TestRefreshDoesNotClobberConcurrentTierChange(t *testing.T) {
 // M4:档位钳制 + 持久化(越界忽略)。
 func TestSetOnecreatTierClampsAndPersists(t *testing.T) {
 	seedTempConfigDir(t)
+	enablePlatformAccountMode(t)
 	sessionFileMu.Lock()
 	_ = saveSessionFileLocked(persistedSession{Token: "tok", SelectedTier: 1})
 	sessionFileMu.Unlock()
@@ -81,6 +88,29 @@ func TestSetOnecreatTierClampsAndPersists(t *testing.T) {
 	}
 }
 
+func TestLocalAccountModeIgnoresPersistedPlatformSession(t *testing.T) {
+	seedTempConfigDir(t)
+	sessionFileMu.Lock()
+	_ = saveSessionFileLocked(persistedSession{Account: "old", Token: "tok", SelectedTier: 2})
+	sessionFileMu.Unlock()
+	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
+	t.Setenv(gatewayEnvToken, "tok")
+	t.Setenv(gatewayEnvTier, "tier-2")
+
+	applyGatewayEnvFromSession()
+
+	if gatewayActive() {
+		t.Fatal("默认本地 API 模式不应激活网关")
+	}
+	if os.Getenv(gatewayEnvURL) != "" || os.Getenv(gatewayEnvToken) != "" || os.Getenv(gatewayEnvTier) != "" {
+		t.Fatalf("默认本地 API 模式应清空网关 env,url=%q token=%q tier=%q", os.Getenv(gatewayEnvURL), os.Getenv(gatewayEnvToken), os.Getenv(gatewayEnvTier))
+	}
+	s := (&App{}).AccountSessionInfo()
+	if s.LoggedIn {
+		t.Fatalf("默认本地 API 模式不应显示已登录平台账号:%+v", s)
+	}
+}
+
 // H4(客户端侧):网关模式下,本地改 provider / 模型 / key 必须被后端拒绝 —— 否则登录用户
 // 可加一个自带 key 的非网关 provider 完全绕开网关与计量。前端已隐藏 UI,这是后端兜底。
 func TestGatewayModeBlocksProviderMutations(t *testing.T) {
@@ -91,6 +121,7 @@ func TestGatewayModeBlocksProviderMutations(t *testing.T) {
 		t.Fatal("无网关 env 时 gatewayActive 应为 false")
 	}
 	// 网关模式(登录):provider / 模型 / key 改动全部被拒。
+	enablePlatformAccountMode(t)
 	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
 	a := &App{ctx: context.Background()}
 	checks := map[string]error{
@@ -112,6 +143,7 @@ func TestGatewayModeBlocksProviderMutations(t *testing.T) {
 // 并把新 token 写进 ONECREAT_GATEWAY_TOKEN env。
 func TestEnsureFreshTokenRefreshes(t *testing.T) {
 	seedTempConfigDir(t)
+	enablePlatformAccountMode(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/onecreat/refresh" {
 			http.Error(w, "no", http.StatusNotFound)
@@ -161,6 +193,7 @@ func TestEnsureFreshTokenSkips(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seedTempConfigDir(t)
+			enablePlatformAccountMode(t)
 			called := false
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
@@ -192,6 +225,23 @@ func TestApplyGatewayEnvFromSession(t *testing.T) {
 	t.Setenv(gatewayEnvURL, "")
 	t.Setenv(gatewayEnvToken, "")
 	t.Setenv(gatewayEnvTier, "")
+
+	// 默认 local-first:即便磁盘上还残留旧平台会话,也必须清空网关 env。
+	sessionFileMu.Lock()
+	_ = saveSessionFileLocked(persistedSession{Token: "old", SelectedTier: 2})
+	sessionFileMu.Unlock()
+	t.Setenv(gatewayEnvToken, "stale")
+	applyGatewayEnvFromSession()
+	if v := os.Getenv(gatewayEnvToken); v != "" {
+		t.Fatalf("本地 API 模式应清空 token env,得到 %q", v)
+	}
+
+	enablePlatformAccountMode(t)
+	sessionFileMu.Lock()
+	if path, err := accountSessionPath(); err == nil {
+		_ = os.Remove(path)
+	}
+	sessionFileMu.Unlock()
 
 	// 未登录(无会话文件):清空 token env。
 	t.Setenv(gatewayEnvToken, "stale")

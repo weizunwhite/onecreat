@@ -78,11 +78,14 @@ func TestApplyOnecreatGateway(t *testing.T) {
 		t.Fatalf("env 未设时不应改写 entry: %+v", e)
 	}
 
-	// 网关模式 + 档位:改 BaseURL→网关、key→网关 token、清直连余额、model→档位。
+	// 网关模式 + 档位:改 Name→平台别名、BaseURL→网关、key→网关 token、清直连余额、model→档位。
 	t.Setenv("ONECREAT_GATEWAY_URL", "https://t.example.com/api/onecreat/v1")
 	t.Setenv("ONECREAT_TIER", "tier-2")
 	e2 := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", Model: "deepseek-flash"}
 	applyOnecreatGateway(e2)
+	if e2.Name != "onecreat" {
+		t.Fatalf("Name 未改成平台别名: %q", e2.Name)
+	}
 	if e2.BaseURL != "https://t.example.com/api/onecreat/v1" {
 		t.Fatalf("BaseURL 未改走网关: %q", e2.BaseURL)
 	}
@@ -100,6 +103,9 @@ func TestApplyOnecreatGateway(t *testing.T) {
 	t.Setenv("ONECREAT_TIER", "")
 	e3 := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-flash"}
 	applyOnecreatGateway(e3)
+	if e3.Name != "onecreat" {
+		t.Fatalf("未设档位时也应隐藏 provider 名: %q", e3.Name)
+	}
 	if e3.Model != "deepseek-flash" {
 		t.Fatalf("未设档位时应保留原 model: %q", e3.Model)
 	}

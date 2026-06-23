@@ -1,10 +1,8 @@
 package main
 
-// 账号 / 权限体系(P1:登录 + 按权限门控)。当前是 mock 后端:内置几个演示账号,
-// 登录成功后把会话(账号 / 是否超管 / 功能权限)持久化到配置目录,客户端据此显示/门控功能。
-//
-// 接真后端(P2)时只改 accountAuthenticate:换成"POST 登录接口拿 token + GET 权限接口
-// 拿功能清单",其余(持久化、门控、前端)一律不动。AI 走网关(P3)再用 Token 配 provider。
+// 账号 / 权限体系现在是可选平台层。默认 local-first:不登录、不读旧平台会话、不改写
+// provider,直接使用本机 onecreat.toml / .env 里的 API 配置。以后需要联 teacher 平台时,
+// 显式设置 ONECREAT_ACCOUNT_MODE=platform 才启用登录、权限、点数和网关改写。
 
 import (
 	"bytes"
@@ -62,8 +60,17 @@ func accountSessionPath() (string, error) {
 	return filepath.Join(dir, "onecreat", "session.json"), nil
 }
 
-// platformBaseURL 是 teacher 平台地址(onecreat 登录/权限/AI 网关都连它)。默认生产域名,
-// 可用 ONECREAT_PLATFORM_URL 覆盖(本地联调指向 http://127.0.0.1:3000)。
+const accountModeEnv = "ONECREAT_ACCOUNT_MODE"
+
+// platformAccountEnabled 报告是否启用平台账号层。默认不启用,保证桌面端开发和交付都先
+// 走本地 API key;teacher 平台只是以后显式打开的集成通道。
+func platformAccountEnabled() bool {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv(accountModeEnv)))
+	return mode == "platform" || mode == "teacher" || mode == "gateway"
+}
+
+// platformBaseURL 是 teacher 平台地址(onecreat 登录/权限/AI 网关都连它)。只在
+// ONECREAT_ACCOUNT_MODE=platform 时使用。可用 ONECREAT_PLATFORM_URL 覆盖本地联调地址。
 func platformBaseURL() string {
 	if v := strings.TrimSpace(os.Getenv("ONECREAT_PLATFORM_URL")); v != "" {
 		return strings.TrimRight(v, "/")
@@ -84,7 +91,7 @@ const (
 // 统一分配,客户端不得再自行改 —— 否则可加一个自带 key 的非网关 provider 完全绕开网关与计量
 // (H4)。前端已隐藏相关设置入口,这是后端兜底(防 devtools / 直接调 IPC 绕过)。
 func gatewayActive() bool {
-	return strings.TrimSpace(os.Getenv(gatewayEnvURL)) != ""
+	return platformAccountEnabled() && strings.TrimSpace(os.Getenv(gatewayEnvURL)) != ""
 }
 
 // errGatewayManaged 是网关模式下拒绝本地改 provider/模型/key 时返回的统一错误。
@@ -130,20 +137,25 @@ func saveSessionFileLocked(p persistedSession) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
+func clearGatewayEnvVars() {
+	_ = os.Unsetenv(gatewayEnvURL)
+	_ = os.Unsetenv(gatewayEnvToken)
+	_ = os.Unsetenv(gatewayEnvTier)
+}
+
 // applyGatewayEnvFromSession 按当前会话设/清网关环境变量:已登录 → 指向平台 AI 网关 +
 // 写入 token;未登录 → 清空(回到 config 里的直连 provider)。每次 boot.Build 之前都要保证
 // 它已被调用过(startup 里调一次),登录/登出后再调一次并重建 controller 让其立即生效。
 func applyGatewayEnvFromSession() {
-	clear := func() {
-		_ = os.Unsetenv(gatewayEnvURL)
-		_ = os.Unsetenv(gatewayEnvToken)
-		_ = os.Unsetenv(gatewayEnvTier)
+	if !platformAccountEnabled() {
+		clearGatewayEnvVars()
+		return
 	}
 	sessionFileMu.Lock()
 	p, ok := loadSessionFileLocked()
 	sessionFileMu.Unlock()
 	if !ok {
-		clear()
+		clearGatewayEnvVars()
 		return
 	}
 	_ = os.Setenv(gatewayEnvURL, platformBaseURL()+"/api/onecreat/v1")
@@ -158,6 +170,9 @@ func applyGatewayEnvFromSession() {
 // accountAuthenticate 调 teacher 平台 /api/onecreat/login(手机号+密码)拿 token + 功能权限。
 // 返回会话和错误信息(errMsg=="" 表示成功)。这是"问后端要账号+权限"的唯一入口。
 func accountAuthenticate(account, password string) (persistedSession, string) {
+	if !platformAccountEnabled() {
+		return persistedSession{}, "平台账号模式未启用;当前为本地 API 模式"
+	}
 	payload, _ := json.Marshal(map[string]string{"phone": strings.TrimSpace(account), "password": password})
 	req, err := http.NewRequest(http.MethodPost, platformBaseURL()+"/api/onecreat/login", bytes.NewReader(payload))
 	if err != nil {
@@ -214,6 +229,9 @@ var refreshMu sync.Mutex
 // 「请重新登录」提示兜底)。成功后刷新 ONECREAT_GATEWAY_TOKEN env;provider 请求时读 env,
 // 新 token 立即对所有标签生效,无需重建。
 func ensureFreshToken() {
+	if !platformAccountEnabled() {
+		return
+	}
 	refreshMu.Lock()
 	defer refreshMu.Unlock()
 
@@ -268,6 +286,9 @@ func ensureFreshToken() {
 
 // AccountLogin 校验账号密码,成功则持久化会话。
 func (a *App) AccountLogin(account, password string) AccountLoginResult {
+	if !platformAccountEnabled() {
+		return AccountLoginResult{Error: "当前为本地 API 模式,无需登录平台账号"}
+	}
 	sess, errMsg := accountAuthenticate(account, password)
 	if errMsg != "" {
 		return AccountLoginResult{Error: errMsg}
@@ -300,6 +321,9 @@ func (a *App) AccountLogout() {
 
 // AccountSessionInfo 返回当前会话(未登录则 LoggedIn=false)。token 不外泄。
 func (a *App) AccountSessionInfo() AccountSession {
+	if !platformAccountEnabled() {
+		return AccountSession{LoggedIn: false, Account: "本地模式", SelectedTier: 1}
+	}
 	sessionFileMu.Lock()
 	p, ok := loadSessionFileLocked()
 	sessionFileMu.Unlock()
@@ -319,6 +343,9 @@ func (a *App) AccountSessionInfo() AccountSession {
 // SetOnecreatTier 切换当前档位(1/2/3):写回 session.json + 刷新网关 env + 重建 controller,
 // 让下一条消息按新档位走。背后是什么模型客户端不知道(平台映射)。
 func (a *App) SetOnecreatTier(index int) {
+	if !platformAccountEnabled() {
+		return
+	}
 	if index < 1 || index > 3 {
 		return
 	}
@@ -342,6 +369,9 @@ func (a *App) SetOnecreatTier(index int) {
 // 让余额实时下降、看得到消耗)。网络问题或 token 失效则保持本地快照不变(AI 调用自己会报
 // 401 提示重登)。不重建 controller,纯刷新展示数据。
 func (a *App) RefreshAccountSession() AccountSession {
+	if !platformAccountEnabled() {
+		return a.AccountSessionInfo()
+	}
 	sessionFileMu.Lock()
 	p, ok := loadSessionFileLocked()
 	sessionFileMu.Unlock()
