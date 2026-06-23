@@ -668,13 +668,33 @@ export function HardwarePanel({
     [board, detect?.projectDir, detectedPlatform, port, selectedBoard, onPrompt, onBackToChat],
   );
 
-  // 失败时学生点「让 AI 排查」就把已蒸馏的根因+修法+输出摘要直接塞给 chat,
-  // 比让 AI 重跑一遍 validate 高效得多。连续失败到阈值则升级为「换思路」整体排查,
-  // 并总是要求 AI 改完后自动重跑 validate(闭环),不要等学生手动再点。
+  // 失败时学生点「让 AI 排查」就把已蒸馏的根因+修法+输出摘要直接塞给 chat。
+  // 编译/烧录失败可以进入“修复 -> validate”闭环；串口无输出更常见是板子运行、
+  // 波特率、端口占用或硬件状态问题，默认只读诊断，不诱导 AI 空改代码。
   const askAIToFix = useCallback(
     (kind: "validate" | "upload" | "monitor", result: HardwareRunResult) => {
       const label = { validate: "编译/验证", upload: "烧录", monitor: "串口" }[kind];
-      const count = kind === "monitor" ? 0 : failCount[kind];
+      if (kind === "monitor") {
+        const parts: string[] = [
+          "刚才点了「串口」按钮,没有采到输出。请做只读排查,不要默认编辑代码。",
+          result.summary ? `结果摘要:${result.summary}` : "",
+          result.rootCause ? `根因:${result.rootCause}` : "",
+          result.fixHint ? `已知修法提示:${result.fixHint}` : "",
+          result.error ? `错误:${result.error}` : "",
+          result.output ? `输出片段:\n\`\`\`\n${result.output.slice(0, 2000)}\n\`\`\`` : "",
+          "排查边界:",
+          "1. 先读取当前入口文件,确认是否有 Serial.begin(115200) 以及 setup/loop 中是否真的会 Serial.print/println。",
+          "2. 如果代码里已有 Serial.begin 且有明确输出语句,不要改文件,不要重跑完整编译;直接报告「串口无输出,真机运行待确认」,并给出最小人工检查:端口、波特率、板子是否复位运行、USB CDC 设置、是否刚烧录了正确固件。",
+          "3. 不要用 bash 的 screen / cu / cat / timeout 反复读串口;这些在本机不可靠。若确需重试,最多调用一次 mcp__hardware__arduino_monitor_sample。",
+          "4. 只有当你从代码中明确发现缺少 Serial.begin、波特率不一致、或没有任何输出语句时,才做最小代码修改;改完后再调用 mcp__hardware__hardware_project_validate 重新编译验证。",
+          "5. 不要伪造串口证据;没有真实输出就如实说明。",
+        ].filter(Boolean);
+        onPrompt("让 AI 排查串口无输出", parts.join("\n\n"));
+        onBackToChat?.();
+        return;
+      }
+
+      const count = failCount[kind];
       const escalated = count >= FAIL_ESCALATE_AT;
       const header = escalated
         ? `「${label}」已经连续失败 ${count} 次。不要再小修小补——请退一步，从整体排查:接线、电平(5V 与 3.3V 是否需要电平转换)、限流电阻、共地 GND、供电是否独立、库版本是否匹配,或换一种实现思路。`

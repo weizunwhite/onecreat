@@ -94,7 +94,7 @@ export const en = {
 
   // Welcome vertical launch cards
   "welcome.v.hardware.title": "Hardware project",
-  "welcome.v.hardware.desc": "Start with a project thread, then open the device lab when needed",
+  "welcome.v.hardware.desc": "Open the device lab; you still drive the prompt",
   "welcome.v.proposal.title": "Tech proposal",
   "welcome.v.proposal.desc": "Hardware selection / system architecture / software flow",
   "welcome.v.paper.title": "Competition paper",

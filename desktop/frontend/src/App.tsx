@@ -684,11 +684,12 @@ export default function App() {
         return;
       }
       const rawSubmit = submitText.trim();
+      const programmaticPrompt = submitText !== displayText;
       // 知识库默认「自动」:开关打开时,任何非斜杠消息都自动检索——没手动选库就检索全部;
       // 选了就只用选中的;检索不到相关片段则原样发送(零副作用)。关闭开关则完全不检索。
       // “上传/烧录/继续”等短跟进动作必须优先沿用当前对话上下文,否则全库检索会把意图带偏。
       if (canFeature("knowledge") && knowledgeEnabled && trimmed && !trimmed.startsWith("/") && !rawSubmit.startsWith("/")) {
-        if (selectedKnowledgeBaseIds.length === 0 && shouldBypassAutoKnowledge(rawSubmit)) {
+        if (selectedKnowledgeBaseIds.length === 0 && (programmaticPrompt || shouldBypassAutoKnowledge(rawSubmit))) {
           send(trimmed, rawSubmit);
           return;
         }
@@ -1290,11 +1291,12 @@ export default function App() {
       <div
         className={[
           "layout",
+          mainView === "hardware" ? "layout--hardware" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
-          workspacePanelOpen ? "layout--workspace-open" : "",
+          workspacePanelOpen && mainView !== "hardware" ? "layout--workspace-open" : "",
           workspacePanelResizing ? "layout--resizing layout--workspace-resizing" : "",
-          workspacePanelOpen && workspacePanelMaximized ? "layout--workspace-maximized" : "",
+          workspacePanelOpen && workspacePanelMaximized && mainView !== "hardware" ? "layout--workspace-maximized" : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -1574,6 +1576,20 @@ export default function App() {
           title={t("sidebar.resize")}
         />
 
+        {/* 硬件模式:实验台作为左侧 rail(原来占满主区的 HardwarePanel 迁到这里),
+            中栏是代码(WorkspacePanel)、右栏是聊天(chat-pane)。 */}
+        {mainView === "hardware" && (
+          <aside className="hw-rail" aria-label={t("sidebar.hardwareTitle")}>
+            <HardwarePanel
+              onPrompt={handleSend}
+              onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
+              onBackToChat={() => setMainView("chat")}
+              selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
+              active={mainView === "hardware"}
+            />
+          </aside>
+        )}
+
         <section className="chat-pane">
           <header className="topbar">
             <div className="topbar__identity" title={state.meta?.cwd || undefined}>
@@ -1657,14 +1673,15 @@ export default function App() {
               </div>
             ) : (
               <>
-                {/* Transcript 永远挂载,切到硬件视图时只是 display:none,
-                    确保流式输出不被中断、滚动位置保留。 */}
-                <div className="main__view main__view--chat" style={{ display: mainView === "chat" ? undefined : "none" }}>
+                {/* Transcript 永远挂载;硬件模式下它就是右侧聊天栏,不再 display:none。
+                    实验台(HardwarePanel)已迁到左侧 hw-rail。 */}
+                <div className="main__view main__view--chat">
                   <Transcript
                     items={state.items}
                     live={state.live}
                     footerHeight={footerHeight}
                     onPrompt={send}
+                    onOpenHardware={() => setMainView("hardware")}
                     onRewind={rewind}
                   />
                   {/* 待办清单:任务进行时浮在对话区右上角,不再挤占左侧会话栏 */}
@@ -1675,15 +1692,6 @@ export default function App() {
                   )}
                   {/* 本次产出:聚合会话写过的文件,右下角浮条,点条目在工作区面板打开 */}
                   <SessionArtifacts items={state.items} onOpenFile={openWorkspaceFile} />
-                </div>
-                <div className="main__view main__view--hardware" style={{ display: mainView === "hardware" ? undefined : "none" }}>
-                  <HardwarePanel
-                    onPrompt={handleSend}
-                    onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
-                    onBackToChat={() => setMainView("chat")}
-                    selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
-                    active={mainView === "hardware"}
-                  />
                 </div>
               </>
             )}
@@ -1755,7 +1763,7 @@ export default function App() {
           </footer>
         </section>
 
-        {workspacePanelOpen && !workspacePanelMaximized && (
+        {workspacePanelOpen && !workspacePanelMaximized && mainView !== "hardware" && (
           <button
             className="workspace-panel-resizer"
             type="button"
@@ -1777,7 +1785,7 @@ export default function App() {
         )}
 
         <WorkspacePanel
-          open={workspacePanelOpen}
+          open={workspacePanelOpen || mainView === "hardware"}
           cwd={state.meta?.cwd}
           maximized={workspacePanelMaximized}
           panelWidth={workspacePanelMaximized ? viewportWidth - effectiveSidebarWidth : effectiveWorkspacePanelWidth}

@@ -295,6 +295,43 @@ body {
   display: none;
 }
 
+/* 硬件编程 IDE 三栏:[导航 | 实验台 rail | 代码 | 聊天]。
+   只在 .layout--hardware 生效,chat 模式布局完全不受影响。 */
+.layout--hardware {
+  grid-template-columns:
+    var(--sidebar-width)
+    var(--hw-rail-width, 360px)
+    minmax(0, 1fr)
+    var(--hw-chat-width, 400px);
+}
+.layout--hardware .sidebar {
+  order: 0;
+}
+.layout--hardware .hw-rail {
+  order: 1;
+}
+.layout--hardware .workspace-panel {
+  order: 2;
+  /* WorkspacePanel 原是固定宽滑出面板;硬件模式让它填满中间这一格。 */
+  width: auto !important;
+  max-width: none !important;
+}
+.layout--hardware .chat-pane {
+  order: 3;
+}
+.layout--hardware .workspace-panel-resizer {
+  display: none;
+}
+
+/* 实验台 rail:把原本占满主区的 HardwarePanel 收进左侧一列,纵向滚动。 */
+.hw-rail {
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border-soft);
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;

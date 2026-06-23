@@ -95,7 +95,7 @@ export const zh: Record<DictKey, string> = {
 
   // 首页垂直启动卡
   "welcome.v.hardware.title": "硬件项目",
-  "welcome.v.hardware.desc": "从项目线程开始，再按需打开设备实验台",
+  "welcome.v.hardware.desc": "打开设备实验台；问题仍由你输入",
   "welcome.v.proposal.title": "技术方案",
   "welcome.v.proposal.desc": "硬件选型 / 系统架构 / 软件流程",
   "welcome.v.paper.title": "竞赛论文",

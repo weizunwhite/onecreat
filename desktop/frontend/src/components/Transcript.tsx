@@ -44,12 +44,14 @@ export function Transcript({
   live,
   footerHeight = 0,
   onPrompt,
+  onOpenHardware,
   onRewind,
 }: {
   items: Item[];
   live?: LiveStream;
   footerHeight?: number;
   onPrompt: (text: string) => void;
+  onOpenHardware?: () => void;
   onRewind?: (turn: number, scope: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -159,7 +161,7 @@ export function Transcript({
 
   return (
     <div className="transcript" ref={scrollRef} onScroll={onScroll}>
-      {items.length === 0 && <Welcome onPrompt={onPrompt} />}
+      {items.length === 0 && <Welcome onPrompt={onPrompt} onOpenHardware={onOpenHardware} />}
 
       {items.map((it) => {
         switch (it.kind) {
