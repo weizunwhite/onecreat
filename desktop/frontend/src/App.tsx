@@ -11,6 +11,7 @@ import {
   FolderOpen,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   History,
   MessageSquare,
   MoreHorizontal,
@@ -502,6 +503,8 @@ export default function App() {
   // 主区域视图模式:'chat' = 普通对话(Transcript),'hardware' = 硬件 IDE 工作台。
   // 两个视图同时挂载用 display:none 切换,防止 chat 流式输出被中断。
   const [mainView, setMainView] = useState<"chat" | "hardware">("chat");
+  // 硬件模式:对话区顶部的实验台 bar 是否收起。
+  const [hwCollapsed, setHwCollapsed] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState(loadKnowledgeSelectedBaseIds);
   // 知识库总开关 + 可选库列表(给输入框的内联选择器用)。默认开=自动检索全部。
@@ -1007,6 +1010,12 @@ export default function App() {
     }
   }, []);
 
+  // 进入硬件模式时默认展开右侧代码/文件区(像 IDE);只在切入那一刻触发,
+  // 用户之后可手动隐藏,不会被强制重开。
+  useEffect(() => {
+    if (mainView === "hardware") setWorkspacePanel(true);
+  }, [mainView, setWorkspacePanel]);
+
   const toggleWorkspacePanel = useCallback(() => {
     setWorkspacePanelOpen((open) => {
       const next = !open;
@@ -1294,9 +1303,9 @@ export default function App() {
           mainView === "hardware" ? "layout--hardware" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
-          workspacePanelOpen && mainView !== "hardware" ? "layout--workspace-open" : "",
+          workspacePanelOpen ? "layout--workspace-open" : "",
           workspacePanelResizing ? "layout--resizing layout--workspace-resizing" : "",
-          workspacePanelOpen && workspacePanelMaximized && mainView !== "hardware" ? "layout--workspace-maximized" : "",
+          workspacePanelOpen && workspacePanelMaximized ? "layout--workspace-maximized" : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -1576,20 +1585,6 @@ export default function App() {
           title={t("sidebar.resize")}
         />
 
-        {/* 硬件模式:实验台作为左侧 rail(原来占满主区的 HardwarePanel 迁到这里),
-            中栏是代码(WorkspacePanel)、右栏是聊天(chat-pane)。 */}
-        {mainView === "hardware" && (
-          <aside className="hw-rail" aria-label={t("sidebar.hardwareTitle")}>
-            <HardwarePanel
-              onPrompt={handleSend}
-              onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
-              onBackToChat={() => setMainView("chat")}
-              selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
-              active={mainView === "hardware"}
-            />
-          </aside>
-        )}
-
         <section className="chat-pane">
           <header className="topbar">
             <div className="topbar__identity" title={state.meta?.cwd || undefined}>
@@ -1664,6 +1659,32 @@ export default function App() {
           )}
 
           <UpdateBanner />
+
+          {/* 硬件模式:实验台作为对话区最上方的可收起 bar(只留控件,功能精简);
+              代码/文件在右侧 WorkspacePanel(可展开/隐藏)。 */}
+          {mainView === "hardware" && (
+            <div className={`chat-hw${hwCollapsed ? " chat-hw--collapsed" : ""}`}>
+              <button
+                className="chat-hw__toggle"
+                onClick={() => setHwCollapsed((v) => !v)}
+                title={hwCollapsed ? "展开实验台" : "收起实验台"}
+                aria-expanded={!hwCollapsed}
+              >
+                <Cpu size={14} />
+                <span className="chat-hw__title">{t("sidebar.hardware")}</span>
+                {hwCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+              </button>
+              {!hwCollapsed && (
+                <HardwarePanel
+                  onPrompt={handleSend}
+                  onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
+                  onBackToChat={() => setMainView("chat")}
+                  selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
+                  active={mainView === "hardware"}
+                />
+              )}
+            </div>
+          )}
 
           <main className={`main main--${mainView}`}>
             {state.meta?.ready === false && !state.meta?.startupErr ? (
@@ -1763,7 +1784,7 @@ export default function App() {
           </footer>
         </section>
 
-        {workspacePanelOpen && !workspacePanelMaximized && mainView !== "hardware" && (
+        {workspacePanelOpen && !workspacePanelMaximized && (
           <button
             className="workspace-panel-resizer"
             type="button"
@@ -1785,7 +1806,7 @@ export default function App() {
         )}
 
         <WorkspacePanel
-          open={workspacePanelOpen || mainView === "hardware"}
+          open={workspacePanelOpen}
           cwd={state.meta?.cwd}
           maximized={workspacePanelMaximized}
           panelWidth={workspacePanelMaximized ? viewportWidth - effectiveSidebarWidth : effectiveWorkspacePanelWidth}

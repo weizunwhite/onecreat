@@ -1173,11 +1173,17 @@ export function HardwarePanel({
           const tone = syntaxOnly ? "warn" : result.status === "passed" ? "ok" : result.status === "skipped" ? "warn" : "fail";
           const count = kind === "monitor" ? 0 : failCount[kind];
           const escalated = count >= FAIL_ESCALATE_AT;
+          // 从命令尾部抽出正在编/烧的 sketch 目录名(命令以 sketch 路径结尾),让"编译通过"
+          // 能看出是哪个项目通过的——多子项目父目录下尤其重要。按 "/" 切,含空格的中文路径也稳。
+          const sketchName = result.command
+            ? result.command.trim().replace(/["']+$/, "").split("/").filter(Boolean).pop()
+            : "";
           return (
             <div key={kind} className={`hardware-quickrun__result hardware-quickrun__result--${tone}`}>
               <div className="hardware-quickrun__head">
                 {result.status === "passed" && !syntaxOnly ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
                 <strong>{label} · {syntaxOnly ? "语法通过（未验证 API/真机）" : result.status}</strong>
+                {sketchName && <span className="hardware-quickrun__sketch" title="本次编译/烧录的项目目录">{sketchName}</span>}
                 {count >= 2 && <span className="hardware-quickrun__fails">连续失败 {count} 次</span>}
                 {result.summary && <span className="hardware-quickrun__summary">{result.summary}</span>}
               </div>

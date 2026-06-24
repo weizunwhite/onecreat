@@ -295,41 +295,68 @@ body {
   display: none;
 }
 
-/* 硬件编程 IDE 三栏:[导航 | 实验台 rail | 代码 | 聊天]。
-   只在 .layout--hardware 生效,chat 模式布局完全不受影响。 */
-.layout--hardware {
-  grid-template-columns:
-    var(--sidebar-width)
-    var(--hw-rail-width, 360px)
-    minmax(0, 1fr)
-    var(--hw-chat-width, 400px);
+/* 硬件编程模式:布局沿用「聊天居中 + 代码/文件右侧滑出」(= chat 模式 + workspace-open),
+   .layout--hardware 不改网格;只在对话区最上方多一条可收起的实验台 bar。 */
+
+/* 对话区顶部实验台 bar:标题行可点击收起/展开。 */
+.chat-hw {
+  flex: 0 0 auto;
+  /* 抬到对话区(main)之上,否则「工具就绪」等绝对定位下拉浮层会被下方对话内容盖住。 */
+  position: relative;
+  z-index: 30;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--sidebar-bg);
 }
-.layout--hardware .sidebar {
-  order: 0;
-}
-.layout--hardware .hw-rail {
-  order: 1;
-}
-.layout--hardware .workspace-panel {
-  order: 2;
-  /* WorkspacePanel 原是固定宽滑出面板;硬件模式让它填满中间这一格。 */
-  width: auto !important;
-  max-width: none !important;
-}
-.layout--hardware .chat-pane {
-  order: 3;
-}
-.layout--hardware .workspace-panel-resizer {
+/* 新布局里代码/文件树一直在右侧开着,「打开项目文件」按钮点了没可见变化(面板已开),
+   反而让人以为坏了——bar 里隐藏它。 */
+.chat-hw .hardware-view__project-bar .chip {
   display: none;
 }
-
-/* 实验台 rail:把原本占满主区的 HardwarePanel 收进左侧一列,纵向滚动。 */
-.hw-rail {
-  min-width: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--border-soft);
+.chat-hw__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-hw__toggle:hover {
+  background: var(--border-soft);
+}
+.chat-hw__title {
+  flex: 1 1 auto;
+  text-align: left;
+}
+/* bar 只保留实验台工具栏(板卡/串口/框架 + 编译/烧录/看串口/监视器);
+   隐藏下面整块 body(介绍/项目/证据/示例/调试卡)——功能精简,bar 不臃肿。 */
+.chat-hw .hardware-view {
+  height: auto;
+  min-height: 0;
+  padding: 0 14px 12px;
+  /* hardware-view 原是全屏面板,自带 overflow:hidden;在 bar 里它会把「工具就绪」等
+     向下展开的绝对定位下拉浮层裁掉(只露一条)。这里和 body(原 overflow:auto)一起放开。 */
+  overflow: visible;
+}
+.chat-hw .hardware-view__body {
+  overflow: visible;
+}
+/* bar 里藏掉「agent 任务/介绍」类的大块(三线流程介绍 / 证据详情 / 示例·调试卡 / 设备汇总),
+   但保留关键反馈:报错 banner、编译/烧录/串口结果、非硬件项目提示、工具安装进度,
+   以及项目栏(它告诉你"当前编的是哪个项目")。否则点编译没有任何反馈。 */
+.chat-hw .hardware-workflow,
+.chat-hw .hardware-evidence,
+.chat-hw .hardware-section,
+.chat-hw .hardware-summary-grid {
+  display: none;
+}
+/* 「返回项目线程」在此布局多余(对话就在下方),隐藏。 */
+.chat-hw .hardware-view__back {
+  display: none;
 }
 
 .sidebar {
@@ -1190,13 +1217,15 @@ body {
 }
 .sidebar--collapsed .sidebar__new,
 .sidebar--collapsed .sidebar__navitem,
-.sidebar--collapsed .sidebar__knowledge {
+.sidebar--collapsed .sidebar__knowledge,
+.sidebar--collapsed .sidebar__hardware {
   justify-content: center;
   width: 40px;
   padding: 0;
   gap: 0;
 }
-.sidebar--collapsed .sidebar__knowledge {
+.sidebar--collapsed .sidebar__knowledge,
+.sidebar--collapsed .sidebar__hardware {
   min-height: 40px;
   display: flex;
   border-radius: 10px;
@@ -1207,6 +1236,8 @@ body {
 }
 .sidebar--collapsed .sidebar__new span,
 .sidebar--collapsed .sidebar__navitem span,
+.sidebar--collapsed .sidebar__knowledge span,
+.sidebar--collapsed .sidebar__hardware span,
 .sidebar--collapsed .sidebar-file-label {
   display: none;
 }
@@ -9206,10 +9237,8 @@ button.session-file-summary:hover {
 /* ─── 全屏硬件 IDE 视图(替代原抽屉)─── */
 
 /* 主区域视图切换:Transcript 和 HardwareView 同时挂载,display 切换防止 chat 流断 */
-.main--chat .main__view--hardware,
-.main--hardware .main__view--chat {
-  display: none;
-}
+/* 旧的"chat/硬件二选一"隐藏规则已废弃:新布局硬件模式就显示对话区(实验台是顶部 bar),
+   且 .main__view--hardware 元素已移除。留着会把硬件模式下的整个对话/回复藏掉(发消息没反应)。 */
 .main__view {
   display: flex;
   flex-direction: column;
@@ -10922,6 +10951,16 @@ button.session-file-summary:hover {
   align-items: center;
   gap: 6px;
   font-size: 13px;
+}
+
+/* 本次编译/烧录的项目目录名:让"编译通过"能看出是哪个项目通过的 */
+.hardware-quickrun__sketch {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent, #0969da);
+  background: color-mix(in srgb, var(--accent, #0969da) 14%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 
 .hardware-quickrun__summary {

@@ -2864,13 +2864,24 @@ func validateArduinoProject(projectDir string, args map[string]any, timeout time
 			NextStep: "没有找到 .ino sketch；Arduino 项目通常需要 项目名/项目名.ino。",
 		}}
 	}
-	fqbn := strArg(args, "fqbn", "")
-	if fqbn == "" {
-		board := strArg(args, "board", "uno")
-		fqbn = arduinoFQBN(board)
-	}
+	// FQBN 以项目为准,优先级:显式 fqbn 覆盖 > 该 sketch 自己的 manifest.board > 调用方
+	// 传入的 board(UI 选择)> uno 兜底。这样板型跟着项目 manifest 走(如 esp32s3),不再被
+	// UI 下拉或默认 uno 带偏。逐 sketch 解析,兼容一个父目录下多个子项目各有 manifest。
+	overrideFQBN := strArg(args, "fqbn", "")
+	argBoard := strArg(args, "board", "")
 	results := make([]validationResult, 0, len(sketchDirs))
 	for _, sketch := range sketchDirs {
+		fqbn := overrideFQBN
+		if fqbn == "" {
+			board := argBoard
+			if m, _ := auditManifestFile(sketch); m.Board != "" {
+				board = m.Board
+			}
+			if board == "" {
+				board = "uno"
+			}
+			fqbn = arduinoFQBN(board)
+		}
 		cmdArgs := map[string]any{"sketch_dir": sketch, "fqbn": fqbn, "timeout_seconds": int(timeout / time.Second)}
 		out, err := runArduinoCompile(cmdArgs)
 		results = append(results, resultFromCommand("arduino", sketch, out, err, "先修复编译错误；编译通过后再连接开发板执行 arduino_upload 和 arduino_monitor_sample。"))
@@ -3051,6 +3062,11 @@ func runArduinoCompile(args map[string]any) (string, error) {
 	}
 	if boolArg(args, "verbose", false) {
 		cmdArgs = append(cmdArgs, "-v")
+	}
+	// 项目自带库:脚手架把依赖(如 LVGL)放进 <sketch>/libraries,arduino-cli 默认不扫这个
+	// 子目录;自动带上 --libraries,让库随项目走——换台电脑、不全局装库也能编。
+	if libDir := filepath.Join(sketch, "libraries"); exists(libDir) {
+		cmdArgs = append(cmdArgs, "--libraries", libDir)
 	}
 	cmdArgs = append(cmdArgs, sketch)
 	return runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", defaultTimeout))
@@ -4449,7 +4465,9 @@ func findArduinoSketchDirs(dir string) []string {
 		if err != nil {
 			return nil
 		}
-		if path != dir && d.IsDir() && shouldSkipProjectDir(d.Name()) {
+		// 跳过 libraries/(脚手架放自带依赖如 LVGL 的地方):里面的示例 .ino 不是本项目的
+		// sketch,扫进来会被误当项目编译(之前 B 端瓦力 就把 LVGL 示例也编了)。
+		if path != dir && d.IsDir() && (shouldSkipProjectDir(d.Name()) || d.Name() == "libraries") {
 			return filepath.SkipDir
 		}
 		if d.IsDir() || strings.ToLower(filepath.Ext(path)) != ".ino" {
