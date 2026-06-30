@@ -76,6 +76,12 @@ The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream mod
 
 - **Desktop bridge is hand-mirrored.** `desktop/frontend/src/lib/bridge.ts` (`AppBindings`) mirrors `desktop/app.go`'s exported method set by hand — change a Go signature and you must update the TS interface, the in-browser mock (`makeMockApp`), and call sites. Wails passes args positionally. `desktop/wire.go` and `internal/serve/wire.go` separately map `event.Kind` → wire strings (keep both in step).
 
+- **SaaS gateway hides the backend model — never leak it.** In OneCreat's online deployment, the client talks to the platform AI gateway (an OpenAI-compatible endpoint authed via `ONECREAT_GATEWAY_TOKEN`, see `internal/provider/openai/openai.go`) and the user only ever sees a subscription *tier* (标准/高级/旗舰). The real provider/model/route is a billing-and-routing secret: revealing it both leaks IP and lets users bypass tier-based metering. `config.ModelPrivacyPolicy` (`internal/config/config.go`) is injected at runtime to enforce this, and the client-side planner is disabled on the gateway path for the same reason. Don't add code paths or prompts that surface the underlying model name. Wallet/points readout lives in `internal/billing`.
+
+### Evidence engine (the platform's reason to exist)
+
+`internal/evidence` is the verification layer that turned this from a coding harness into a teaching-project platform: it matches `complete_step` calls against the latest `todo_write` list and accumulates a real evidence chain (commands run, files produced, device output) so a project's claims are backed by what actually happened, not by the model's say-so. It is intentionally **zero hardware coupling** — the same engine backs software and hardware projects. `internal/skill` resolves `/skill-name` invocations (built-ins in `skill/builtins.go`, indexed in `index.go`) and adapts them to the tool surface.
+
 ### Config & memory
 
 - Resolution order: **flag > `./onecreat.toml` > `~/.config/onecreat/config.toml` > built-in defaults** (`internal/config`).

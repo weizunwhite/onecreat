@@ -185,6 +185,11 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+function compactHardwarePath(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.slice(-2).join("/") || path;
+}
+
 function buildGuidePrompt({
   board,
   framework,
@@ -436,6 +441,7 @@ export function HardwarePanel({
       app.HardwareDetect().catch((e) => ({
         available: false,
         projectTypes: [],
+        candidateProjects: [],
         serialPorts: [],
         boards: [],
         devices: [],
@@ -484,6 +490,7 @@ export function HardwarePanel({
         workspace: prev?.workspace,
         projectDir: prev?.projectDir,
         projectTypes: prev?.projectTypes ?? [],
+        candidateProjects: prev?.candidateProjects ?? [],
         serialPorts: ports,
         boards: prev?.boards.filter((item) => ports.includes(item.port)) ?? [],
         devices: prev?.devices.filter((item) => ports.includes(item.port)) ?? [],
@@ -968,15 +975,15 @@ export function HardwarePanel({
         <div className="hardware-view__toolbar-group hardware-view__toolbar-group--right">
           <div
             className={`hardware-view__mcp hardware-view__mcp--${connected ? "ok" : hardwareMCP?.available ? "warn" : "off"}`}
-            title="硬件助手 = 让 AI 能真的检测板卡 / 编译 / 烧录 / 看串口的后端(硬件 MCP）。显示「已启用」才说明它接进了当前对话，上面的编译/烧录/看串口才能用。"
+            title="硬件助手 = 接入当前对话的硬件 MCP。未接入时，一键编译/烧录仍可直接调用本地工具；接入后 AI 对话也能调用硬件工具。"
           >
             <span className="hardware-view__mcp-dot" />
             <span className="hardware-view__mcp-label">
-              {connected ? "硬件助手已启用" : hardwareMCP?.available ? "硬件助手未启用" : "硬件助手未安装"}
+              {connected ? "已接入对话" : hardwareMCP?.available ? "未接入对话" : "硬件助手未安装"}
             </span>
             {!connected && hardwareMCP?.available && (
               <button className="hardware-view__mcp-btn" disabled={busy} onClick={() => void enableHardware()}>
-                {busy ? "..." : "启用"}
+                {busy ? "..." : "接入"}
               </button>
             )}
           </div>
@@ -1011,7 +1018,7 @@ export function HardwarePanel({
             </div>
             <div className="hardware-workflow__lane hardware-workflow__lane--active">
               <span className="hardware-workflow__lane-label">设备实验台</span>
-              <strong>{connected ? "硬件助手已启用" : hardwareMCP?.available ? "可启用硬件助手" : "未安装硬件助手"}</strong>
+              <strong>{connected ? "硬件助手已接入对话" : hardwareMCP?.available ? "本地工具可直接用" : "未安装硬件助手"}</strong>
               <small>{detectedPorts.length ? `${detectedPorts.length} 个串口可选` : "未检测到串口设备"}</small>
             </div>
             <div className={`hardware-workflow__lane hardware-workflow__lane--${evidenceTone}`}>
@@ -1023,7 +1030,7 @@ export function HardwarePanel({
         </section>
 
         {/* 项目路径条:有项目时一行精简显示;无项目时给醒目空状态指引学生 */}
-        {detect?.projectDir ? (
+        {hasHardwareProject && detect?.projectDir ? (
           <div className="hardware-view__project-bar">
             <Cpu size={14} />
             <code title={detect.projectDir}>{detect.projectDir}</code>
@@ -1096,16 +1103,30 @@ export function HardwarePanel({
               </button>
             )}
           </div>
-        ) : (
+        ) : detect ? (
           <div className="hardware-view__empty">
             <div className="hardware-view__empty-title">当前工作区还不是硬件项目</div>
             <p>先回到项目线程确认目标、板卡和工程目录；打开包含 <code>platformio.ini</code> 、<code>.ino</code> 或 <code>hardware_manifest.json</code> 的目录后，实验台才会启用编译/烧录。</p>
+            {!!detect.candidateProjects?.length && (
+              <div className="hardware-view__candidates">
+                <div className="hardware-view__candidates-title">检测到的候选工程</div>
+                {detect.candidateProjects.slice(0, 4).map((candidate) => (
+                  <div className="hardware-view__candidate" key={`${candidate.kind}:${candidate.dir}`}>
+                    <strong title={candidate.dir}>{compactHardwarePath(candidate.dir)}</strong>
+                    <span>{candidate.kind}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             {onOpenWorkspace && (
               <button className="btn btn--primary" onClick={() => openWorkspace()}>
                 选择项目目录
               </button>
             )}
           </div>
+        ) : (
+          /* detect===null 表示检测还没回来:显示加载提示,而不是误报"不是硬件项目"(会闪一下又消失)。 */
+          <div className="hardware-view__detecting">正在检测当前工作区…</div>
         )}
 
         {/* 一键安装的实时进度卡片:紧跟项目条显示,点击后第一眼就能看到正在做哪一步 */}

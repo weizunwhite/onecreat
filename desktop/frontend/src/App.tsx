@@ -11,7 +11,6 @@ import {
   FolderOpen,
   ChevronDown,
   ChevronRight,
-  ChevronUp,
   History,
   MessageSquare,
   MoreHorizontal,
@@ -1301,6 +1300,7 @@ export default function App() {
         className={[
           "layout",
           mainView === "hardware" ? "layout--hardware" : "",
+          mainView === "hardware" && hwCollapsed ? "layout--hw-rail-collapsed" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
           workspacePanelOpen ? "layout--workspace-open" : "",
@@ -1585,6 +1585,36 @@ export default function App() {
           title={t("sidebar.resize")}
         />
 
+        {/* 硬件模式:实验台作为独立的第二栏(可收起)。四栏 = 导航 | 实验台 | 对话 | 代码。
+            竖向整列高度,内容放得下、可滚动,不再压住对话。 */}
+        {mainView === "hardware" && (
+          <aside className={`hw-rail${hwCollapsed ? " hw-rail--collapsed" : ""}`} aria-label={t("sidebar.hardware")}>
+            <div className="hw-rail__head">
+              <Cpu size={15} className="hw-rail__icon" />
+              {!hwCollapsed && <span className="hw-rail__title">{t("sidebar.hardware")}</span>}
+              <button
+                className="hw-rail__toggle"
+                onClick={() => setHwCollapsed((v) => !v)}
+                title={hwCollapsed ? "展开实验台" : "收起实验台"}
+                aria-label={hwCollapsed ? "展开实验台" : "收起实验台"}
+              >
+                {hwCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+              </button>
+            </div>
+            {!hwCollapsed && (
+              <div className="hw-rail__body">
+                <HardwarePanel
+                  onPrompt={handleSend}
+                  onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
+                  onBackToChat={() => setMainView("chat")}
+                  selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
+                  active={mainView === "hardware"}
+                />
+              </div>
+            )}
+          </aside>
+        )}
+
         <section className="chat-pane">
           <header className="topbar">
             <div className="topbar__identity" title={state.meta?.cwd || undefined}>
@@ -1659,32 +1689,6 @@ export default function App() {
           )}
 
           <UpdateBanner />
-
-          {/* 硬件模式:实验台作为对话区最上方的可收起 bar(只留控件,功能精简);
-              代码/文件在右侧 WorkspacePanel(可展开/隐藏)。 */}
-          {mainView === "hardware" && (
-            <div className={`chat-hw${hwCollapsed ? " chat-hw--collapsed" : ""}`}>
-              <button
-                className="chat-hw__toggle"
-                onClick={() => setHwCollapsed((v) => !v)}
-                title={hwCollapsed ? "展开实验台" : "收起实验台"}
-                aria-expanded={!hwCollapsed}
-              >
-                <Cpu size={14} />
-                <span className="chat-hw__title">{t("sidebar.hardware")}</span>
-                {hwCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
-              </button>
-              {!hwCollapsed && (
-                <HardwarePanel
-                  onPrompt={handleSend}
-                  onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
-                  onBackToChat={() => setMainView("chat")}
-                  selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
-                  active={mainView === "hardware"}
-                />
-              )}
-            </div>
-          )}
 
           <main className={`main main--${mainView}`}>
             {state.meta?.ready === false && !state.meta?.startupErr ? (

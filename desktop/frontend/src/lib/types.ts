@@ -261,11 +261,17 @@ export interface HardwareDeviceView {
   description?: string;
   hwid?: string;
 }
+export interface HardwareProjectCandidateView {
+  dir: string;
+  kind: string;
+  entry?: string;
+}
 export interface HardwareDetectView {
   available: boolean;
   workspace?: string;
   projectDir?: string;
   projectTypes: string[];
+  candidateProjects: HardwareProjectCandidateView[];
   serialPorts: string[];
   boards: HardwareBoardView[];
   devices: HardwareDeviceView[];

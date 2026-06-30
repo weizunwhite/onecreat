@@ -806,6 +806,7 @@ function makeMockApp(): AppBindings {
         workspace: cwd,
         projectDir: cwd,
         projectTypes: ["platformio"],
+        candidateProjects: [],
         serialPorts: ["/dev/cu.usbserial-0001"],
         boards: [
           {

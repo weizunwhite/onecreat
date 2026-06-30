@@ -1018,7 +1018,7 @@ func TestHardwareDetectUsesEmptyArraysInsteadOfNull(t *testing.T) {
 	}
 }
 
-func TestDetectProjectTypesFindsArduinoSketchSubdir(t *testing.T) {
+func TestDetectProjectTypesRequiresArduinoSketchRoot(t *testing.T) {
 	dir := t.TempDir()
 	sketchDir := filepath.Join(dir, "blink_demo")
 	if err := os.MkdirAll(sketchDir, 0o755); err != nil {
@@ -1027,9 +1027,36 @@ func TestDetectProjectTypesFindsArduinoSketchSubdir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sketchDir, "blink_demo.ino"), []byte("void setup() {}\nvoid loop() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	types := detectProjectTypes(dir)
-	if !contains(types, "arduino") {
-		t.Fatalf("detectProjectTypes() = %+v, want arduino", types)
+	if types := detectProjectTypes(dir); contains(types, "arduino") {
+		t.Fatalf("detectProjectTypes(parent) = %+v, should not treat nested sketch as the active Arduino project", types)
+	}
+	if types := detectProjectTypes(sketchDir); !contains(types, "arduino") {
+		t.Fatalf("detectProjectTypes(sketch) = %+v, want arduino", types)
+	}
+	candidates := detectHardwareProjectCandidates(dir)
+	if len(candidates) != 1 || candidates[0].Dir != sketchDir || candidates[0].Kind != "arduino" {
+		t.Fatalf("detectHardwareProjectCandidates() = %+v, want nested Arduino sketch candidate", candidates)
+	}
+}
+
+func TestValidateArduinoProjectRejectsParentDirectory(t *testing.T) {
+	dir := t.TempDir()
+	sketchDir := filepath.Join(dir, "blink_demo")
+	if err := os.MkdirAll(sketchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sketchDir, "blink_demo.ino"), []byte("void setup() {}\nvoid loop() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results := validateArduinoProject(dir, nil, time.Second)
+	if len(results) != 1 {
+		t.Fatalf("validateArduinoProject() returned %d results, want 1", len(results))
+	}
+	if results[0].Kind != "arduino_project_boundary" || results[0].Status != "failed" {
+		t.Fatalf("validateArduinoProject() = %+v, want boundary failure", results[0])
+	}
+	if !strings.Contains(results[0].NextStep, "blink_demo") {
+		t.Fatalf("NextStep should mention candidate sketch dir, got %q", results[0].NextStep)
 	}
 }
 
@@ -1117,7 +1144,7 @@ func TestParsePlatformIODeviceListFiltersSystemPorts(t *testing.T) {
 	}
 }
 
-func TestProjectValidateArduinoUsesNestedSketchDir(t *testing.T) {
+func TestProjectValidateArduinoRequiresSketchRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake commands are only used on Unix test hosts")
 	}
@@ -1133,7 +1160,17 @@ func TestProjectValidateArduinoUsesNestedSketchDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sketchDir, "validate_demo.ino"), []byte("void setup() {}\nvoid loop() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runProjectValidate(map[string]any{"project_dir": dir, "platform": "arduino", "fqbn": "arduino:avr:uno"})
+	parentOut, err := runProjectValidate(map[string]any{"project_dir": dir, "platform": "arduino", "fqbn": "arduino:avr:uno"})
+	if err == nil {
+		t.Fatalf("parent directory validation should fail, got:\n%s", parentOut)
+	}
+	for _, want := range []string{`"kind": "arduino_project_boundary"`, `"status": "failed"`, "validate_demo"} {
+		if !strings.Contains(parentOut, want) {
+			t.Fatalf("parent validation output missing %q:\n%s", want, parentOut)
+		}
+	}
+
+	out, err := runProjectValidate(map[string]any{"project_dir": sketchDir, "platform": "arduino", "fqbn": "arduino:avr:uno"})
 	if err != nil {
 		t.Fatal(err)
 	}

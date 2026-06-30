@@ -103,31 +103,31 @@ type Controller struct {
 
 	// mu guards the run state and approval bookkeeping; every critical section
 	// under it is short and non-blocking.
-	mu          sync.Mutex
-	cancel      context.CancelFunc
-	running     bool
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	running bool
 	// busy 标记一个「独占重写会话日志」的操作正在进行(compact/summarize/new/rewind/
 	// fork/branch/switch)。它与 running(turn 进行中)互斥:任一进行中,runGuarded 就
 	// 不启动新 turn,这些 op 之间也互斥。既有守卫只挡 turn→op(op 入口查 running),这里
 	// 补上 op→turn —— 堵住「op 在飞行中(尤其 summarize 的多秒摘要网络调用)时,并发的
 	// 一轮 turn 经 runGuarded 启动、Session.Add 追加消息,随后 op 基于旧快照的
 	// Replace/SetSession 把整轮静默覆盖丢掉」的窗口(B2 的反向)。
-	busy        bool
-	planMode    bool
+	busy     bool
+	planMode bool
 	// coachPreamble 是会话级「协作模式」persona(如学生引导 / 老师助手):一段
 	// 由前端选定的口径文案,Compose 把它作为 <coaching-style> 块随每个 turn 注入
 	// (发给模型、不进缓存系统前缀),空串=默认无 persona。XML 包裹使其在侧栏
 	// 预览里被自动剥掉,不污染会话标题。
 	coachPreamble string
 	sessionPath   string
-	approvals   map[string]chan approvalReply
-	asks        map[string]chan []event.AskAnswer
+	approvals     map[string]chan approvalReply
+	asks          map[string]chan []event.AskAnswer
 	// pendingApprovals/pendingAsks 保存「已发出、尚未应答」的提示原始载荷,供切回标签时
 	// 重放(桌面多标签:后台标签的审批事件在它无人订阅时发出,切回来需要补发)(A2)。
 	pendingApprovals map[string]event.Approval
 	pendingAsks      map[string]event.Ask
 	granted          map[string]bool
-	nextID      int
+	nextID           int
 	// turn counts model turns this session, passed to hooks in their payload.
 	turn int
 	// autoApprove auto-allows writer tool calls without prompting. Set only while
@@ -208,29 +208,29 @@ func New(opts Options) *Controller {
 		pluginCtx = context.Background()
 	}
 	c := &Controller{
-		runner:        opts.Runner,
-		executor:      opts.Executor,
-		sink:          sink,
-		policy:        opts.Policy,
-		label:         opts.Label,
-		systemPrompt:  opts.SystemPrompt,
-		sessionDir:    opts.SessionDir,
-		sessionPath:   opts.SessionPath,
-		host:          opts.Host,
-		commands:      opts.Commands,
-		skills:        opts.Skills,
-		hooks:         opts.Hooks,
-		mem:           opts.Memory,
-		cleanup:       opts.Cleanup,
-		autoPlan:      normalizeAutoPlan(opts.AutoPlan),
-		classifier:    classifier,
-		balanceURL:    opts.BalanceURL,
-		balanceKey:    opts.BalanceKey,
-		balanceClient: opts.BalanceClient,
-		jobs:          opts.Jobs,
-		reg:           opts.Registry,
-		pluginCtx:     pluginCtx,
-		cpRoot:        opts.WorkspaceRoot,
+		runner:           opts.Runner,
+		executor:         opts.Executor,
+		sink:             sink,
+		policy:           opts.Policy,
+		label:            opts.Label,
+		systemPrompt:     opts.SystemPrompt,
+		sessionDir:       opts.SessionDir,
+		sessionPath:      opts.SessionPath,
+		host:             opts.Host,
+		commands:         opts.Commands,
+		skills:           opts.Skills,
+		hooks:            opts.Hooks,
+		mem:              opts.Memory,
+		cleanup:          opts.Cleanup,
+		autoPlan:         normalizeAutoPlan(opts.AutoPlan),
+		classifier:       classifier,
+		balanceURL:       opts.BalanceURL,
+		balanceKey:       opts.BalanceKey,
+		balanceClient:    opts.BalanceClient,
+		jobs:             opts.Jobs,
+		reg:              opts.Registry,
+		pluginCtx:        pluginCtx,
+		cpRoot:           opts.WorkspaceRoot,
 		approvals:        map[string]chan approvalReply{},
 		asks:             map[string]chan []event.AskAnswer{},
 		pendingApprovals: map[string]event.Approval{},
@@ -1329,6 +1329,14 @@ func (c *Controller) AddMCPServer(e config.PluginEntry) (int, error) {
 		return n, fmt.Errorf("connected, but saving config failed: %w", err)
 	}
 	return n, nil
+}
+
+// ConnectMCPServer connects an MCP server for this controller only. It does not
+// write the entry to config, so UI affordances such as a one-click hardware
+// assistant can expose tools to the current conversation without changing the
+// user's persistent MCP list.
+func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) {
+	return c.connectMCPServer(e)
 }
 
 func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {

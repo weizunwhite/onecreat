@@ -564,16 +564,23 @@ func textResult(text string, isError bool) map[string]any {
 // --- tool handlers ---
 
 type detectReport struct {
-	Workspace       string               `json:"workspace"`
-	ProjectDir      string               `json:"projectDir"`
-	ProjectTypes    []string             `json:"projectTypes"`
-	SerialPorts     []string             `json:"serialPorts"`
-	Boards          []boardReport        `json:"boards"`
-	Devices         []deviceReport       `json:"devices"`
-	Toolchains      []toolchainReport    `json:"toolchains"`
-	NetworkBoards   []networkBoardReport `json:"networkBoards"`
-	Recommendations []string             `json:"recommendations"`
-	ESPIDFOfficial  map[string]string    `json:"espIdfOfficialMcp"`
+	Workspace         string                   `json:"workspace"`
+	ProjectDir        string                   `json:"projectDir"`
+	ProjectTypes      []string                 `json:"projectTypes"`
+	CandidateProjects []projectCandidateReport `json:"candidateProjects"`
+	SerialPorts       []string                 `json:"serialPorts"`
+	Boards            []boardReport            `json:"boards"`
+	Devices           []deviceReport           `json:"devices"`
+	Toolchains        []toolchainReport        `json:"toolchains"`
+	NetworkBoards     []networkBoardReport     `json:"networkBoards"`
+	Recommendations   []string                 `json:"recommendations"`
+	ESPIDFOfficial    map[string]string        `json:"espIdfOfficialMcp"`
+}
+
+type projectCandidateReport struct {
+	Dir   string `json:"dir"`
+	Kind  string `json:"kind"`
+	Entry string `json:"entry,omitempty"`
 }
 
 type boardReport struct {
@@ -632,12 +639,13 @@ func runHardwareDetect(args map[string]any) (string, error) {
 	}
 
 	report := detectReport{
-		Workspace:    cwd,
-		ProjectDir:   absProject,
-		ProjectTypes: detectProjectTypes(absProject),
-		SerialPorts:  listSerialPorts(),
-		Boards:       listArduinoBoards(),
-		Devices:      listPlatformIODevices(),
+		Workspace:         cwd,
+		ProjectDir:        absProject,
+		ProjectTypes:      detectProjectTypes(absProject),
+		CandidateProjects: detectHardwareProjectCandidates(absProject),
+		SerialPorts:       listSerialPorts(),
+		Boards:            listArduinoBoards(),
+		Devices:           listPlatformIODevices(),
 		Toolchains: []toolchainReport{
 			detectToolchain("arduino-cli", []string{"arduino-cli", "version"}, "Install Arduino CLI from https://arduino.github.io/arduino-cli/"),
 			detectToolchain("PlatformIO", []string{"pio", "--version"}, "Install with `python3 -m pip install platformio` or use PlatformIO IDE."),
@@ -2855,8 +2863,17 @@ func projectTypesForValidation(platform string, detected []string) []string {
 }
 
 func validateArduinoProject(projectDir string, args map[string]any, timeout time.Duration) []validationResult {
-	sketchDirs := findArduinoSketchDirs(projectDir)
+	sketchDirs := findRootArduinoSketchDirs(projectDir)
 	if len(sketchDirs) == 0 {
+		nested := findArduinoSketchDirs(projectDir)
+		if len(nested) > 0 {
+			return []validationResult{{
+				Kind:     "arduino_project_boundary",
+				Target:   projectDir,
+				Status:   "failed",
+				NextStep: fmt.Sprintf("当前目录包含子 Arduino sketch,但它本身不是单一 sketch 根目录；请切换到具体项目目录后再编译，例如：%s。", formatCandidateDirs(projectDir, nested, 4)),
+			}}
+		}
 		return []validationResult{{
 			Kind:     "arduino",
 			Target:   projectDir,
@@ -4390,7 +4407,7 @@ func detectProjectTypes(dir string) []string {
 	if exists(filepath.Join(dir, "sdkconfig")) || (exists(filepath.Join(dir, "CMakeLists.txt")) && exists(filepath.Join(dir, "main", "CMakeLists.txt"))) {
 		out = append(out, "esp_idf")
 	}
-	if len(findArduinoSketchDirs(dir)) > 0 {
+	if len(findRootArduinoSketchDirs(dir)) > 0 {
 		out = append(out, "arduino")
 	}
 	if hasPythonEntrypoint(dir) {
@@ -4407,6 +4424,118 @@ func detectProjectTypes(dir string) []string {
 		out = append(out, "unknown")
 	}
 	return out
+}
+
+func detectHardwareProjectCandidates(root string) []projectCandidateReport {
+	root = filepath.Clean(root)
+	out := []projectCandidateReport{}
+	seen := map[string]bool{}
+	const maxCandidates = 12
+	const maxDepth = 4
+
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if path != root && shouldSkipProjectDir(d.Name()) {
+			return filepath.SkipDir
+		}
+		if depthFromRoot(root, path) > maxDepth {
+			return filepath.SkipDir
+		}
+		types := projectTypesWithoutUnknown(detectProjectTypes(path))
+		if len(types) == 0 {
+			return nil
+		}
+		if seen[path] {
+			return nil
+		}
+		seen[path] = true
+		out = append(out, projectCandidateReport{
+			Dir:   path,
+			Kind:  strings.Join(types, ","),
+			Entry: projectCandidateEntry(path, types),
+		})
+		if len(out) >= maxCandidates {
+			return filepath.SkipDir
+		}
+		if path != root {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Dir == root {
+			return true
+		}
+		if out[j].Dir == root {
+			return false
+		}
+		return out[i].Dir < out[j].Dir
+	})
+	return out
+}
+
+func projectTypesWithoutUnknown(types []string) []string {
+	out := []string{}
+	for _, typ := range types {
+		if typ != "" && typ != "unknown" {
+			out = append(out, typ)
+		}
+	}
+	return out
+}
+
+func projectCandidateEntry(dir string, types []string) string {
+	for _, typ := range types {
+		switch typ {
+		case "platformio":
+			return filepath.Join(dir, "platformio.ini")
+		case "arduino":
+			sketches := findRootINOSketches(dir)
+			if len(sketches) > 0 {
+				return sketches[0]
+			}
+		case "esp_idf":
+			return filepath.Join(dir, "CMakeLists.txt")
+		case "python_or_micropython", "unihiker_python", "maixcam_python", "raspberry_pi_python", "micropython":
+			if entry := pythonEntrypointPath(dir); entry != "" {
+				return entry
+			}
+		}
+	}
+	return ""
+}
+
+func depthFromRoot(root, path string) int {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(os.PathSeparator)) + 1
+}
+
+func formatCandidateDirs(root string, dirs []string, limit int) string {
+	if len(dirs) == 0 {
+		return "无"
+	}
+	out := []string{}
+	for i, dir := range dirs {
+		if i >= limit {
+			out = append(out, fmt.Sprintf("另有 %d 个", len(dirs)-limit))
+			break
+		}
+		rel, err := filepath.Rel(root, dir)
+		if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			out = append(out, rel)
+		} else {
+			out = append(out, dir)
+		}
+	}
+	return strings.Join(out, "、")
 }
 
 func hasPythonEntrypoint(dir string) bool {
@@ -4483,6 +4612,13 @@ func findArduinoSketchDirs(dir string) []string {
 	})
 	sort.Strings(out)
 	return out
+}
+
+func findRootArduinoSketchDirs(dir string) []string {
+	if len(findRootINOSketches(dir)) == 0 {
+		return nil
+	}
+	return []string{dir}
 }
 
 func findRootINOSketches(dir string) []string {
@@ -5605,9 +5741,9 @@ func builtInRepairRules() []repairRule {
 			EvidenceRequired: []string{"audit"},
 		},
 		{
-			Code:           "arduino_core_not_installed",
-			Title:          "编译失败：arduino-cli 已装但开发板 core 未安装（全新环境首次编译最常见）",
-			Platforms:      []string{"arduino"}, // 仅 arduino-cli 路径;PlatformIO 自管 core,不适用
+			Code:      "arduino_core_not_installed",
+			Title:     "编译失败：arduino-cli 已装但开发板 core 未安装（全新环境首次编译最常见）",
+			Platforms: []string{"arduino"}, // 仅 arduino-cli 路径;PlatformIO 自管 core,不适用
 
 			DetectedBy:     []string{"Platform .* not found", "Platform .* not installed", "platform is not installed", "Error during build: Platform", "Unknown FQBN", "core .* not installed", "no instance of FQBN"},
 			AutoRepairTool: "arduino_core_install",

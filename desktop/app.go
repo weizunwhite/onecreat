@@ -1597,17 +1597,24 @@ func (a *App) HardwareBoardList() []HardwareBoardSummary {
 // tool output. The drawer can show real local readiness before the user asks the
 // agent to build or flash anything.
 type HardwareDetectView struct {
-	Available       bool                    `json:"available"`
-	Workspace       string                  `json:"workspace,omitempty"`
-	ProjectDir      string                  `json:"projectDir,omitempty"`
-	ProjectTypes    []string                `json:"projectTypes"`
-	SerialPorts     []string                `json:"serialPorts"`
-	Boards          []HardwareBoardView     `json:"boards"`
-	Devices         []HardwareDeviceView    `json:"devices"`
-	Toolchains      []HardwareToolchainView `json:"toolchains"`
-	Recommendations []string                `json:"recommendations"`
-	ESPIDFOfficial  map[string]string       `json:"espIdfOfficialMcp,omitempty"`
-	Error           string                  `json:"error,omitempty"`
+	Available         bool                       `json:"available"`
+	Workspace         string                     `json:"workspace,omitempty"`
+	ProjectDir        string                     `json:"projectDir,omitempty"`
+	ProjectTypes      []string                   `json:"projectTypes"`
+	CandidateProjects []HardwareProjectCandidate `json:"candidateProjects"`
+	SerialPorts       []string                   `json:"serialPorts"`
+	Boards            []HardwareBoardView        `json:"boards"`
+	Devices           []HardwareDeviceView       `json:"devices"`
+	Toolchains        []HardwareToolchainView    `json:"toolchains"`
+	Recommendations   []string                   `json:"recommendations"`
+	ESPIDFOfficial    map[string]string          `json:"espIdfOfficialMcp,omitempty"`
+	Error             string                     `json:"error,omitempty"`
+}
+
+type HardwareProjectCandidate struct {
+	Dir   string `json:"dir"`
+	Kind  string `json:"kind"`
+	Entry string `json:"entry,omitempty"`
 }
 
 // HardwareInstallStepView 是一键安装里单个工具的安装结果(对应 MCP 的 toolInstallStep)。
@@ -1727,13 +1734,14 @@ func (a *App) HardwareMCP() HardwareMCPView {
 // server is connected to the current agent session.
 func (a *App) HardwareDetect() HardwareDetectView {
 	view := HardwareDetectView{
-		Available:       false,
-		ProjectTypes:    []string{},
-		SerialPorts:     []string{},
-		Boards:          []HardwareBoardView{},
-		Devices:         []HardwareDeviceView{},
-		Toolchains:      []HardwareToolchainView{},
-		Recommendations: []string{},
+		Available:         false,
+		ProjectTypes:      []string{},
+		CandidateProjects: []HardwareProjectCandidate{},
+		SerialPorts:       []string{},
+		Boards:            []HardwareBoardView{},
+		Devices:           []HardwareDeviceView{},
+		Toolchains:        []HardwareToolchainView{},
+		Recommendations:   []string{},
 	}
 	command, _, err := resolveHardwareMCP()
 	if err != nil {
@@ -2292,6 +2300,8 @@ func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}
 	}
+	// 烧录前先关掉串口监视器:它占着串口,不关上传会被它卡住(串口同一时刻只能一个进程用)。
+	a.SerialClose()
 	projectDir := resolveHardwareProjectDir(input.ProjectDir)
 	switch input.Platform {
 	case "arduino":
@@ -2562,20 +2572,27 @@ func arduinoFQBNFromBoard(board string) string {
 	return boards.ArduinoFQBN(board)
 }
 
-// AddHardwareMCPServer connects the first available hardware MCP binary and
-// persists it to config. The frontend should use this rather than hardcoding a
-// developer-machine path.
+// AddHardwareMCPServer connects the first available hardware MCP binary to the
+// current session only. Direct hardware buttons call the MCP binary themselves;
+// this method exposes the same tools to the AI conversation without silently
+// changing the persistent config file.
 func (a *App) AddHardwareMCPServer() (int, error) {
 	command, _, err := resolveHardwareMCP()
 	if err != nil {
 		return 0, err
 	}
-	return a.AddMCPServer(MCPServerInput{
-		Name:      "hardware",
-		Transport: "stdio",
-		Command:   command,
-		Args:      []string{},
-		Env:       map[string]string{},
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
+		return 0, fmt.Errorf("no active session")
+	}
+	return ctrl.ConnectMCPServer(config.PluginEntry{
+		Name:    "hardware",
+		Type:    "stdio",
+		Command: command,
+		Args:    []string{},
+		Env:     map[string]string{},
 	})
 }
 
@@ -2745,6 +2762,9 @@ func firstTextContent(content []struct {
 func normalizeHardwareDetectView(view *HardwareDetectView) {
 	if view.ProjectTypes == nil {
 		view.ProjectTypes = []string{}
+	}
+	if view.CandidateProjects == nil {
+		view.CandidateProjects = []HardwareProjectCandidate{}
 	}
 	if view.SerialPorts == nil {
 		view.SerialPorts = []string{}
