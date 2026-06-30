@@ -123,9 +123,9 @@ func (g grepTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 				// io.Pipe 无缓冲,写端永久阻塞 → 每次泄漏一个 goroutine + pipe(C3)。
 				defer pr.Close()
 				go func() {
-					pw.Write(peek)         //nolint:errcheck
-					io.Copy(pw, f)         //nolint:errcheck
-					pw.Close()             //nolint:errcheck
+					pw.Write(peek) //nolint:errcheck
+					io.Copy(pw, f) //nolint:errcheck
+					pw.Close()     //nolint:errcheck
 				}()
 				src = transform.NewReader(pr, dec)
 			} else {
