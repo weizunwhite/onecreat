@@ -113,7 +113,7 @@ func TestMultiEditFuzzyStep(t *testing.T) {
 		"path": f,
 		"edits": []map[string]any{
 			{"old_string": "alpha = 1\n", "new_string": "alpha = 10\n"}, // 行尾空白差异
-			{"old_string": "beta = 2", "new_string": "beta = 20"},      // 精确
+			{"old_string": "beta = 2", "new_string": "beta = 20"},       // 精确
 		},
 	})
 	if !strings.Contains(out, "fuzzy-matched") {

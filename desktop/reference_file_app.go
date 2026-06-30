@@ -21,18 +21,18 @@ import (
 // ImportReferenceFile. It's a flat structure the frontend folds into a pasted
 // block, so the file's text becomes part of the next user message.
 type ReferenceFileResult struct {
-	Name       string `json:"name"`        // basename or URL
-	Path       string `json:"path"`        // absolute path or original URL
-	Text       string `json:"text"`        // extracted plain text
-	CharCount  int    `json:"charCount"`   // characters in Text
-	Truncated  bool   `json:"truncated"`   // text was cut to fit budget
-	Source     string `json:"source"`      // "file" | "url"
-	FormatHint string `json:"formatHint"`  // "txt"/"md"/"pdf"/"docx"/"html"/...
+	Name       string `json:"name"`       // basename or URL
+	Path       string `json:"path"`       // absolute path or original URL
+	Text       string `json:"text"`       // extracted plain text
+	CharCount  int    `json:"charCount"`  // characters in Text
+	Truncated  bool   `json:"truncated"`  // text was cut to fit budget
+	Source     string `json:"source"`     // "file" | "url"
+	FormatHint string `json:"formatHint"` // "txt"/"md"/"pdf"/"docx"/"html"/...
 }
 
 const (
-	refFileMaxBytes = 8 << 20  // 8MB cap on source files
-	refFileMaxText  = 60_000   // ~15k tokens — fits in DeepSeek context budget
+	refFileMaxBytes = 8 << 20 // 8MB cap on source files
+	refFileMaxText  = 60_000  // ~15k tokens — fits in DeepSeek context budget
 )
 
 // PickReferenceFile pops the OS file picker so the student can choose a Word /
