@@ -25,6 +25,17 @@ import type {
 
 export type ToolStatus = "running" | "done" | "error" | "stopped";
 
+// friendlyTurnError 把内核的死胡同错误文案换成对 B 端客户可操作的提示。旧版网关 token
+// 过期时,内核 AuthError 说「在 .env / 环境里更新它,或跑 reasonix setup」—— 走平台账号
+// 登录的客户没有 .env token、也没有 setup 向导,这是死路。
+// 识别出来换成「登录已过期,请退出后重新登录」(H6 客户端侧;平台侧 TTL/刷新另做)。
+function friendlyTurnError(err: string): string {
+  if (err.includes("ONECREAT_GATEWAY_TOKEN")) {
+    return "登录已过期,请点左下角账号菜单退出后重新登录(长任务超过登录有效期会出现这种情况)。";
+  }
+  return err;
+}
+
 // LiveStream holds the in-flight assistant segment's text/reasoning, kept out of
 // `items` so per-token deltas don't rebuild the backlog. It folds back into its
 // assistant item on the closing `message` (or at turn end as a fallback).
@@ -361,7 +372,7 @@ function applyEvent(s: State, e: WireEvent): State {
         return it;
       });
       const items: Item[] = e.err
-        ? [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }]
+        ? [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: friendlyTurnError(e.err) }]
         : finalized;
       return { ...s, items, live: undefined, running: false, turnActive: false, currentAssistant: undefined, approval: undefined, ask: undefined, seq: s.seq + 1 };
     }
@@ -674,15 +685,27 @@ export function useController(tabId: string) {
   // Workspace: open a folder chooser and switch to that project. On a pick the
   // backend rebuilds the controller (new model/config) with a fresh session, so
   // reset and refresh meta/context. Returns the chosen path ("" if cancelled).
-  const pickWorkspace = useCallback(async (): Promise<string> => {
-    const path = await app.PickWorkspace().catch(() => "");
-    return refreshWorkspaceState(path);
-  }, [refreshWorkspaceState]);
+  // doSwitchWorkspace 切到指定文件夹,失败时把后端原因显示出来(而不是静默吞掉)——
+  // 例如「开着多个任务标签时不允许切文件夹」这种守卫,吞掉就表现为「选了没反应/选不了」。
+  const doSwitchWorkspace = useCallback(
+    async (path: string): Promise<string> => {
+      try {
+        const next = await app.SwitchWorkspace(path);
+        return refreshWorkspaceState(next);
+      } catch (e) {
+        notice("切换文件夹失败:" + String((e as Error)?.message ?? e), "warn");
+        return refreshWorkspaceState("");
+      }
+    },
+    [refreshWorkspaceState, notice],
+  );
 
-  const switchWorkspace = useCallback(async (path: string): Promise<string> => {
-    const next = await app.SwitchWorkspace(path).catch(() => "");
-    return refreshWorkspaceState(next);
-  }, [refreshWorkspaceState]);
+  // 注:文件夹选择 + 多标签确认/关闭都在 App.tsx 的 switchFolder 里处理(那里有 tabs 状态),
+  // 这里只暴露纯粹的「切到指定目录」。
+  const switchWorkspace = useCallback(
+    (path: string): Promise<string> => doSwitchWorkspace(path),
+    [doSwitchWorkspace],
+  );
 
   const compact = useCallback(() => {
     app.Compact().catch(() => {});
@@ -774,7 +797,6 @@ export function useController(tabId: string) {
     deleteSession,
     renameSession,
     refreshMeta,
-    pickWorkspace,
     switchWorkspace,
     compact,
     rewind,

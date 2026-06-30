@@ -44,15 +44,15 @@ export function Transcript({
   live,
   footerHeight = 0,
   onPrompt,
-  onRewind,
   onOpenHardware,
+  onRewind,
 }: {
   items: Item[];
   live?: LiveStream;
   footerHeight?: number;
   onPrompt: (text: string) => void;
-  onRewind?: (turn: number, scope: string) => void;
   onOpenHardware?: () => void;
+  onRewind?: (turn: number, scope: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // stick tracks whether the view is pinned to the bottom; once the user scrolls

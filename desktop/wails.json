@@ -1,16 +1,16 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "reasonix-desktop",
-  "outputfilename": "reasonix-desktop",
+  "name": "onecreat-desktop",
+  "outputfilename": "onecreat-desktop",
   "frontend:install": "pnpm install",
   "frontend:build": "pnpm build",
   "frontend:dev:watcher": "pnpm dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "esengine"
+    "name": "OneCreat"
   },
   "info": {
-    "productName": "onecreat",
-    "comments": "onecreat desktop — a Wails shell around the Go kernel."
+    "productName": "OneCreat",
+    "comments": "OneCreat desktop — a Wails shell around the Go kernel."
   }
 }

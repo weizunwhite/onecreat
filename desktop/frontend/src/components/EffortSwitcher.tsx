@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
-import { useT } from "../lib/i18n";
 import type { EffortInfo } from "../lib/types";
+
+// 推理强度档位的中文名(原始值 auto/high/max 仍原样发后端,这里只管显示)。
+const EFFORT_LABELS: Record<string, string> = { auto: "自动", high: "高", max: "最高" };
+const effortLabel = (level: string) => EFFORT_LABELS[level] ?? level;
 
 export function EffortSwitcher({
   effort,
@@ -12,12 +15,11 @@ export function EffortSwitcher({
   disabled: boolean;
   onPick: (level: string) => void;
 }) {
-  const t = useT();
   const [open, setOpen] = useState(false);
   if (!effort?.supported || effort.levels.length === 0) return null;
 
   const current = effort.current || "auto";
-  const title = current === "auto" ? t("status.effortAutoTitle", { def: effort.default || "auto" }) : t("status.effortTitle");
+  const title = "AI 推理强度:越高思考越深、越慢;自动 = 由 AI 按问题决定";
   const pick = (level: string) => {
     setOpen(false);
     if (level !== current) onPick(level);
@@ -31,7 +33,7 @@ export function EffortSwitcher({
         onClick={() => setOpen((v) => !v)}
         title={title}
       >
-        <span className="modelsw__label">{t("status.effort", { level: current })}</span>
+        <span className="modelsw__label">推理强度·{effortLabel(current)}</span>
         <ChevronsUpDown size={11} />
       </button>
       {open && !disabled && (
@@ -46,7 +48,7 @@ export function EffortSwitcher({
                 className={`modelsw__item ${level === current ? "modelsw__item--current" : ""}`}
                 onClick={() => pick(level)}
               >
-                <span className="modelsw__model">{level}</span>
+                <span className="modelsw__model">{effortLabel(level)}</span>
                 {level === current && <Check size={13} className="modelsw__check" />}
               </button>
             ))}

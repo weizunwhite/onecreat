@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"reasonix/internal/fileutil"
 	"reasonix/internal/netclient"
 	"reasonix/internal/permission"
@@ -331,12 +333,20 @@ func (c *Config) SaveTo(path string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("save: create dir: %w", err)
 	}
+	rendered := RenderTOML(c)
+	// 原子 rename 前先校验渲染结果能被同一个解码器解析回来:防 H5 —— 任何字段(尤其
+	// system_prompt 含 """ 或末尾反斜杠)若写出非法 TOML,这里直接拒绝写入并报错,旧配置
+	// 原封不动,绝不把配置文件写 brick(否则下次 Load 失败、app/CLI 起不来)。
+	var probe Config
+	if _, err := toml.Decode(rendered, &probe); err != nil {
+		return fmt.Errorf("save: 渲染出的配置不是合法 TOML,已拒绝写入以避免损坏配置文件: %w", err)
+	}
 	tmp, err := os.CreateTemp(dir, ".reasonix.*.toml.tmp")
 	if err != nil {
 		return fmt.Errorf("save: create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	if _, err := tmp.WriteString(RenderTOML(c)); err != nil {
+	if _, err := tmp.WriteString(rendered); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("save: write: %w", err)
@@ -349,12 +359,14 @@ func (c *Config) SaveTo(path string) error {
 }
 
 // Save writes the configuration back to the file it was loaded from
-// (SourcePath), or to ./reasonix.toml when none exists yet — the conventional
-// project-local target a fresh GUI session would create.
+// (SourcePath), or to ./onecreat.toml when none exists yet — the conventional
+// project-local target a fresh GUI session would create. SourcePath still finds a
+// legacy ./reasonix.toml, so an existing project keeps writing its old file (read
+// old / write new); only brand-new projects get onecreat.toml.
 func (c *Config) Save() error {
 	path := SourcePath()
 	if path == "" {
-		path = "reasonix.toml"
+		path = "onecreat.toml"
 	}
 	return c.SaveTo(path)
 }

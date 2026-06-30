@@ -40,7 +40,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "onecreat",
+		Title:     "OneCreat",
 		Width:     1240,
 		Height:    720,
 		MinWidth:  760,
@@ -68,7 +68,7 @@ func main() {
 			Theme: windows.SystemDefault,
 		},
 		Linux: &linux.Options{
-			ProgramName: "onecreat",
+			ProgramName: "OneCreat",
 			// WebKitGTK GPU compositing is inconsistent across distros/drivers and
 			// is the one real cross-platform rough edge for a Go+webview stack:
 			// "always" can yield blank or flickering webviews on some setups, so

@@ -21,39 +21,33 @@ import (
 // frontend displays it; CheckUpdate compares against it.
 func (a *App) Version() string { return version }
 
-// CheckUpdate fetches the manifest (R2, then GitHub) and reports whether a newer
-// build is available for this platform. Safe to call on startup: a network error
-// surfaces in UpdateInfo.Err rather than failing, so the UI can stay quiet.
+// CheckUpdate is intentionally disabled in this fork (onecreat). It is distributed
+// manually and has no own update channel yet, so it must NOT phone home to the upstream
+// reasonix endpoints in updater.go — doing so leaks usage and could steer users into
+// installing upstream over this fork. Returns "no update" with zero network calls, so
+// the frontend's UpdateBanner stays hidden. To re-enable later: restore the
+// fetchManifest/evaluate path below and repoint the endpoints to onecreat's channel.
 func (a *App) CheckUpdate() (*UpdateInfo, error) {
-	c, err := httpClient()
-	if err != nil {
-		return &UpdateInfo{
-			Current:       version,
-			CanSelfUpdate: canSelfUpdate(),
-			DownloadURL:   defaultDownloadPage,
-			Err:           err.Error(),
-		}, nil
-	}
-	m, err := fetchManifest(a.reqCtx(), c)
-	if err != nil {
-		return &UpdateInfo{
-			Current:       version,
-			CanSelfUpdate: canSelfUpdate(),
-			DownloadURL:   defaultDownloadPage,
-			Err:           err.Error(),
-		}, nil
-	}
-	info := evaluate(version, m)
-	return &info, nil
+	return &UpdateInfo{
+		Current:       version,
+		Latest:        version,
+		Available:     false,
+		CanSelfUpdate: false,
+	}, nil
 }
 
 // OpenDownloadPage opens the releases page in the browser — the macOS manual-update
 // path and a fallback link elsewhere.
 func (a *App) OpenDownloadPage() {
 	page := defaultDownloadPage
-	if c, err := httpClient(); err == nil {
-		if m, err := fetchManifest(a.reqCtx(), c); err == nil && m.DownloadPage != "" {
-			page = m.DownloadPage
+	// 自更新在本 fork 已禁用(见 CheckUpdate),manifest 端点为空,fetchManifest 必然失败。
+	// 仅当 manifest 端点真的配置了(将来重新接入 onecreat 自己的更新通道时)才去取它的
+	// DownloadPage 覆盖,否则直接开默认发布页 —— 省掉每次点击两次必败的请求(L7)。
+	if manifestPrimary != "" || manifestFallback != "" {
+		if c, err := httpClient(); err == nil {
+			if m, err := fetchManifest(a.reqCtx(), c); err == nil && m.DownloadPage != "" {
+				page = m.DownloadPage
+			}
 		}
 	}
 	if a.ctx != nil {

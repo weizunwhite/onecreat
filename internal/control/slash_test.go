@@ -1,6 +1,7 @@
 package control
 
 import (
+	"strings"
 	"testing"
 
 	"reasonix/internal/skill"
@@ -21,6 +22,18 @@ func has(items []SlashItem, label string) bool {
 		}
 	}
 	return false
+}
+
+func TestModelListTextHidesModelsInGatewayMode(t *testing.T) {
+	t.Setenv("ONECREAT_GATEWAY_URL", "https://t.example.com/api/onecreat/v1")
+	c := New(Options{Label: "deepseek-flash/deepseek-v4-flash"})
+	got := c.modelListText()
+	if strings.Contains(strings.ToLower(got), "deepseek") || strings.Contains(got, "deepseek-v4-flash") {
+		t.Fatalf("gateway model list should not expose real model: %q", got)
+	}
+	if !strings.Contains(got, "OneCreat") {
+		t.Fatalf("gateway model list should explain platform-managed routing: %q", got)
+	}
 }
 
 func TestSlashArgItems(t *testing.T) {

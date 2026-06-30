@@ -10,6 +10,7 @@ import {
   Upload,
 } from "lucide-react";
 import { app } from "../lib/bridge";
+import { confirmDialog } from "../lib/confirm";
 import type { FileReference } from "../lib/fileRemarks";
 import type { KnowledgeImportResult, KnowledgeSearchResult, KnowledgeView } from "../lib/types";
 import { FileReferenceStrip } from "./FileReferenceStrip";
@@ -136,7 +137,7 @@ export function KnowledgePanel({
     async (id: string) => {
       const base = view?.bases.find((item) => item.id === id);
       if (!base) return;
-      if (!window.confirm(`删除知识库「${base.name}」？本地导入副本和索引会一起删除。`)) return;
+      if (!(await confirmDialog({ message: `删除知识库「${base.name}」？本地导入副本和索引会一起删除。`, confirmText: "删除", danger: true }))) return;
       setBusy(true);
       setErr(null);
       try {

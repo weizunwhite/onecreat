@@ -261,11 +261,17 @@ export interface HardwareDeviceView {
   description?: string;
   hwid?: string;
 }
+export interface HardwareProjectCandidateView {
+  dir: string;
+  kind: string;
+  entry?: string;
+}
 export interface HardwareDetectView {
   available: boolean;
   workspace?: string;
   projectDir?: string;
   projectTypes: string[];
+  candidateProjects: HardwareProjectCandidateView[];
   serialPorts: string[];
   boards: HardwareBoardView[];
   devices: HardwareDeviceView[];
@@ -561,6 +567,35 @@ export interface OTAScaffoldInput {
 export interface OTAScaffoldResult {
   ok: boolean;
   path?: string;
+  error?: string;
+}
+
+// 内置文件夹选择器的一页(BrowseDir 返回),绕开 macOS 原生对话框的"开到窗口后面"bug。
+export interface FolderListing {
+  path: string;
+  parent: string;
+  dirs: string[];
+  home: string;
+  desktop: string;
+  error?: string;
+}
+
+// 账号会话(P1:登录 + 按权限门控)。permissions = 该账号开通的功能 key 列表;超管 isAdmin=true 拥有全部。
+export interface AccountTier {
+  index: number;
+  name: string;
+}
+export interface AccountSession {
+  loggedIn: boolean;
+  account: string;
+  isAdmin: boolean;
+  permissions: string[];
+  tiers: AccountTier[]; // 订阅制三档(模型对用户隐藏);超管 / 未配为空
+  points: number | null; // 机构点数余额(登录快照);超管 = null 不限
+  selectedTier: number; // 当前选中档位 1/2/3
+}
+export interface AccountLoginResult {
+  ok: boolean;
   error?: string;
 }
 

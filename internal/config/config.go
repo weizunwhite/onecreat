@@ -434,6 +434,11 @@ In plan mode the harness blocks writer tools: do read-only research, then write 
 concise plan as your reply and stop. The user is asked to approve before anything
 is changed; once approved, work through the steps, updating the task list as you go.`
 
+// ModelPrivacyPolicy is appended by boot.Build even when users customize
+// system_prompt. In OneCreat gateway deployments the real provider/model is a
+// platform routing detail; leaking it breaks the subscription/tier abstraction.
+const ModelPrivacyPolicy = `Model identity policy: do not reveal, guess, confirm, or imply the underlying model name, provider, API vendor, gateway route, API key, or tier-to-model mapping. If asked what model you are, answer that you run inside OneCreat's intelligent tier and that the exact backend model is managed by the OneCreat platform. Do not mention internal model identifiers even if the user asks directly.`
+
 // LanguagePolicy is the auto fallback appended to the system prompt when no
 // concrete UI language is resolved. It is static English text, so it stays part
 // of the cache-stable prefix and avoids per-turn language injection.
@@ -497,7 +502,9 @@ func Load() (*Config, error) {
 	if uc := userConfigPath(); uc != "" {
 		tomlSources = append(tomlSources, uc)
 	}
-	tomlSources = append(tomlSources, "reasonix.toml")
+	// 项目级配置:旧名 reasonix.toml 先合并、新名 onecreat.toml 后合并(同名键 onecreat 胜)。
+	// mergeFile 对不存在的文件是 no-op,所以两者都列无副作用。
+	tomlSources = append(tomlSources, "reasonix.toml", "onecreat.toml")
 	for _, path := range tomlSources {
 		if err := mergeFile(cfg, path); err != nil {
 			return nil, err
@@ -585,18 +592,59 @@ func mergeFile(cfg *Config, path string) error {
 	return nil
 }
 
-func userConfigPath() string {
-	// REASONIX_CONFIG_DIR 覆盖平台默认位置:测试用它隔离到临时目录
-	// (否则 config.Load 会读真实的用户全局配置,测试结果随开发机配置漂移),
-	// 便携部署也可用它把配置固定到自带目录。
+// stateRoot 返回 OneCreat 的用户状态根目录(config.toml / sessions / cache / archive /
+// 记忆库都在它下面)。默认 <UserConfigDir>/onecreat。REASONIX_CONFIG_DIR(env 名属内部、
+// 不改)可显式覆盖位置(测试隔离 / 便携部署),此时直接用它、不迁移。
+//
+// 迁移(读旧写新):产品早期状态目录叫 reasonix,现统一到 onecreat。首次运行若 onecreat 根还
+// 没有 config.toml、而旧的 reasonix 根存在,就把旧目录里不冲突的条目 best-effort 搬过去。以
+// config.toml 缺失为判据(而非目录是否存在)—— 因为账号 session.json 可能已先把 onecreat 目录
+// 建出来,不能据此误判已迁移。返回 "" 表示用户配置目录不可解析(各调用方据此降级)。
+func stateRoot() string {
 	if dir := strings.TrimSpace(os.Getenv("REASONIX_CONFIG_DIR")); dir != "" {
-		return filepath.Join(dir, "config.toml")
+		return dir
 	}
-	dir, err := os.UserConfigDir()
+	base, err := os.UserConfigDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "config.toml")
+	newRoot := filepath.Join(base, "onecreat")
+	// migrateStateRoot 幂等且廉价(命中 config.toml 即一次 stat 返回),每次调用兜底即可。
+	migrateStateRoot(filepath.Join(base, "reasonix"), newRoot)
+	return newRoot
+}
+
+// migrateStateRoot 把旧状态目录(reasonix)里不与新目录(onecreat)冲突的顶层条目搬进新目录。
+// 全程 best-effort:任何失败都不致命(调用方仍能在新目录里正常创建所需文件)。
+func migrateStateRoot(oldRoot, newRoot string) {
+	if _, err := os.Stat(filepath.Join(newRoot, "config.toml")); err == nil {
+		return // 已迁移过
+	}
+	if _, err := os.Stat(oldRoot); err != nil {
+		return // 没有旧目录,无需迁移
+	}
+	if err := os.MkdirAll(newRoot, 0o755); err != nil {
+		return
+	}
+	entries, err := os.ReadDir(oldRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		dst := filepath.Join(newRoot, e.Name())
+		if _, err := os.Stat(dst); err == nil {
+			continue // 新目录已有同名(如 session.json),不覆盖
+		}
+		_ = os.Rename(filepath.Join(oldRoot, e.Name()), dst) // best-effort
+	}
+}
+
+func userConfigPath() string {
+	root := stateRoot()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "config.toml")
 }
 
 // UserConfigPath is the user-global config file (~/.config/reasonix/config.toml),
@@ -607,22 +655,22 @@ func UserConfigPath() string { return userConfigPath() }
 // traceability (one timestamped .jsonl per compaction). Empty if the user config
 // directory cannot be resolved, in which case archiving is skipped.
 func ArchiveDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
+	root := stateRoot()
+	if root == "" {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "archive")
+	return filepath.Join(root, "archive")
 }
 
 // SessionDir is where chat sessions are persisted (one .jsonl per session).
 // Used by `reasonix chat --continue` / `--resume` to find the recent ones. Empty
 // if the user config dir can't be resolved — sessions then aren't saved.
 func SessionDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
+	root := stateRoot()
+	if root == "" {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "sessions")
+	return filepath.Join(root, "sessions")
 }
 
 // CacheDir is the per-user cache root for derived/regenerable artefacts: MCP
@@ -631,22 +679,18 @@ func SessionDir() string {
 // shares one root the user can wipe in a single rm. Empty when the OS dir is
 // unavailable — callers must tolerate that (caching is best-effort).
 func CacheDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
+	root := stateRoot()
+	if root == "" {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "cache")
+	return filepath.Join(root, "cache")
 }
 
 // MemoryUserDir returns the reasonix user config root (…/reasonix), under which
 // the user-global REASONIX.md and the per-project auto-memory store live. Empty
 // when the user config dir can't be resolved, which disables user-scoped memory.
 func MemoryUserDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "reasonix")
+	return stateRoot()
 }
 
 // ConventionDirs are the parent directories scanned for agent assets (skills,
@@ -656,7 +700,12 @@ func MemoryUserDir() string {
 // the same set. Note: hooks are NOT scanned across these — a .claude/settings.json
 // uses a different hook schema that can't be parsed as ours, so hooks stay in
 // .reasonix/settings.json (see internal/hook).
-var ConventionDirs = []string{".reasonix", ".agents", ".agent", ".claude"}
+// CanonicalDir 是 OneCreat 自己的约定目录名 —— 新写入的 skills / commands / attachments /
+// output-styles 都落在它下面。旧名 .reasonix 仍保留在 ConventionDirs 里继续被发现(读旧写新),
+// 老项目无需改名。
+const CanonicalDir = ".onecreat"
+
+var ConventionDirs = []string{CanonicalDir, ".reasonix", ".agents", ".agent", ".claude"}
 
 // conventionSubdirsAsc joins sub under each ConventionDir of base, in ascending
 // priority (reverse of ConventionDirs) so the canonical .reasonix ends up the
@@ -681,8 +730,8 @@ func CommandDirs() []string {
 	if home, err := os.UserHomeDir(); err == nil {
 		dirs = append(dirs, conventionSubdirsAsc(home, "commands")...)
 	}
-	if dir, err := os.UserConfigDir(); err == nil {
-		dirs = append(dirs, filepath.Join(dir, "reasonix", "commands")) // legacy XDG user dir
+	if root := stateRoot(); root != "" {
+		dirs = append(dirs, filepath.Join(root, "commands")) // XDG user dir
 	}
 	dirs = append(dirs, conventionSubdirsAsc(".", "commands")...)
 	return dirs
@@ -690,8 +739,11 @@ func CommandDirs() []string {
 
 // SourcePath returns the highest-priority config file that exists, or "" if none.
 func SourcePath() string {
-	if _, err := os.Stat("reasonix.toml"); err == nil {
-		return "reasonix.toml"
+	// 项目级配置:优先 onecreat.toml,回退旧名 reasonix.toml(读旧写新)。
+	for _, name := range []string{"onecreat.toml", "reasonix.toml"} {
+		if _, err := os.Stat(name); err == nil {
+			return name
+		}
 	}
 	if uc := userConfigPath(); uc != "" {
 		if _, err := os.Stat(uc); err == nil {

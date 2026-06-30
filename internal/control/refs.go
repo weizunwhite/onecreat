@@ -62,7 +62,8 @@ func classifyRef(token string, known map[string]bool, exists func(string) bool) 
 	if i := strings.Index(token, ":"); i > 0 && i+1 < len(token) && known[token[:i]] {
 		return ref{kind: refResource, server: token[:i], uri: token[i+1:], raw: token}, true
 	}
-	if strings.HasPrefix(filepath.ToSlash(token), ".reasonix/attachments/") && exists(token) {
+	slash := filepath.ToSlash(token)
+	if (strings.HasPrefix(slash, ".onecreat/attachments/") || strings.HasPrefix(slash, ".reasonix/attachments/")) && exists(token) {
 		return ref{kind: refImage, path: token, raw: token}, true
 	}
 	if exists(token) {

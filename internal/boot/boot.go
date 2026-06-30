@@ -82,6 +82,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
 	}
+	// onecreat 网关模式:桌面端登录后会设 ONECREAT_GATEWAY_URL/_TOKEN,把模型请求改走
+	// 平台 AI 网关(用登录 token 鉴权、平台统一拿上游 key 计费),而非客户端直连厂商。
+	applyOnecreatGateway(entry)
 	if opts.RequireKey {
 		if err := cfg.Validate(modelName); err != nil {
 			return nil, err
@@ -146,6 +149,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	skillStore := skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: cfg.SkillCustomPaths(), Stderr: opts.Stderr})
 	skills := skillStore.List()
 	sysPrompt = skill.ApplyIndex(sysPrompt, skills)
+	sysPrompt += "\n\n" + config.ModelPrivacyPolicy
 
 	reg := tool.NewRegistry()
 	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: cfg.WriteRoots(), Network: cfg.Sandbox.Network}
@@ -292,6 +296,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		cleanup = func() { prev(); lspMgr.Close() }
 	}
 
+	// 在 control.New 成功接管 cleanup 之前的任何错误返回,都必须释放已经启动的资源
+	// (eager MCP 子进程、LSP manager)。否则它们泄漏 —— desktop 用永不取消的 ctx 调
+	// Build,失败的 SetModel / 标签重建每次都漏一组子进程(M1)。控制器接管后置 success=true,
+	// 由 Controller.Close() 负责调 cleanup。
+	success := false
+	defer func() {
+		if !success {
+			cleanup()
+		}
+	}()
+
 	maxSteps := cfg.Agent.MaxSteps
 	if opts.MaxSteps > 0 {
 		maxSteps = opts.MaxSteps
@@ -423,9 +438,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	label := entry.Model
 	var classifier *control.ProviderAutoPlanClassifier
 
+	// onecreat 网关模式下禁用客户端双模型/分类器:平台统一控制模型(档位),客户端再配一个
+	// planner / classifier 没有意义 —— 它们不走网关(applyOnecreatGateway 只改写主 provider),
+	// 会(1)在阶段标记/顶栏 label 里泄露真实模型名,(2)直连厂商绕过网关计量(或无 key 失败)。
+	gatewayActive := onecreatGatewayActive()
+
 	// Two-model collaboration: a distinct planner_model wraps the executor in a
 	// Coordinator with its own session, kept separate for cache stability.
-	if pm := cfg.Agent.PlannerModel; pm != "" {
+	if pm := cfg.Agent.PlannerModel; pm != "" && !gatewayActive {
 		pe, ok := cfg.ResolveModel(pm)
 		if !ok {
 			return nil, fmt.Errorf("planner_model %q is not a configured provider", pm)
@@ -440,7 +460,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			label = entry.Model + " + planner " + pe.Model
 		}
 	}
-	if !strings.EqualFold(strings.TrimSpace(cfg.Agent.AutoPlan), "off") && cfg.Agent.AutoPlanClassifier != "" {
+	if !strings.EqualFold(strings.TrimSpace(cfg.Agent.AutoPlan), "off") && cfg.Agent.AutoPlanClassifier != "" && !gatewayActive {
 		cm := cfg.Agent.AutoPlanClassifier
 		ce, ok := cfg.ResolveModel(cm)
 		if !ok {
@@ -479,6 +499,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if classifier != nil {
 		ctrlOpts.Classifier = classifier
 	}
+	success = true // 控制器接管 cleanup;defer 不再兜底释放
 	return control.New(ctrlOpts), nil
 }
 
@@ -524,6 +545,31 @@ func subagentModelKeys(name string) []string {
 		}
 	}
 	return keys
+}
+
+// onecreatGatewayActive 报告当前是否处于 onecreat 网关模式(桌面端登录后会设这个 env)。
+func onecreatGatewayActive() bool {
+	return strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL")) != ""
+}
+
+// applyOnecreatGateway 在「onecreat 网关模式」下改写已解析的 provider entry:BaseURL 指向
+// 平台 AI 网关、API key 取登录 token、关掉直连余额查询。仅当 ONECREAT_GATEWAY_URL 存在且该
+// provider 是 openai 兼容类型时生效 —— 只有桌面端登录后才会设这两个 env,命令行/其他前端不
+// 设则完全无副作用(零耦合)。对外 provider 名也统一成 onecreat,避免错误提示泄露底层模型族。
+func applyOnecreatGateway(e *config.ProviderEntry) {
+	gw := strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL"))
+	if gw == "" || e == nil || e.Kind != "openai" {
+		return
+	}
+	e.Name = "onecreat"
+	e.BaseURL = gw
+	e.APIKeyEnv = "ONECREAT_GATEWAY_TOKEN" // APIKey() 读这个 env 拿登录 token
+	e.BalanceURL = ""                      // 网关模式下不直连厂商查余额
+	// 档位模式:把发给上游的 model 改成选中的档位 "tier-N",平台网关再映射到真实模型
+	//(对用户隐藏)。未设档位则保持原 model(过渡期:旧版客户端仍发旧模型名,网关兼容)。
+	if tier := strings.TrimSpace(os.Getenv("ONECREAT_TIER")); tier != "" {
+		e.Model = tier
+	}
 }
 
 // NewProvider builds a provider.Provider from a configured entry. Exported so

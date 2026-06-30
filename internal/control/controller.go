@@ -103,24 +103,31 @@ type Controller struct {
 
 	// mu guards the run state and approval bookkeeping; every critical section
 	// under it is short and non-blocking.
-	mu          sync.Mutex
-	cancel      context.CancelFunc
-	running     bool
-	planMode    bool
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	running bool
+	// busy 标记一个「独占重写会话日志」的操作正在进行(compact/summarize/new/rewind/
+	// fork/branch/switch)。它与 running(turn 进行中)互斥:任一进行中,runGuarded 就
+	// 不启动新 turn,这些 op 之间也互斥。既有守卫只挡 turn→op(op 入口查 running),这里
+	// 补上 op→turn —— 堵住「op 在飞行中(尤其 summarize 的多秒摘要网络调用)时,并发的
+	// 一轮 turn 经 runGuarded 启动、Session.Add 追加消息,随后 op 基于旧快照的
+	// Replace/SetSession 把整轮静默覆盖丢掉」的窗口(B2 的反向)。
+	busy     bool
+	planMode bool
 	// coachPreamble 是会话级「协作模式」persona(如学生引导 / 老师助手):一段
 	// 由前端选定的口径文案,Compose 把它作为 <coaching-style> 块随每个 turn 注入
 	// (发给模型、不进缓存系统前缀),空串=默认无 persona。XML 包裹使其在侧栏
 	// 预览里被自动剥掉,不污染会话标题。
 	coachPreamble string
 	sessionPath   string
-	approvals   map[string]chan approvalReply
-	asks        map[string]chan []event.AskAnswer
+	approvals     map[string]chan approvalReply
+	asks          map[string]chan []event.AskAnswer
 	// pendingApprovals/pendingAsks 保存「已发出、尚未应答」的提示原始载荷,供切回标签时
 	// 重放(桌面多标签:后台标签的审批事件在它无人订阅时发出,切回来需要补发)(A2)。
 	pendingApprovals map[string]event.Approval
 	pendingAsks      map[string]event.Ask
 	granted          map[string]bool
-	nextID      int
+	nextID           int
 	// turn counts model turns this session, passed to hooks in their payload.
 	turn int
 	// autoApprove auto-allows writer tool calls without prompting. Set only while
@@ -201,29 +208,29 @@ func New(opts Options) *Controller {
 		pluginCtx = context.Background()
 	}
 	c := &Controller{
-		runner:        opts.Runner,
-		executor:      opts.Executor,
-		sink:          sink,
-		policy:        opts.Policy,
-		label:         opts.Label,
-		systemPrompt:  opts.SystemPrompt,
-		sessionDir:    opts.SessionDir,
-		sessionPath:   opts.SessionPath,
-		host:          opts.Host,
-		commands:      opts.Commands,
-		skills:        opts.Skills,
-		hooks:         opts.Hooks,
-		mem:           opts.Memory,
-		cleanup:       opts.Cleanup,
-		autoPlan:      normalizeAutoPlan(opts.AutoPlan),
-		classifier:    classifier,
-		balanceURL:    opts.BalanceURL,
-		balanceKey:    opts.BalanceKey,
-		balanceClient: opts.BalanceClient,
-		jobs:          opts.Jobs,
-		reg:           opts.Registry,
-		pluginCtx:     pluginCtx,
-		cpRoot:        opts.WorkspaceRoot,
+		runner:           opts.Runner,
+		executor:         opts.Executor,
+		sink:             sink,
+		policy:           opts.Policy,
+		label:            opts.Label,
+		systemPrompt:     opts.SystemPrompt,
+		sessionDir:       opts.SessionDir,
+		sessionPath:      opts.SessionPath,
+		host:             opts.Host,
+		commands:         opts.Commands,
+		skills:           opts.Skills,
+		hooks:            opts.Hooks,
+		mem:              opts.Memory,
+		cleanup:          opts.Cleanup,
+		autoPlan:         normalizeAutoPlan(opts.AutoPlan),
+		classifier:       classifier,
+		balanceURL:       opts.BalanceURL,
+		balanceKey:       opts.BalanceKey,
+		balanceClient:    opts.BalanceClient,
+		jobs:             opts.Jobs,
+		reg:              opts.Registry,
+		pluginCtx:        pluginCtx,
+		cpRoot:           opts.WorkspaceRoot,
 		approvals:        map[string]chan approvalReply{},
 		asks:             map[string]chan []event.AskAnswer{},
 		pendingApprovals: map[string]event.Approval{},
@@ -301,7 +308,7 @@ func (c *Controller) beginCheckpoint(input string) {
 // turn is already in flight.
 func (c *Controller) runGuarded(body func(ctx context.Context) error) {
 	c.mu.Lock()
-	if c.running {
+	if c.running || c.busy {
 		c.mu.Unlock()
 		return
 	}
@@ -319,6 +326,26 @@ func (c *Controller) runGuarded(body func(ctx context.Context) error) {
 		c.mu.Unlock()
 		c.sink.Emit(event.Event{Kind: event.TurnDone, Err: err})
 	}()
+}
+
+// tryBeginExclusive 原子地尝试进入「独占重写会话日志」临界区:若已有 turn 运行(running)
+// 或已有另一个独占 op(busy),返回 false;否则置 busy 返回 true。成功的调用方必须
+// defer endExclusive()。配合 runGuarded 同时检查 running||busy,使 turn 与 compact/
+// summarize/new/rewind/fork/branch/switch 严格互斥(见 busy 字段说明)。
+func (c *Controller) tryBeginExclusive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running || c.busy {
+		return false
+	}
+	c.busy = true
+	return true
+}
+
+func (c *Controller) endExclusive() {
+	c.mu.Lock()
+	c.busy = false
+	c.mu.Unlock()
 }
 
 // Send starts a turn with an uncomposed message. The controller applies
@@ -738,14 +765,13 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	if c.executor == nil {
 		return nil
 	}
-	// turn 进行中拒绝:compact() 会无锁读+整体 Replace 会话,与正在跑的 turn 的 Add
-	// 并发会丢消息 + 数据竞争(B2)。
-	c.mu.Lock()
-	running := c.running
-	c.mu.Unlock()
-	if running {
+	// turn 进行中、或另一个会话重写 op 进行中,都拒绝:compact() 会 Snapshot→多秒摘要
+	// 网络调用→整体 Replace,期间并发的 turn(Session.Add)会被基于旧快照的 Replace
+	// 整轮覆盖丢掉(B2 双向)。守卫覆盖整个 Snapshot→summarize→Replace 跨度。
+	if !c.tryBeginExclusive() {
 		return c.busyNotice("正在运行中,请等当前轮结束再压缩")
 	}
+	defer c.endExclusive()
 	return c.executor.CompactNow(ctx, instructions)
 }
 
@@ -777,13 +803,12 @@ func (c *Controller) NewSession() error {
 	if c.executor == nil {
 		return nil
 	}
-	// turn 进行中拒绝:SetSession 会换掉会话指针,turn 运行中写入会落到混合状态(B2)。
-	c.mu.Lock()
-	running := c.running
-	c.mu.Unlock()
-	if running {
+	// turn 进行中、或另一个会话重写 op 进行中,都拒绝:Snapshot→SetSession 换会话指针,
+	// 期间并发的 turn(Session.Add)会落到混合状态/被丢掉(B2 双向)。
+	if !c.tryBeginExclusive() {
 		return c.busyNotice("正在运行中,请等当前轮结束再新建会话")
 	}
+	defer c.endExclusive()
 	if err := c.Snapshot(); err != nil {
 		return err
 	}
@@ -837,13 +862,13 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 	if c.cp == nil || c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
+	if !c.tryBeginExclusive() {
+		return c.rewindFail(fmt.Errorf("cannot rewind while another operation is running"))
+	}
+	defer c.endExclusive()
 	c.mu.Lock()
-	running := c.running
 	boundary, hasBound := c.cpBound[turn]
 	c.mu.Unlock()
-	if running {
-		return c.rewindFail(fmt.Errorf("cannot rewind while a turn is running"))
-	}
 
 	if scope == RewindCode || scope == RewindBoth {
 		written, deleted, err := c.cp.RestoreCode(turn)
@@ -895,13 +920,13 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 	if c.sessionDir == "" {
 		return "", c.rewindFail(fmt.Errorf("fork needs session persistence, which is disabled"))
 	}
+	if !c.tryBeginExclusive() {
+		return "", c.rewindFail(fmt.Errorf("cannot fork while another operation is running"))
+	}
+	defer c.endExclusive()
 	c.mu.Lock()
-	running := c.running
 	boundary, hasBound := c.cpBound[turn]
 	c.mu.Unlock()
-	if running {
-		return "", c.rewindFail(fmt.Errorf("cannot fork while a turn is running"))
-	}
 	if !hasBound {
 		return "", c.rewindFail(fmt.Errorf("fork unavailable for turn %d (resumed session)", turn))
 	}
@@ -952,12 +977,10 @@ func (c *Controller) Branch(name string) (string, error) {
 	if c.sessionDir == "" {
 		return "", c.rewindFail(fmt.Errorf("branch needs session persistence, which is disabled"))
 	}
-	c.mu.Lock()
-	running := c.running
-	c.mu.Unlock()
-	if running {
-		return "", c.rewindFail(fmt.Errorf("cannot branch while a turn is running"))
+	if !c.tryBeginExclusive() {
+		return "", c.rewindFail(fmt.Errorf("cannot branch while another operation is running"))
 	}
+	defer c.endExclusive()
 	if !c.executor.Session().HasContent() {
 		return "", c.rewindFail(fmt.Errorf("nothing to branch yet"))
 	}
@@ -1009,12 +1032,10 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	if ref == "" {
 		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("usage: /switch <branch id|name>"))
 	}
-	c.mu.Lock()
-	running := c.running
-	c.mu.Unlock()
-	if running {
-		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("cannot switch branches while a turn is running"))
+	if !c.tryBeginExclusive() {
+		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("cannot switch branches while another operation is running"))
 	}
+	defer c.endExclusive()
 	branches, err := c.Branches()
 	if err != nil {
 		return agent.BranchInfo{}, c.rewindFail(err)
@@ -1091,13 +1112,13 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
+	if !c.tryBeginExclusive() {
+		return c.rewindFail(fmt.Errorf("cannot summarize while another operation is running"))
+	}
+	defer c.endExclusive()
 	c.mu.Lock()
-	running := c.running
 	boundary, hasBound := c.cpBound[turn]
 	c.mu.Unlock()
-	if running {
-		return c.rewindFail(fmt.Errorf("cannot summarize while a turn is running"))
-	}
 	if !hasBound {
 		return c.rewindFail(fmt.Errorf("summarize unavailable for turn %d (resumed session)", turn))
 	}
@@ -1308,6 +1329,14 @@ func (c *Controller) AddMCPServer(e config.PluginEntry) (int, error) {
 		return n, fmt.Errorf("connected, but saving config failed: %w", err)
 	}
 	return n, nil
+}
+
+// ConnectMCPServer connects an MCP server for this controller only. It does not
+// write the entry to config, so UI affordances such as a one-click hardware
+// assistant can expose tools to the current conversation without changing the
+// user's persistent MCP list.
+func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) {
+	return c.connectMCPServer(e)
 }
 
 func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {

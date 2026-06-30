@@ -1,11 +1,12 @@
 import { Cpu, PencilRuler, FileText, GraduationCap, BookMarked, ClipboardList, Award, type LucideIcon } from "lucide-react";
 import logo from "../assets/onecreat-logo.png";
 import { useT } from "../lib/i18n";
+import { useCan } from "../lib/account";
 import type { DictKey } from "../locales/en";
 
 // Welcome 是空状态首页：从「硬件优先」翻成「任务/技能启动台」。
-// 每张卡 = 一个教培垂直：硬件项目直接开工作台；其余发起对应 skill 的起手 prompt
-// （文案里带 skill 触发词，引擎会自动浮现对应技能）。下方输入框仍是通用对话入口。
+// 内容类卡片会发起对应任务的起手 prompt；硬件卡片只打开设备实验台，
+// 真正的问题仍由用户输入或实验台里的显式按钮触发。
 // 卡片标题/描述走 i18n;prompt 是发给模型的指令,保持中文(产品与技能均中文优先)。
 
 type Vertical = {
@@ -13,9 +14,8 @@ type Vertical = {
   icon: LucideIcon;
   titleKey: DictKey;
   descKey: DictKey;
-  // hardware 卡打开硬件工作台；其余卡发一句起手 prompt 进对话。
   prompt?: string;
-  openHardware?: boolean;
+  opensHardware?: boolean;
 };
 
 const VERTICALS: Vertical[] = [
@@ -24,7 +24,7 @@ const VERTICALS: Vertical[] = [
     icon: Cpu,
     titleKey: "welcome.v.hardware.title",
     descKey: "welcome.v.hardware.desc",
-    openHardware: true,
+    opensHardware: true,
   },
   {
     key: "proposal",
@@ -83,21 +83,28 @@ export function Welcome({
   onOpenHardware?: () => void;
 }) {
   const t = useT();
+  const can = useCan();
+  // 本地 API 模式显示全部功能卡;平台账号模式才按权限清单收窄。
+  const visible = VERTICALS.filter((v) => can(v.key));
 
   const launch = (v: Vertical) => {
-    if (v.openHardware) onOpenHardware?.();
-    else if (v.prompt) onPrompt(v.prompt + OUTPUT_DIR_NOTE);
+    if (v.opensHardware) {
+      onOpenHardware?.();
+      return;
+    }
+    if (!v.prompt) return;
+    onPrompt(v.prompt + OUTPUT_DIR_NOTE);
   };
 
   return (
     <div className="welcome">
-      <img src={logo} className="welcome__logo" alt="onecreat" />
-      <div className="welcome__title">onecreat</div>
+      <img src={logo} className="welcome__logo" alt="OneCreat" />
+      <div className="welcome__title">OneCreat</div>
       <div className="welcome__tag">{t("welcome.tagline")}</div>
 
       {/* 垂直启动台：点一张卡开始一个任务 */}
       <div className="welcome__verticals">
-        {VERTICALS.map((v) => {
+        {visible.map((v) => {
           const Icon = v.icon;
           return (
             <button key={v.key} className="welcome__vertical" onClick={() => launch(v)} title={t(v.descKey)}>

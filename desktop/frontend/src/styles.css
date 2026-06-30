@@ -1,5 +1,5 @@
 /*
- * onecreat desktop — single-column, developer-dense, terminal-flavored chat UI.
+ * OneCreat desktop — single-column, developer-dense, terminal-flavored chat UI.
  *
  * Multi-platform notes:
  *  - System font stack only; no web-font fetches (offline-first, consistent).
@@ -295,6 +295,145 @@ body {
   display: none;
 }
 
+/* 硬件编程模式:四栏 = 导航 | 实验台 | 对话 | 代码。
+   实验台是独立第二栏(竖向整列、可收起);对话常驻;代码(workspace)在最右、可隐藏。
+   DOM 顺序 [sidebar, hw-rail, chat-pane, workspace] 自然落到这几列,不用 order。 */
+.layout--hardware {
+  grid-template-columns: var(--sidebar-width) var(--hw-rail-width, 280px) minmax(0, 1fr);
+}
+.layout--hardware.layout--workspace-open,
+.layout--hardware.layout--workspace-maximized {
+  grid-template-columns: var(--sidebar-width) var(--hw-rail-width, 280px) minmax(0, 1fr) var(--workspace-width);
+}
+/* 实验台收起:第二栏缩成窄条。 */
+.layout--hardware.layout--hw-rail-collapsed {
+  --hw-rail-width: 46px;
+}
+/* 硬件模式对话常驻:即使代码面板最大化也不隐藏对话。 */
+.layout--hardware.layout--workspace-maximized .chat-pane {
+  display: flex;
+}
+
+/* 实验台第二栏:竖向整列,独立滚动。 */
+.hw-rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.hw-rail__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px 10px 8px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--fg);
+}
+.hw-rail__icon {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+.hw-rail__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.hw-rail__toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  opacity: 0.55;
+  cursor: pointer;
+}
+.hw-rail__toggle:hover {
+  background: var(--border-soft);
+  opacity: 1;
+}
+.hw-rail__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* 收起态:窄条,图标 + 展开按钮竖排居中。 */
+.hw-rail--collapsed .hw-rail__head {
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 4px;
+}
+
+/* 窄列里把实验台工具栏改成纵向堆叠、按钮 2 列,避免压成竖字。 */
+.hw-rail .hardware-view {
+  height: auto;
+  min-height: 0;
+  padding: 0 10px 12px;
+}
+.hw-rail .hardware-view__toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.hw-rail .hardware-view__toolbar-group--selects {
+  flex-direction: column;
+  gap: 8px;
+}
+.hw-rail .hardware-view__field {
+  width: 100%;
+}
+.hw-rail .hardware-view__toolbar-group--actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.hw-rail .hardware-view__btn {
+  white-space: nowrap;
+}
+.hw-rail .hardware-view__toolbar-group--right {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.hw-rail .hardware-view__mcp {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 项目栏在窄列里纵向堆叠;「工具就绪」下拉改为顺排(position:static),随列滚动、不被裁切。 */
+.hw-rail .hardware-view__project-bar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.hw-rail .hardware-view__toolchains-wrap {
+  position: static;
+}
+.hw-rail .hardware-view__toolchains-menu {
+  position: static;
+  min-width: 0;
+  max-height: none;
+  margin-top: 6px;
+  box-shadow: none;
+}
+/* 四栏里多余/太占地方的:返回按钮、打开项目文件按钮、agent 任务大块(三线流程/证据/示例·调试/汇总);
+   保留:工具栏、项目栏、编译结果反馈、报错 banner、安装进度。 */
+.hw-rail .hardware-view__back,
+.hw-rail .hardware-view__project-bar .chip,
+.hw-rail .hardware-workflow,
+.hw-rail .hardware-evidence,
+.hw-rail .hardware-section,
+.hw-rail .hardware-summary-grid {
+  display: none;
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -321,9 +460,11 @@ body {
   font-weight: 650;
 }
 .sidebar__logo {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #fff;
+  object-fit: contain;
 }
 .sidebar__toggle {
   --wails-draggable: no-drag;
@@ -1151,13 +1292,15 @@ body {
 }
 .sidebar--collapsed .sidebar__new,
 .sidebar--collapsed .sidebar__navitem,
-.sidebar--collapsed .sidebar__knowledge {
+.sidebar--collapsed .sidebar__knowledge,
+.sidebar--collapsed .sidebar__hardware {
   justify-content: center;
   width: 40px;
   padding: 0;
   gap: 0;
 }
-.sidebar--collapsed .sidebar__knowledge {
+.sidebar--collapsed .sidebar__knowledge,
+.sidebar--collapsed .sidebar__hardware {
   min-height: 40px;
   display: flex;
   border-radius: 10px;
@@ -1168,6 +1311,8 @@ body {
 }
 .sidebar--collapsed .sidebar__new span,
 .sidebar--collapsed .sidebar__navitem span,
+.sidebar--collapsed .sidebar__knowledge span,
+.sidebar--collapsed .sidebar__hardware span,
 .sidebar--collapsed .sidebar-file-label {
   display: none;
 }
@@ -1176,6 +1321,9 @@ body {
   width: 100%;
   padding: 0 0 12px;
   border-top: none;
+  /* 折叠时会话列表(平时 flex:1 的撑开弹簧)被隐藏,底部这组(历史/记忆/设置…)会浮上来;
+     用 margin-top:auto 把它压回底部。 */
+  margin-top: auto;
 }
 .sidebar--collapsed .sidebar__navitem--sessions {
   display: flex;
@@ -1715,11 +1863,12 @@ body {
   color: var(--fg-faint);
 }
 .welcome__logo {
-  width: 54px;
-  height: 54px;
+  width: 74px;
+  height: 74px;
   margin-bottom: 16px;
-  border-radius: 13px;
+  border-radius: 16px;
   object-fit: contain;
+  background: #fff;
 }
 .welcome__title {
   font-size: 22px;
@@ -3298,7 +3447,72 @@ button.session-file-summary:hover {
   margin: 8px auto;
   color: var(--fg-dim);
   white-space: pre-wrap;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  /* 与消息正文(markdown,14px sans)完全一致:此前用 mono,同 14px 下比 sans 正文显得更大,
+     一条长提示(如「登录已过期」)夹在对话里上下字号不一致。靠 --fg-dim 颜色区分次要信息。 */
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ── 应用内确认 / 提示弹窗(Wails webview 没有可用的 window.confirm/alert)──────── */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.38);
+}
+.confirm-box {
+  width: 100%;
+  max-width: 420px;
+  padding: 20px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.confirm-box__title {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--fg);
+}
+.confirm-box__msg {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+.confirm-box__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.confirm-box__btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--button-bg, transparent);
+  color: var(--fg);
+  cursor: pointer;
+}
+.confirm-box__btn:hover {
+  background: var(--button-bg-hover, rgba(127, 127, 127, 0.12));
+}
+.confirm-box__btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.confirm-box__btn--danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
 }
 .phase {
   margin: 14px auto;
@@ -4178,6 +4392,36 @@ button.session-file-summary:hover {
   white-space: nowrap;
   min-width: 0;
 }
+
+/* 订阅模式:档位旁的剩余点数小徽标 */
+.modelsw__points {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.14));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+/* 本轮消耗的点数(余额旁) */
+.modelsw__used {
+  margin-left: 5px;
+  font-style: normal;
+  color: var(--accent);
+  opacity: 0.95;
+}
+
+/* 使用教程抽屉里的内嵌 guide.html,填满抽屉正文 */
+.help-iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: none;
+  background: #faf8f4;
+}
 .modelsw__trigger-file {
   min-width: 0;
   display: grid;
@@ -4230,7 +4474,7 @@ button.session-file-summary:hover {
 }
 .modelsw__item {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 14px;
+  grid-template-columns: minmax(0, 1fr) 14px;
   align-items: start;
   gap: 8px;
   width: 100%;
@@ -8886,6 +9130,10 @@ button.session-file-summary:hover {
   .layout--workspace-open {
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   }
+  .layout--hardware.layout--workspace-open,
+  .layout--hardware.layout--workspace-maximized {
+    grid-template-columns: var(--sidebar-width) var(--hw-rail-width, 280px) minmax(0, 1fr);
+  }
   .workspace-panel,
   .workspace-panel-resizer,
   .topbar__workspace-toggle {
@@ -8895,6 +9143,11 @@ button.session-file-summary:hover {
 
 @media (max-width: 820px) {
   .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .layout--hardware,
+  .layout--hardware.layout--workspace-open,
+  .layout--hardware.layout--workspace-maximized {
     grid-template-columns: minmax(0, 1fr);
   }
   .sidebar {
@@ -9071,10 +9324,8 @@ button.session-file-summary:hover {
 /* ─── 全屏硬件 IDE 视图(替代原抽屉)─── */
 
 /* 主区域视图切换:Transcript 和 HardwareView 同时挂载,display 切换防止 chat 流断 */
-.main--chat .main__view--hardware,
-.main--hardware .main__view--chat {
-  display: none;
-}
+/* 旧的"chat/硬件二选一"隐藏规则已废弃:新布局硬件模式就显示对话区(实验台是顶部 bar),
+   且 .main__view--hardware 元素已移除。留着会把硬件模式下的整个对话/回复藏掉(发消息没反应)。 */
 .main__view {
   display: flex;
   flex-direction: column;
@@ -9331,9 +9582,46 @@ button.session-file-summary:hover {
   border-radius: 8px;
   background: var(--bg-elev);
 }
+/* 检测中的加载提示(代替过去会闪一下的"不是硬件项目"误报) */
+.hardware-view__detecting {
+  padding: 16px 14px;
+  color: var(--fg-faint);
+  font-size: 13px;
+}
 .hardware-view__empty-title {
   font-size: 14px;
   font-weight: 600;
+}
+.hardware-view__candidates {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.hardware-view__candidates-title {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+.hardware-view__candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12px;
+}
+.hardware-view__candidate strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.hardware-view__candidate span {
+  color: var(--fg-faint);
+  white-space: nowrap;
 }
 .hardware-view__empty p {
   margin: 0;
@@ -10145,6 +10433,17 @@ button.session-file-summary:hover {
   cursor: pointer;
 }
 
+.hardware-view__port-picker {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.hardware-view__port-refresh {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+
 .hardware-view__btn {
   display: inline-flex;
   align-items: center;
@@ -10238,6 +10537,102 @@ button.session-file-summary:hover {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.hardware-workflow {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.9fr) minmax(0, 1.4fr);
+  gap: 14px;
+  align-items: stretch;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+
+.hardware-workflow__intro {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hardware-workflow__eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.hardware-workflow__intro h2 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 17px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.hardware-workflow__intro p {
+  margin: 0;
+  color: var(--fg-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.hardware-workflow__lanes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.hardware-workflow__lane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+}
+
+.hardware-workflow__lane--active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.hardware-workflow__lane--ok {
+  border-color: color-mix(in srgb, var(--ok, #2da44e) 45%, var(--border));
+}
+
+.hardware-workflow__lane--pending {
+  border-color: color-mix(in srgb, var(--warn, #d29922) 45%, var(--border));
+}
+
+.hardware-workflow__lane--warn {
+  border-color: color-mix(in srgb, var(--danger, #cf222e) 32%, var(--border));
+}
+
+.hardware-workflow__lane-label {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.hardware-workflow__lane strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hardware-workflow__lane small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 项目路径条 — 项目已识别时显示,一行精简 */
@@ -10388,13 +10783,48 @@ button.session-file-summary:hover {
   opacity: 0.7;
   cursor: progress;
 }
-/* 一键安装实时进度卡片(醒目、常驻 body 顶部) */
+.hardware-view__install-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 240px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg);
+  font-size: 11.5px;
+  line-height: 1;
+}
+.hardware-view__install-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hardware-view__install-pill--running {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  animation: hardware-install-pulse 1.2s ease-in-out infinite;
+}
+.hardware-view__install-pill--ok {
+  border-color: color-mix(in srgb, var(--ok, #2da44e) 45%, var(--border));
+  background: color-mix(in srgb, var(--ok, #2da44e) 9%, transparent);
+}
+.hardware-view__install-pill--warn {
+  border-color: color-mix(in srgb, var(--warn, #d29922) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn, #d29922) 10%, transparent);
+}
+/* 一键安装实时进度卡片(项目条下方就地显示) */
 .hardware-view__install-card {
-  margin: 0 0 10px;
+  flex-shrink: 0;
+  margin: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
   background: var(--bg-soft, rgba(127, 127, 127, 0.06));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
 }
 .hardware-view__install-card--running {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
@@ -10479,6 +10909,11 @@ button.session-file-summary:hover {
 }
 .hardware-view__install-step--failed .hardware-view__install-step-msg {
   color: var(--danger, #d9534f);
+}
+
+@keyframes hardware-install-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 24%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
 }
 
 /* 空状态 — 没识别到项目时显示 */
@@ -10642,6 +11077,16 @@ button.session-file-summary:hover {
   font-size: 13px;
 }
 
+/* 本次编译/烧录的项目目录名:让"编译通过"能看出是哪个项目通过的 */
+.hardware-quickrun__sketch {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent, #0969da);
+  background: color-mix(in srgb, var(--accent, #0969da) 14%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
 .hardware-quickrun__summary {
   color: var(--fg-faint);
   font-weight: normal;
@@ -10737,6 +11182,11 @@ button.session-file-summary:hover {
 }
 
 @media (max-width: 760px) {
+  .hardware-workflow,
+  .hardware-workflow__lanes {
+    grid-template-columns: 1fr;
+  }
+
   .hardware-quickrun {
     grid-template-columns: 1fr;
   }
@@ -11808,4 +12258,194 @@ button.session-file-summary:hover {
   border: none;
   border-radius: 5px;
   cursor: pointer;
+}
+
+/* ── 内置文件夹选择器(绕开 macOS 原生对话框跑窗口后面的 bug) ──────────── */
+.fp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.fp {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 560px;
+  height: min(70vh, 540px);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.fp__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.fp__title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.fp__spacer {
+  flex: 1;
+}
+.fp__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+  flex-shrink: 0;
+}
+.fp__path {
+  flex: 1;
+  min-width: 0;
+  margin-left: 4px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-faint);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* 路径太长时优先显示尾部(项目名) */
+  text-align: left;
+}
+.fp__err {
+  padding: 8px 14px;
+  font-size: 12.5px;
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--err) 22%, var(--border));
+  flex-shrink: 0;
+}
+.fp__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+.fp__hint {
+  padding: 16px;
+  font-size: 12.5px;
+  color: var(--fg-faint);
+  text-align: center;
+}
+.fp__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+}
+.fp__row:hover {
+  background: var(--bg-elev-2);
+}
+.fp__row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fp__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-soft);
+  flex-shrink: 0;
+}
+.fp__pickhint {
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+/* ── 登录门(账号/权限) ─────────────────────────────────────────────── */
+.login {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+.login__card {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 34px 28px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.18);
+}
+.login__logo {
+  width: 68px;
+  height: 68px;
+  border-radius: 15px;
+  background: #fff;
+  object-fit: contain;
+}
+.login__title {
+  font-size: 20px;
+  font-weight: 600;
+}
+.login__sub {
+  font-size: 12.5px;
+  color: var(--fg-faint);
+  margin-bottom: 8px;
+}
+.login__in {
+  width: 100%;
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.login__in:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.login__err {
+  width: 100%;
+  font-size: 12.5px;
+  color: var(--err);
+}
+.login__btn {
+  width: 100%;
+  margin-top: 6px;
+  height: 38px;
 }

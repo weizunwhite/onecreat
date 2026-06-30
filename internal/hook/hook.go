@@ -120,20 +120,38 @@ func (h ResolvedHook) timeout() time.Duration {
 	return defaultTimeout(h.Event)
 }
 
-// SettingsDirname / SettingsFilename locate a scope's settings.json.
+// SettingsDirname / SettingsFilename locate a scope's settings.json. The canonical
+// dir is .onecreat; legacySettingsDirname (.reasonix) is still read for older
+// projects/installs (read old / write new).
 const (
-	SettingsDirname  = ".reasonix"
-	SettingsFilename = "settings.json"
+	SettingsDirname       = ".onecreat"
+	legacySettingsDirname = ".reasonix"
+	SettingsFilename      = "settings.json"
 )
 
-// GlobalSettingsPath is ~/.reasonix/settings.json (homeDir overrides ~).
-func GlobalSettingsPath(homeDir string) string {
-	return filepath.Join(home(homeDir), SettingsDirname, SettingsFilename)
+// resolveDotDir 在 base 下定位 OneCreat 约定目录里的文件:优先 .onecreat,仅当只有旧的
+// .reasonix/<file> 存在时回退到它;两者都不存在则返回 .onecreat 路径(新位置语义,供写入)。
+func resolveDotDir(base, file string) string {
+	canonical := filepath.Join(base, SettingsDirname, file)
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	if legacy := filepath.Join(base, legacySettingsDirname, file); legacy != canonical {
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return canonical
 }
 
-// ProjectSettingsPath is <root>/.reasonix/settings.json.
+// GlobalSettingsPath is ~/.onecreat/settings.json (legacy ~/.reasonix fallback; homeDir overrides ~).
+func GlobalSettingsPath(homeDir string) string {
+	return resolveDotDir(home(homeDir), SettingsFilename)
+}
+
+// ProjectSettingsPath is <root>/.onecreat/settings.json (legacy .reasonix fallback).
 func ProjectSettingsPath(projectRoot string) string {
-	return filepath.Join(projectRoot, SettingsDirname, SettingsFilename)
+	return resolveDotDir(projectRoot, SettingsFilename)
 }
 
 // LoadOptions configure Load. Project hooks load only when Trusted; global hooks

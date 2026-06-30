@@ -12,6 +12,7 @@ import (
 )
 
 func TestCommandsIncludesEffortNotThinking(t *testing.T) {
+	clearGatewayEnv(t)
 	app := NewApp()
 	cmds := app.Commands()
 	if !hasCommand(cmds, "effort") {
@@ -23,6 +24,7 @@ func TestCommandsIncludesEffortNotThinking(t *testing.T) {
 }
 
 func TestEffortDefaultsBeforeStartup(t *testing.T) {
+	clearGatewayEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -33,6 +35,7 @@ func TestEffortDefaultsBeforeStartup(t *testing.T) {
 }
 
 func TestSetEffortPersistsAndAutoClears(t *testing.T) {
+	clearGatewayEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -59,6 +62,7 @@ func TestSetEffortPersistsAndAutoClears(t *testing.T) {
 }
 
 func TestSetEffortRebuildsController(t *testing.T) {
+	clearGatewayEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -88,6 +92,7 @@ func TestSetEffortRebuildsController(t *testing.T) {
 }
 
 func TestSetEffortRejectsRunningTurn(t *testing.T) {
+	clearGatewayEnv(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -106,9 +111,43 @@ func TestSetEffortRejectsRunningTurn(t *testing.T) {
 	waitNotRunning(t, app.ctrl)
 }
 
+func TestGatewayModeHidesModelManagementSurfaces(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(accountModeEnv, "platform")
+	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
+	app := NewApp()
+	app.ctrl = control.New(control.Options{Label: "deepseek-flash/tier-1"})
+	app.model = "deepseek-flash/deepseek-v4-flash"
+	app.label = "deepseek-flash/tier-1"
+
+	if got := app.SlashArgs("/model "); len(got.Items) != 0 {
+		t.Fatalf("网关模式 /model 补全不应暴露真实模型: %+v", got.Items)
+	}
+	if got := app.SlashArgs("/effort "); len(got.Items) != 0 {
+		t.Fatalf("网关模式 /effort 补全不应暴露模型能力: %+v", got.Items)
+	}
+	if hasCommand(app.Commands(), "model") || hasCommand(app.Commands(), "effort") {
+		t.Fatalf("网关模式命令列表不应暴露模型管理入口: %+v", app.Commands())
+	}
+	if got := app.Models(); len(got) != 0 {
+		t.Fatalf("网关模式 Models() 不应返回真实模型: %+v", got)
+	}
+	if got := app.Meta().Label; strings.Contains(strings.ToLower(got), "deepseek") {
+		t.Fatalf("网关模式 Meta label 不应暴露真实模型: %q", got)
+	}
+}
+
 type blockingRunner struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+func clearGatewayEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(gatewayEnvURL, "")
+	t.Setenv(gatewayEnvToken, "")
+	t.Setenv(gatewayEnvTier, "")
 }
 
 func (r *blockingRunner) Run(ctx context.Context, _ string) error {

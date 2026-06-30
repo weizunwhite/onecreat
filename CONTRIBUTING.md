@@ -1,6 +1,6 @@
-# Contributing to Reasonix
+# Contributing to OneCreat
 
-Thank you for your interest in contributing to Reasonix! This guide covers
+Thank you for your interest in contributing to OneCreat! This guide covers
 everything you need to get started.
 
 ## Prerequisites

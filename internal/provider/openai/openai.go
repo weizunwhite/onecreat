@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -40,7 +41,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
 	effort, _ := cfg.Extra["effort"].(string)
-	deepseek := isDeepSeekBaseURL(cfg.BaseURL)
+	deepseek := isDeepSeekBaseURL(cfg.BaseURL) || isDeepSeekModel(cfg.Model)
 	if deepseek {
 		effort = strings.ToLower(strings.TrimSpace(effort))
 		switch effort {
@@ -90,6 +91,17 @@ type client struct {
 
 func (c *client) Name() string { return c.name }
 
+// authKey 返回当前请求要用的 API key。keyEnv 非空时**每次请求都从环境变量读**(而不是用 build
+// 时烤死的值):这样登录 token 续期 / 重新登录后(更新了 env)对所有已建好的 controller 立即
+// 生效,无需重建——对 onecreat 网关 token 的自动续期是关键。静态 key(如 DEEPSEEK_API_KEY)
+// 读 env 也是同一个值,无副作用。keyEnv 为空(直接给的 key)时用 build 时的值。
+func (c *client) authKey() string {
+	if c.keyEnv != "" {
+		return os.Getenv(c.keyEnv)
+	}
+	return c.apiKey
+}
+
 func isDeepSeekBaseURL(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -97,6 +109,16 @@ func isDeepSeekBaseURL(baseURL string) bool {
 	}
 	host := strings.ToLower(u.Hostname())
 	return host == "api.deepseek.com" || strings.HasSuffix(host, ".deepseek.com")
+}
+
+// isDeepSeekModel reports whether the model is one of DeepSeek's own thinking-capable
+// models by its native name (deepseek-v4-flash/pro, deepseek-reasoner, …). It matches
+// the hyphen form only, so OpenRouter-namespaced ids like "deepseek/deepseek-chat" (a
+// reseller's hosting, no DeepSeek thinking param) are deliberately excluded. This keeps
+// DeepSeek thinking + effort enabled even when routed through a non-DeepSeek base URL
+// (e.g. the onecreat platform AI gateway), so behavior matches a direct connection.
+func isDeepSeekModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-")
 }
 
 func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
@@ -139,7 +161,7 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 			return nil, fmt.Errorf("%s: build request: %w", c.name, err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		httpReq.Header.Set("Authorization", "Bearer "+c.authKey())
 		httpReq.Header.Set("Accept", "text/event-stream")
 
 		resp, err := c.http.Do(httpReq)
@@ -164,6 +186,12 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 		// A rejected key is a configuration problem, not a transient one — give
 		// an actionable error instead of dumping the raw status body.
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			if c.keyEnv == "ONECREAT_GATEWAY_TOKEN" {
+				if message := openAIErrorMessage(msg); message != "" {
+					return nil, fmt.Errorf("%s: %s", c.name, message)
+				}
+				return nil, fmt.Errorf("%s: 登录已失效,请在 onecreat 重新登录", c.name)
+			}
 			return nil, &provider.AuthError{Provider: c.name, KeyEnv: c.keyEnv, Status: resp.StatusCode}
 		}
 		statusErr := fmt.Errorf("%s: status %d: %s", c.name, resp.StatusCode, strings.TrimSpace(string(msg)))
@@ -173,6 +201,18 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 		lastErr = statusErr
 	}
 	return nil, lastErr
+}
+
+func openAIErrorMessage(body []byte) string {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Error.Message)
 }
 
 // isRetryableStatus returns true for HTTP status codes a transient backoff can

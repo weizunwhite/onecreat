@@ -25,6 +25,13 @@ var attachmentPathSeq atomic.Uint64
 var attachmentNow = time.Now
 var safeAttachmentExt = regexp.MustCompile(`^\.[a-z0-9]{1,12}$`)
 
+// attachmentDir 是新附件的写入位置;legacyAttachmentDir 是旧位置(.reasonix),老会话里的
+// @.reasonix/attachments/ 引用仍可解析(读旧写新)。
+var (
+	attachmentDir       = filepath.Join(".onecreat", "attachments")
+	legacyAttachmentDir = filepath.Join(".reasonix", "attachments")
+)
+
 // SaveAttachmentDataURL stores a non-image file (dropped/pasted in the desktop
 // app, where the browser exposes bytes but not a real path) under
 // .reasonix/attachments and returns its repo-relative path for @referencing.
@@ -259,17 +266,23 @@ func cleanAttachmentPath(path string) (string, error) {
 		return "", fmt.Errorf("attachment path must be relative")
 	}
 	clean := filepath.Clean(filepath.FromSlash(path))
-	root := filepath.Join(".reasonix", "attachments")
-	if clean == "." || clean == root || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
-		return "", fmt.Errorf("attachment path is outside .reasonix/attachments")
+	// 接受新位置(.onecreat)与旧位置(.reasonix,老会话引用仍可读)两个根。
+	for _, root := range []string{attachmentDir, legacyAttachmentDir} {
+		if clean == root || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			continue
+		}
+		if strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if err := ensureAttachmentRoot(); err != nil {
+			return "", err
+		}
+		if err := rejectSymlinkComponents(clean, root); err != nil {
+			return "", err
+		}
+		return clean, nil
 	}
-	if err := ensureAttachmentRoot(); err != nil {
-		return "", err
-	}
-	if err := rejectSymlinkComponents(clean, root); err != nil {
-		return "", err
-	}
-	return clean, nil
+	return "", fmt.Errorf("attachment path is outside %s", attachmentDir)
 }
 
 func rejectSymlinkComponents(path, root string) error {
@@ -298,7 +311,7 @@ func rejectSymlinkComponents(path, root string) error {
 }
 
 func ensureAttachmentRoot() error {
-	root := filepath.Join(".reasonix", "attachments")
+	root := attachmentDir
 	if info, err := os.Lstat(root); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("attachment directory must not be a symlink")
@@ -398,7 +411,7 @@ func createAttachmentFile(ext string) (string, *os.File, error) {
 func attachmentPath(ext string) string {
 	seq := attachmentPathSeq.Add(1)
 	name := fmt.Sprintf("clipboard-%s-%06d%s", attachmentNow().Format("20060102-150405.000000"), seq, ext)
-	return filepath.Join(".reasonix", "attachments", name)
+	return filepath.Join(attachmentDir, name)
 }
 
 func detectedImageMime(raw []byte) string {

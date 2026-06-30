@@ -361,9 +361,9 @@ func (s *Store) CreateWithContent(name string, scope Scope, content string) (str
 		if s.projectRoot == "" {
 			return "", fmt.Errorf("project scope requires a workspace — run from a project directory, or use global scope")
 		}
-		root = filepath.Join(s.projectRoot, ".reasonix", SkillsDirname)
+		root = filepath.Join(s.projectRoot, config.CanonicalDir, SkillsDirname)
 	default:
-		root = filepath.Join(s.homeDir, ".reasonix", SkillsDirname)
+		root = filepath.Join(s.homeDir, config.CanonicalDir, SkillsDirname)
 	}
 	flat := filepath.Join(root, name+".md")
 	folder := filepath.Join(root, name, SkillFile)

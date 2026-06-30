@@ -190,7 +190,34 @@ func (a *App) buildController() {
 	a.activeTab = "main"
 	a.mu.Unlock()
 
+	// 默认 local-first:清掉任何旧网关 env,让首个 controller 使用本地 provider/API key。
+	// 只有显式 ONECREAT_ACCOUNT_MODE=platform 时才续期并改走平台 AI 网关。
+	if platformAccountEnabled() {
+		ensureFreshToken()
+	}
+	applyGatewayEnvFromSession()
+
 	a.buildTab(rt)
+
+	if platformAccountEnabled() {
+		// 后台定时续期:长时间开着 app 也不会因 access token 过期而掉线。
+		go a.tokenRefreshLoop()
+	}
+}
+
+// tokenRefreshLoop 每 10 分钟尝试续期网关 token。ensureFreshToken 内部判断「快过期才真刷」,
+// 所以多数 tick 只是廉价检查;refresh_token 缺失 / 失效时静默跳过。随 app 退出而结束。
+func (a *App) tokenRefreshLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			ensureFreshToken()
+		}
+	}
 }
 
 // buildTab 在一个标签运行时里装配一个独立 controller(boot.Build 可能较慢,所以由
@@ -411,10 +438,19 @@ func (a *App) ctrlForTab(tabID string) *control.Controller {
 	return nil
 }
 
+func isGatewayManagedSlash(trimmed string) bool {
+	return trimmed == "/model" || strings.HasPrefix(trimmed, "/model ") ||
+		trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ")
+}
+
 // Submit runs raw user input as a turn; slash commands and @-references are
 // resolved by the controller. Output arrives asynchronously on eventChannel.
 func (a *App) Submit(input string) {
 	trimmed := strings.TrimSpace(input)
+	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
+		return
+	}
 	if trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ") {
 		a.runEffortCommand(trimmed)
 		return
@@ -430,6 +466,11 @@ func (a *App) Submit(input string) {
 // SubmitDisplay runs input as a turn while recording a shorter UI-only display
 // string for the saved desktop transcript. The model still receives input.
 func (a *App) SubmitDisplay(display, input string) {
+	trimmed := strings.TrimSpace(input)
+	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
+		return
+	}
 	// 取一次 ctrl 局部变量后全程用它,消除「检查与 Submit 之间 controller 被换/Close」
 	// 的 TOCTOU 数据竞争(A9)。SubmitDisplay 是知识库增强与硬件面板提交的主路径,频繁调用。
 	a.mu.RLock()
@@ -1089,6 +1130,9 @@ func (a *App) Meta() Meta {
 	ready := a.ready
 	ctrl := a.ctrl
 	a.mu.RUnlock()
+	if gatewayActive() {
+		label = "OneCreat 智能档位"
+	}
 	cwd, _ := os.Getwd()
 	return Meta{
 		Label:        label,
@@ -1134,14 +1178,20 @@ func (a *App) Commands() []CommandInfo {
 	out := []CommandInfo{
 		{Name: "new", Description: i18n.M.CmdNew, Kind: "builtin"},
 		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin"},
-		{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin"},
-		{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin"},
-		{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin"},
-		{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin"},
-		{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin"},
-		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
-		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
 	}
+	if !gatewayActive() {
+		out = append(out,
+			CommandInfo{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin"},
+			CommandInfo{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin"},
+		)
+	}
+	out = append(out,
+		CommandInfo{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin"},
+		CommandInfo{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin"},
+		CommandInfo{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin"},
+		CommandInfo{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
+		CommandInfo{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
+	)
 	a.mu.RLock()
 	ctrl := a.ctrl
 	a.mu.RUnlock()
@@ -1187,6 +1237,9 @@ type SlashArgsResult struct {
 // /skill, /hooks) for the composer — the same logic the chat TUI uses. Empty
 // Items means the input has no structured arguments to complete.
 func (a *App) SlashArgs(input string) SlashArgsResult {
+	if gatewayActive() && isGatewayManagedSlash(strings.TrimSpace(input)) {
+		return SlashArgsResult{Items: []SlashArgItem{}}
+	}
 	a.mu.RLock()
 	ctrl := a.ctrl
 	model := a.model
@@ -1198,8 +1251,10 @@ func (a *App) SlashArgs(input string) SlashArgsResult {
 		Skills:       ctrl.Skills(),
 		CurrentModel: model,
 	}
-	for _, m := range a.Models() {
-		data.ModelRefs = append(data.ModelRefs, m.Ref)
+	if !gatewayActive() {
+		for _, m := range a.Models() {
+			data.ModelRefs = append(data.ModelRefs, m.Ref)
+		}
 	}
 	if h := ctrl.Host(); h != nil {
 		data.ServerNames = h.ServerNames()
@@ -1542,17 +1597,24 @@ func (a *App) HardwareBoardList() []HardwareBoardSummary {
 // tool output. The drawer can show real local readiness before the user asks the
 // agent to build or flash anything.
 type HardwareDetectView struct {
-	Available       bool                    `json:"available"`
-	Workspace       string                  `json:"workspace,omitempty"`
-	ProjectDir      string                  `json:"projectDir,omitempty"`
-	ProjectTypes    []string                `json:"projectTypes"`
-	SerialPorts     []string                `json:"serialPorts"`
-	Boards          []HardwareBoardView     `json:"boards"`
-	Devices         []HardwareDeviceView    `json:"devices"`
-	Toolchains      []HardwareToolchainView `json:"toolchains"`
-	Recommendations []string                `json:"recommendations"`
-	ESPIDFOfficial  map[string]string       `json:"espIdfOfficialMcp,omitempty"`
-	Error           string                  `json:"error,omitempty"`
+	Available         bool                       `json:"available"`
+	Workspace         string                     `json:"workspace,omitempty"`
+	ProjectDir        string                     `json:"projectDir,omitempty"`
+	ProjectTypes      []string                   `json:"projectTypes"`
+	CandidateProjects []HardwareProjectCandidate `json:"candidateProjects"`
+	SerialPorts       []string                   `json:"serialPorts"`
+	Boards            []HardwareBoardView        `json:"boards"`
+	Devices           []HardwareDeviceView       `json:"devices"`
+	Toolchains        []HardwareToolchainView    `json:"toolchains"`
+	Recommendations   []string                   `json:"recommendations"`
+	ESPIDFOfficial    map[string]string          `json:"espIdfOfficialMcp,omitempty"`
+	Error             string                     `json:"error,omitempty"`
+}
+
+type HardwareProjectCandidate struct {
+	Dir   string `json:"dir"`
+	Kind  string `json:"kind"`
+	Entry string `json:"entry,omitempty"`
 }
 
 // HardwareInstallStepView 是一键安装里单个工具的安装结果(对应 MCP 的 toolInstallStep)。
@@ -1672,13 +1734,14 @@ func (a *App) HardwareMCP() HardwareMCPView {
 // server is connected to the current agent session.
 func (a *App) HardwareDetect() HardwareDetectView {
 	view := HardwareDetectView{
-		Available:       false,
-		ProjectTypes:    []string{},
-		SerialPorts:     []string{},
-		Boards:          []HardwareBoardView{},
-		Devices:         []HardwareDeviceView{},
-		Toolchains:      []HardwareToolchainView{},
-		Recommendations: []string{},
+		Available:         false,
+		ProjectTypes:      []string{},
+		CandidateProjects: []HardwareProjectCandidate{},
+		SerialPorts:       []string{},
+		Boards:            []HardwareBoardView{},
+		Devices:           []HardwareDeviceView{},
+		Toolchains:        []HardwareToolchainView{},
+		Recommendations:   []string{},
 	}
 	command, _, err := resolveHardwareMCP()
 	if err != nil {
@@ -2148,7 +2211,8 @@ type HardwareRunInput struct {
 }
 
 // HardwarePublishInput 是「发布固件到远程服务器」(③ 云端拉取)的入参。
-// 服务器配置(ssh/目录/URL)留空时用 NAS 默认值。
+// 服务器配置(ssh/目录/URL)留空时跳过发布(不再有内置 NAS 默认值,去内网化后各人填自己
+// 的 NAS/VPS,见 HardwarePublishFirmware)。
 type HardwarePublishInput struct {
 	ProjectDir  string `json:"projectDir"`
 	Board       string `json:"board,omitempty"`
@@ -2236,6 +2300,8 @@ func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}
 	}
+	// 烧录前先关掉串口监视器:它占着串口,不关上传会被它卡住(串口同一时刻只能一个进程用)。
+	a.SerialClose()
 	projectDir := resolveHardwareProjectDir(input.ProjectDir)
 	switch input.Platform {
 	case "arduino":
@@ -2506,20 +2572,27 @@ func arduinoFQBNFromBoard(board string) string {
 	return boards.ArduinoFQBN(board)
 }
 
-// AddHardwareMCPServer connects the first available hardware MCP binary and
-// persists it to config. The frontend should use this rather than hardcoding a
-// developer-machine path.
+// AddHardwareMCPServer connects the first available hardware MCP binary to the
+// current session only. Direct hardware buttons call the MCP binary themselves;
+// this method exposes the same tools to the AI conversation without silently
+// changing the persistent config file.
 func (a *App) AddHardwareMCPServer() (int, error) {
 	command, _, err := resolveHardwareMCP()
 	if err != nil {
 		return 0, err
 	}
-	return a.AddMCPServer(MCPServerInput{
-		Name:      "hardware",
-		Transport: "stdio",
-		Command:   command,
-		Args:      []string{},
-		Env:       map[string]string{},
+	a.mu.RLock()
+	ctrl := a.ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
+		return 0, fmt.Errorf("no active session")
+	}
+	return ctrl.ConnectMCPServer(config.PluginEntry{
+		Name:    "hardware",
+		Type:    "stdio",
+		Command: command,
+		Args:    []string{},
+		Env:     map[string]string{},
 	})
 }
 
@@ -2690,6 +2763,9 @@ func normalizeHardwareDetectView(view *HardwareDetectView) {
 	if view.ProjectTypes == nil {
 		view.ProjectTypes = []string{}
 	}
+	if view.CandidateProjects == nil {
+		view.CandidateProjects = []HardwareProjectCandidate{}
+	}
 	if view.SerialPorts == nil {
 		view.SerialPorts = []string{}
 	}
@@ -2825,6 +2901,9 @@ type EffortInfo struct {
 // providers are skipped. Result is non-nil: the frontend reads .length, so a nil
 // slice (JSON null) would crash the switcher on an empty list.
 func (a *App) Models() []ModelInfo {
+	if gatewayActive() {
+		return []ModelInfo{}
+	}
 	a.mu.RLock()
 	curModel := a.model
 	a.mu.RUnlock()
@@ -2853,6 +2932,11 @@ func (a *App) Models() []ModelInfo {
 func (a *App) SetModel(name string) error {
 	if a.ctx == nil || name == "" {
 		return nil
+	}
+	// 网关模式下模型由平台统一分配,拒绝本地切模型(H4 兜底;前端 ModelSwitcher 在网关模式
+	// 已不暴露真实模型,这里防直接调 IPC 绕过)。档位切换走 SetOnecreatTier,不经这里。
+	if gatewayActive() {
+		return errGatewayManaged
 	}
 	// 固定「发起切换时的活动标签」+ 它自己的 sink:boot.Build 是秒级操作,期间用户可能
 	// 切走 activeTab。build 完成后只回写这个标签,并用它的 sink 绑定新 controller,避免
@@ -2911,8 +2995,91 @@ func (a *App) SetModel(name string) error {
 	return nil
 }
 
+// rebuildTabByID 用当前 config + 环境(含网关 env)重建「指定」标签的 controller,沿用该
+// 标签自己的 model 并带过它的历史。boot.Build 是秒级操作,绝不持 a.mu 跨它:锁内只快照
+// 该 tab 的 ctrl/model/sink,锁外重建,再回锁写回(boot.Build-under-a.mu 红线)。
+func (a *App) rebuildTabByID(tabID string) {
+	if a.ctx == nil {
+		return
+	}
+	a.mu.RLock()
+	rt := a.tabs[tabID]
+	if rt == nil {
+		a.mu.RUnlock()
+		return
+	}
+	ctrl := rt.ctrl
+	model := rt.model
+	targetSink := rt.sink
+	if targetSink == nil {
+		targetSink = a.sink
+	}
+	if model == "" {
+		model = a.model // 该 tab 尚未记录 model 时退回活动镜像
+	}
+	a.mu.RUnlock()
+	if model == "" {
+		return // 还没 build 过(极早期登录):startup 的 applyGatewayEnvFromSession 已兜底
+	}
+
+	var carried []provider.Message
+	if ctrl != nil {
+		_ = ctrl.Snapshot()
+		carried = ctrl.History()
+		ctrl.Close()
+	}
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink})
+	if err != nil {
+		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
+	}
+	a.mu.Lock()
+	if rt := a.tabs[tabID]; rt != nil {
+		rt.ctrl = newCtrl
+		rt.label = newCtrl.Label()
+	}
+	if a.activeTab == tabID {
+		a.ctrl = newCtrl
+		a.label = newCtrl.Label()
+	}
+	a.mu.Unlock()
+	newCtrl.EnableInteractiveApproval()
+
+	path := ""
+	if dir := newCtrl.SessionDir(); dir != "" {
+		path = agent.NewSessionPath(dir, newCtrl.Label())
+	}
+	if len(carried) > 0 {
+		newCtrl.Resume(&agent.Session{Messages: carried}, path)
+	} else if path != "" {
+		newCtrl.SetSessionPath(path)
+	}
+}
+
+// rebuildAllTabs 用当前网关 env 重建「每一个」标签的 controller —— 不止活动 tab。切档 /
+// 登录 / 登出后必须全量重建:tier/token/URL 在 boot.Build 时被固化进每个 tab 的 provider
+// (boot.go applyOnecreatGateway 把 model 烤成 tier-N、key 烤成网关 token,provider 不按
+// 每条请求重读),只重建活动 tab 会让后台 tab 继续按「旧档」计费、甚至登出后仍持已撤销
+// 的 token 继续打计费端点(H2)。boot.Build 秒级,锁内只快照 tab id 列表,锁外逐个重建。
+// 注:正在跑的后台 tab 会被 Close 重建(其历史已带过)—— 登出时这正是要的(撤销 token 不
+// 能再被使用);切档时会中断该 tab 当前这一轮,与既有「活动 tab 切模型即重建」行为一致。
+func (a *App) rebuildAllTabs() {
+	if a.ctx == nil {
+		return
+	}
+	a.mu.RLock()
+	ids := make([]string, 0, len(a.tabs))
+	for id := range a.tabs {
+		ids = append(ids, id)
+	}
+	a.mu.RUnlock()
+	for _, id := range ids {
+		a.rebuildTabByID(id)
+	}
+}
+
 func resolveHardwareMCP() (command, source string, err error) {
-	const bin = "reasonix-hardware-mcp"
+	// 新名优先,回退旧名:老安装的 .app 内 / PATH 上可能仍是 reasonix-hardware-mcp(读旧)。
+	bins := []string{"onecreat-hardware-mcp", "reasonix-hardware-mcp"}
 	if override := strings.TrimSpace(os.Getenv("REASONIX_HARDWARE_MCP")); override != "" {
 		if executable(override) {
 			return override, "REASONIX_HARDWARE_MCP", nil
@@ -2921,39 +3088,46 @@ func resolveHardwareMCP() (command, source string, err error) {
 	}
 	if exe, e := os.Executable(); e == nil {
 		exeDir := filepath.Dir(exe)
-		// Dev 模式优先回溯到 repo 根的 bin/(make build 的产物)。
-		// wails dev 的 bundle 是 reasonix-desktop.app(production 是 onecreat.app),
-		// dev bundle 在重建/cp 后路径不稳定,而 repo/bin/ 是稳定的开发期路径。
-		// production 走原 exe-based 路径,这段不会命中。
-		if strings.Contains(exeDir, "reasonix-desktop.app") {
-			// .../desktop/build/bin/reasonix-desktop.app/Contents/MacOS → 回溯 6 层到 repo 根
-			devCandidate := filepath.Join(exeDir, "..", "..", "..", "..", "..", "..", "bin", bin)
-			if executable(devCandidate) {
-				return filepath.Clean(devCandidate), "dev bin", nil
+		// Dev 模式优先回溯到 repo 根的 bin/(make build 的产物)。wails dev 的 bundle 名随
+		// outputfilename(onecreat-desktop;旧版 reasonix-desktop),production 是 onecreat.app
+		// 走下面 exe-based 路径,这段不命中。
+		if strings.Contains(exeDir, "onecreat-desktop.app") || strings.Contains(exeDir, "reasonix-desktop.app") {
+			for _, bin := range bins {
+				// .../desktop/build/bin/<name>.app/Contents/MacOS → 回溯 6 层到 repo 根
+				devCandidate := filepath.Join(exeDir, "..", "..", "..", "..", "..", "..", "bin", bin)
+				if executable(devCandidate) {
+					return filepath.Clean(devCandidate), "dev bin", nil
+				}
 			}
 		}
-		for _, candidate := range []string{
-			filepath.Join(exeDir, bin),
-			filepath.Join(exeDir, bin+".exe"),
-			filepath.Join(exeDir, "..", "Resources", bin),
-			filepath.Join(exeDir, "..", "Resources", bin+".exe"),
-		} {
-			if executable(candidate) {
-				return filepath.Clean(candidate), "app bundle", nil
+		for _, bin := range bins {
+			for _, candidate := range []string{
+				filepath.Join(exeDir, bin),
+				filepath.Join(exeDir, bin+".exe"),
+				filepath.Join(exeDir, "..", "Resources", bin),
+				filepath.Join(exeDir, "..", "Resources", bin+".exe"),
+			} {
+				if executable(candidate) {
+					return filepath.Clean(candidate), "app bundle", nil
+				}
 			}
 		}
 	}
-	if p, e := exec.LookPath(bin); e == nil {
-		return p, "PATH", nil
+	for _, bin := range bins {
+		if p, e := exec.LookPath(bin); e == nil {
+			return p, "PATH", nil
+		}
 	}
 	if cwd, e := os.Getwd(); e == nil {
-		for _, candidate := range []string{
-			filepath.Join(cwd, "bin", bin),
-			filepath.Join(cwd, "..", "bin", bin),
-			filepath.Join(cwd, "..", "..", "bin", bin),
-		} {
-			if executable(candidate) {
-				return filepath.Clean(candidate), "workspace bin", nil
+		for _, bin := range bins {
+			for _, candidate := range []string{
+				filepath.Join(cwd, "bin", bin),
+				filepath.Join(cwd, "..", "bin", bin),
+				filepath.Join(cwd, "..", "..", "bin", bin),
+			} {
+				if executable(candidate) {
+					return filepath.Clean(candidate), "workspace bin", nil
+				}
 			}
 		}
 	}
@@ -3077,6 +3251,58 @@ func workspacePath(rel string) (string, bool, error) {
 // alphabetical) for the "@" file-reference menu. rel resolves against the process
 // cwd; "" lists the cwd. The menu navigates one level at a time, never
 // recursively — bounded for huge trees.
+// FolderListing 是内置文件夹选择器的一页:某个绝对路径下的子文件夹列表 + 导航锚点。
+type FolderListing struct {
+	Path    string   `json:"path"`    // 当前绝对路径
+	Parent  string   `json:"parent"`  // 上级目录(已在根则等于自身)
+	Dirs    []string `json:"dirs"`    // 子文件夹名(排序后)
+	Home    string   `json:"home"`    // 用户主目录(快捷入口)
+	Desktop string   `json:"desktop"` // 桌面(快捷入口)
+	Error   string   `json:"error,omitempty"`
+}
+
+// BrowseDir 列出某个绝对路径下的子文件夹,供 app 内置文件夹选择器导航——绕开 macOS
+// 原生选择对话框在隐藏标题栏窗口下会开到窗口后面的 bug。path 为空时从主目录开始。
+func (a *App) BrowseDir(path string) FolderListing {
+	home, _ := os.UserHomeDir()
+	desktop := ""
+	if home != "" {
+		desktop = filepath.Join(home, "Desktop")
+	}
+	p := strings.TrimSpace(path)
+	if p == "" {
+		p = home
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return FolderListing{Path: home, Parent: home, Home: home, Desktop: desktop, Error: err.Error()}
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		// 打不开(权限/不存在)就退回上级,别让用户卡死
+		return FolderListing{Path: abs, Parent: filepath.Dir(abs), Home: home, Desktop: desktop, Error: "打不开这个目录:" + err.Error()}
+	}
+	dirs := []string{}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue // 隐藏目录不显示,减少噪音
+		}
+		if e.IsDir() {
+			dirs = append(dirs, name)
+			continue
+		}
+		// 软链可能指向目录
+		if e.Type()&os.ModeSymlink != 0 {
+			if info, serr := os.Stat(filepath.Join(abs, name)); serr == nil && info.IsDir() {
+				dirs = append(dirs, name)
+			}
+		}
+	}
+	sort.Strings(dirs)
+	return FolderListing{Path: abs, Parent: filepath.Dir(abs), Dirs: dirs, Home: home, Desktop: desktop}
+}
+
 func (a *App) ListDir(rel string) []DirEntry {
 	base, err := os.Getwd()
 	if err != nil {
@@ -3237,8 +3463,14 @@ func (a *App) RevealWorkspacePath(rel string) error {
 }
 
 func (a *App) notice(text string) {
-	if a.sink != nil {
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
+	// a.sink 在 buildTab/CreateTab/SetActiveTab/CloseTab 里都在 a.mu 下被改写,故这里必须
+	// 持锁读(M3:/effort 命令经 Submit→runEffortCommand 调到这里,与 tab 生命周期方法
+	// 并发会构成对 a.sink 指针的数据竞态)。
+	a.mu.RLock()
+	sink := a.sink
+	a.mu.RUnlock()
+	if sink != nil {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
 	}
 }
 

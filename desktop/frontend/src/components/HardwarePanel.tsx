@@ -29,9 +29,9 @@ import type {
 } from "../lib/types";
 
 type HardwareAction = {
+  kind: "debug" | "validate" | "review";
   title: string;
   subtitle: string;
-  prompt: string;
 };
 
 // 一键安装的单步实时状态(前端分步驱动,逐步刷新进度)。
@@ -69,24 +69,90 @@ const FALLBACK_BOARD_PRESETS: BoardPreset[] = [
 
 const actions: HardwareAction[] = [
   {
-    title: "硬件调试",
-    subtitle: "编译、烧录、串口、SSH 运行日志",
-    prompt:
-      "请调试当前硬件项目。先调用 mcp__hardware__hardware_detect，再调用 mcp__hardware__hardware_board_profile 读取板卡 profile，并调用 mcp__hardware__hardware_repair_catalog 读取常见错误修复规则；然后调用 mcp__hardware__hardware_project_audit 检查 manifest、接线说明、验证文档、板卡 profile、失败模式、硬件检查清单和工程布局。若 audit 发现上下文文件缺失，先调用 mcp__hardware__hardware_project_context 补齐缺失文件，不覆盖客户已有内容，再重新 audit。尤其检查 PlatformIO 是否有 platformio.ini + src/main.cpp，根目录 .ino 不要当成 PlatformIO 入口。若 audit/validate 报 platformio_layout 或 project_layout 失败，先调用 mcp__hardware__hardware_project_repair repair=platformio_root_ino_to_src_main 做最小修复，再重新 audit 和 validate。然后调用 mcp__hardware__hardware_project_validate；如果涉及真实开发板，先调用 mcp__hardware__hardware_device_verify_plan 生成准确的烧录/部署/串口验证命令；每完成一段编译、烧录、串口、mpremote 或 SSH 验证，都调用 mcp__hardware__hardware_evidence_record 记录证据，并调用 mcp__hardware__hardware_evidence_status 汇总当前验证状态；根据结果区分项目上下文缺失、工程结构错误、编译错误、烧录错误、串口无输出、端口占用、库缺失、供电/接线问题，并给出下一条最小验证命令。",
+    kind: "debug",
+    title: "调试线程",
+    subtitle: "从失败现象回到项目结构、编译和设备验证",
   },
   {
-    title: "自动验证",
-    subtitle: "自动识别项目并编译或检查语法",
-    prompt:
-      "请自动验证当前硬件项目。依次调用 mcp__hardware__hardware_detect、mcp__hardware__hardware_board_profile、mcp__hardware__hardware_repair_catalog、mcp__hardware__hardware_project_audit 和 mcp__hardware__hardware_project_validate；如果审计发现缺少 hardware_manifest、docs/wiring.md、docs/verification.md、docs/board_profile.md、docs/failure_patterns.md 或 tests/hardware_checklist.md，先调用 mcp__hardware__hardware_project_context 补齐缺失上下文后重新审计；如果发现 PlatformIO/Arduino/ESP-IDF 工程布局错误，先按 repair catalog 做最小修复后重新验证；如果是 PlatformIO 根目录 .ino 问题，调用 mcp__hardware__hardware_project_repair repair=platformio_root_ino_to_src_main 自动迁移。验证完成后调用 mcp__hardware__hardware_evidence_record 写入 tests/hardware_evidence.jsonl 和 tests/hardware_checklist.md，再调用 mcp__hardware__hardware_device_verify_plan 生成真实板卡验证计划，最后调用 mcp__hardware__hardware_evidence_status 判断是 hardware_verified 还是 hardware_pending；如果审计或验证失败，读取相关文件做最小修复后重新验证；如果没有真实开发板，只报告项目上下文、编译/语法已验证和实机缺口，不要假装已烧录。",
+    kind: "validate",
+    title: "验证线程",
+    subtitle: "审计上下文、编译或语法检查、生成真机计划",
   },
   {
-    title: "代码审查",
+    kind: "review",
+    title: "审查线程",
     subtitle: "教学可解释性、引脚风险、通信协议",
-    prompt:
-      "请审查当前硬件项目代码。先调用 mcp__hardware__hardware_detect 确认平台，再调用 mcp__hardware__hardware_board_profile 和 mcp__hardware__hardware_repair_catalog 读取板卡约束与失败规则，再调用 mcp__hardware__hardware_project_audit 检查项目上下文和工程布局，并调用 mcp__hardware__hardware_device_verify_plan 检查真实板卡验证命令是否完整，再调用 mcp__hardware__hardware_evidence_status 汇总证据状态；重点检查中文注释、命名、魔数常量、学生能否逐行解释、PlatformIO/Arduino 入口文件是否真实参与编译、引脚冲突、电压/通信协议风险、上传和串口验证步骤是否完整，以及 tests/hardware_evidence.jsonl 是否记录了真实验证证据。",
   },
 ];
+
+const ACTION_RECIPES: Record<HardwareAction["kind"], string[]> = {
+  debug: [
+    "先复现或读取最近的失败现象，再调用 hardware_detect、hardware_project_audit、hardware_repair_catalog。",
+    "优先区分工程结构、编译错误、烧录错误、串口无输出、端口占用、库缺失、接线/电平/供电问题。",
+    "做最小修复后必须重新运行 hardware_project_validate；涉及真机时先给 device_verify_plan，再进入设备实验台动作。",
+  ],
+  validate: [
+    "先调用 hardware_detect、hardware_project_audit、hardware_project_validate。",
+    "上下文缺失时用 hardware_project_context 补齐，但不要覆盖已有内容。",
+    "验证结束后调用 hardware_evidence_status，明确软件侧通过、真机待验证、已真机验证或证据过期。",
+  ],
+  review: [
+    "检查代码是否符合教学可解释性：中文注释、命名清晰、魔数常量化、学生能逐行解释。",
+    "结合 board_profile 和 module_spec 检查引脚、电平、供电、UART/I2C/SPI 通信风险。",
+    "确认真实验证路径完整：编译、烧录、串口/运行日志、hardware_evidence_record。",
+  ],
+};
+
+function buildWorkflowActionPrompt({
+  action,
+  detect,
+  evidence,
+}: {
+  action: HardwareAction;
+  detect: HardwareDetectView | null;
+  evidence: HardwareEvidenceStatusView | null;
+}): string {
+  const projectSummary = detect
+    ? [
+        `项目目录：${detect.projectDir || "unknown"}`,
+        `项目类型：${detect.projectTypes.join(" / ") || "unknown"}`,
+        `可用工具链：${
+          detect.toolchains
+            .filter((tool) => tool.available)
+            .map((tool) => tool.name)
+            .join(", ") || "无"
+        }`,
+        `串口：${detect.serialPorts.join(", ") || "无"}`,
+      ].join("\n")
+    : "尚未取得本机检测结果，请先调用 hardware_detect。";
+  const evidenceSummary = evidence
+    ? [
+        `状态：${evidence.status || "unknown"}`,
+        `有效记录：${evidence.currentRecordCount || 0}`,
+        `过期记录：${evidence.staleRecordCount || 0}`,
+        `缺口：${evidence.missingGroups.join(" / ") || "无"}`,
+      ].join("\n")
+    : "尚未取得证据状态，请调用 hardware_evidence_status。";
+  return [
+    `请启动 OneCreat 硬件${action.title}。`,
+    "",
+    "工作边界：",
+    "1. 项目线程负责方案、代码、审查、软件验证。",
+    "2. 设备实验台只负责编译、烧录、串口、OTA 等真实设备动作。",
+    "3. 证据账本必须记录软件验证和真机验证状态；没有真机证据时不能声称硬件完成。",
+    "",
+    "当前项目摘要：",
+    projectSummary,
+    "",
+    "当前证据状态：",
+    evidenceSummary,
+    "",
+    "本次 recipe：",
+    ...ACTION_RECIPES[action.kind].map((step, index) => `${index + 1}. ${step}`),
+    "",
+    "请按上述步骤执行，并在每个阶段说明下一步是否需要打开设备实验台。",
+  ].join("\n");
+}
 
 function findHardwareServer(view: CapabilitiesView | null): ServerView | undefined {
   return view?.servers.find((server) => server.name === "hardware");
@@ -119,6 +185,11 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+function compactHardwarePath(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.slice(-2).join("/") || path;
+}
+
 function buildGuidePrompt({
   board,
   framework,
@@ -145,7 +216,7 @@ function buildGuidePrompt({
       }；检测到的串口=${detect.serialPorts.join(", ") || "无"}。`
     : "尚未取得本机检测结果。";
   return [
-    "# onecreat 硬件编程流程",
+    "# OneCreat 硬件编程流程",
     "",
     "请严格按阶段执行。当前只允许进入“阶段 1：方案确认”，不要编写完整程序，不要创建文件，不要调用写入工具。",
     "",
@@ -231,7 +302,7 @@ function buildDirectPrompt({
       }；检测到的串口=${detect.serialPorts.join(", ") || "无"}。`
     : "尚未取得本机检测结果。";
   return [
-    "# onecreat 硬件编程流程（直接写代码模式）",
+    "# OneCreat 硬件编程流程（直接写代码模式）",
     "",
     "这是一个相对简单的项目，跳过单独的“方案确认”阶段，本轮直接完成从写代码到编译验证的闭环。",
     "但仍然必须先读板卡 profile、模块规格和知识库，保证引脚、库和 API 正确——不要凭记忆猜。",
@@ -274,6 +345,9 @@ function buildDirectPrompt({
 const EVIDENCE_STATUS_LABEL: Record<string, string> = {
   hardware_verified: "✅ 已通过真机验证",
   hardware_pending: "⏳ 真机待验证",
+  local_pending: "软件侧已验证",
+  stale: "验证证据已过期",
+  failed: "验证失败",
   no_evidence: "尚无验证记录",
   unavailable: "未启用",
 };
@@ -307,6 +381,13 @@ function toolInstallUrl(name: string): string {
   return hit ? hit.url : `https://www.google.com/search?q=${encodeURIComponent("install " + name)}`;
 }
 
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m <= 0) return `${s}s`;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
 export function HardwarePanel({
   onPrompt,
   onOpenWorkspace,
@@ -329,6 +410,7 @@ export function HardwarePanel({
   const [port, setPort] = useState("");
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
+  const [portRefreshing, setPortRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // 串口监视器(常驻窗口,像 Arduino IDE)是否打开。
   const [serialMonitorOpen, setSerialMonitorOpen] = useState(false);
@@ -337,6 +419,8 @@ export function HardwarePanel({
   // 一键安装核心工具链(arduino-cli + 板卡 core)的实时分步状态。
   const [installing, setInstalling] = useState(false);
   const [installSteps, setInstallSteps] = useState<InstallStepUI[] | null>(null);
+  const [installStartedAt, setInstallStartedAt] = useState<number | null>(null);
+  const [installElapsed, setInstallElapsed] = useState(0);
   // 板卡选项:来自后端共享注册表,加板=改 JSON 即自动多一项;失败兜底静态表。
   const [boardPresets, setBoardPresets] = useState<BoardPreset[]>(FALLBACK_BOARD_PRESETS);
   useEffect(() => {
@@ -357,6 +441,7 @@ export function HardwarePanel({
       app.HardwareDetect().catch((e) => ({
         available: false,
         projectTypes: [],
+        candidateProjects: [],
         serialPorts: [],
         boards: [],
         devices: [],
@@ -387,6 +472,44 @@ export function HardwarePanel({
     if (active) void reload();
   }, [reload, active]);
 
+  useEffect(() => {
+    if (!installing || installStartedAt === null) return;
+    const tick = () => setInstallElapsed(Math.floor((Date.now() - installStartedAt) / 1000));
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [installStartedAt, installing]);
+
+  const refreshSerialPorts = useCallback(async () => {
+    setPortRefreshing(true);
+    setErr(null);
+    try {
+      const ports = await app.SerialPorts();
+      setDetect((prev) => ({
+        available: prev?.available ?? true,
+        workspace: prev?.workspace,
+        projectDir: prev?.projectDir,
+        projectTypes: prev?.projectTypes ?? [],
+        candidateProjects: prev?.candidateProjects ?? [],
+        serialPorts: ports,
+        boards: prev?.boards.filter((item) => ports.includes(item.port)) ?? [],
+        devices: prev?.devices.filter((item) => ports.includes(item.port)) ?? [],
+        toolchains: prev?.toolchains ?? [],
+        recommendations: prev?.recommendations ?? [],
+        espIdfOfficialMcp: prev?.espIdfOfficialMcp,
+        error: prev?.error,
+      }));
+      setPort((current) => {
+        if (current && ports.includes(current)) return current;
+        return ports[0] ?? "";
+      });
+    } catch (e) {
+      setErr(`刷新串口失败:${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setPortRefreshing(false);
+    }
+  }, []);
+
   // 一键安装核心工具链:前端分步驱动(先 arduino-cli,再逐个 core),
   // 每步开始/完成都即时刷新进度,用户能清楚看到「正在装哪一步」。装完重新检测。
   const installToolchain = useCallback(async () => {
@@ -395,22 +518,28 @@ export function HardwarePanel({
       { tool: "esp32:esp32", label: "ESP32 全系板卡（约 200MB，较慢）" },
     ];
     let steps: InstallStepUI[] = [
-      { tool: "arduino-cli", label: "arduino-cli（编译 / 烧录核心工具）", status: "pending" },
-      ...coreList.map((c) => ({ tool: c.tool, label: c.label, status: "pending" as const })),
+      { tool: "arduino-cli", label: "arduino-cli（编译 / 烧录核心工具）", status: "pending", message: "等待开始" },
+      ...coreList.map((c) => ({ tool: c.tool, label: c.label, status: "pending" as const, message: "等待开始" })),
     ];
     const patch = (tool: string, next: Partial<InstallStepUI>) => {
       steps = steps.map((s) => (s.tool === tool ? { ...s, ...next } : s));
       setInstallSteps([...steps]);
     };
+    setErr(null);
+    setInstallStartedAt(Date.now());
+    setInstallElapsed(0);
     setInstalling(true);
     setInstallSteps([...steps]);
     try {
-      patch("arduino-cli", { status: "running" });
+      patch("arduino-cli", { status: "running", message: "正在检查；未安装会下载官方 arduino-cli" });
       const cli = await app.HardwareInstallArduinoCLI();
       patch("arduino-cli", { status: cli.ok ? "done" : "failed", message: cli.message });
       if (cli.ok) {
         for (const c of coreList) {
-          patch(c.tool, { status: "running" });
+          patch(c.tool, {
+            status: "running",
+            message: c.tool === "esp32:esp32" ? "正在安装 ESP32 core，约 200MB，可能需要几分钟" : "正在安装 Arduino AVR core",
+          });
           const r = await app.HardwareInstallCore(c.tool);
           patch(c.tool, { status: r.ok ? "done" : "failed", message: r.message });
         }
@@ -451,7 +580,24 @@ export function HardwarePanel({
   }, [detect, boardPresets]);
   const selectedBoard = boardOptions.find((item) => item.value === board);
   const evidenceTone =
-    evidence?.status === "hardware_verified" ? "ok" : evidence?.status === "no_evidence" || evidence?.status === "unavailable" ? "warn" : "pending";
+    evidence?.status === "hardware_verified"
+      ? "ok"
+      : evidence?.status === "hardware_pending" || evidence?.status === "local_pending"
+        ? "pending"
+        : "warn";
+  const installTotal = installSteps?.length ?? 0;
+  const installDoneCount = installSteps?.filter((step) => step.status === "done").length ?? 0;
+  const installFailedCount = installSteps?.filter((step) => step.status === "failed").length ?? 0;
+  const installRunningStep = installSteps?.find((step) => step.status === "running");
+  const installAllDone = !!installSteps && installSteps.length > 0 && installSteps.every((step) => step.status === "done");
+  const installTone = installing ? "running" : installAllDone ? "ok" : "warn";
+  const installSummary = installing
+    ? `安装中 ${installDoneCount}/${installTotal} · ${formatDuration(installElapsed)}`
+    : installAllDone
+      ? "工具链已就绪"
+      : installSteps
+        ? `安装未完成 ${installFailedCount}/${installTotal}`
+        : "";
 
   // 「一键运行」按钮:把学生最常用的三件事 — 编译/烧录/看串口 —
   // 直接绑到对应 MCP 工具,不必再绕一圈到对话里让 AI 决定调什么。
@@ -529,13 +675,33 @@ export function HardwarePanel({
     [board, detect?.projectDir, detectedPlatform, port, selectedBoard, onPrompt, onBackToChat],
   );
 
-  // 失败时学生点「让 AI 排查」就把已蒸馏的根因+修法+输出摘要直接塞给 chat,
-  // 比让 AI 重跑一遍 validate 高效得多。连续失败到阈值则升级为「换思路」整体排查,
-  // 并总是要求 AI 改完后自动重跑 validate(闭环),不要等学生手动再点。
+  // 失败时学生点「让 AI 排查」就把已蒸馏的根因+修法+输出摘要直接塞给 chat。
+  // 编译/烧录失败可以进入“修复 -> validate”闭环；串口无输出更常见是板子运行、
+  // 波特率、端口占用或硬件状态问题，默认只读诊断，不诱导 AI 空改代码。
   const askAIToFix = useCallback(
     (kind: "validate" | "upload" | "monitor", result: HardwareRunResult) => {
       const label = { validate: "编译/验证", upload: "烧录", monitor: "串口" }[kind];
-      const count = kind === "monitor" ? 0 : failCount[kind];
+      if (kind === "monitor") {
+        const parts: string[] = [
+          "刚才点了「串口」按钮,没有采到输出。请做只读排查,不要默认编辑代码。",
+          result.summary ? `结果摘要:${result.summary}` : "",
+          result.rootCause ? `根因:${result.rootCause}` : "",
+          result.fixHint ? `已知修法提示:${result.fixHint}` : "",
+          result.error ? `错误:${result.error}` : "",
+          result.output ? `输出片段:\n\`\`\`\n${result.output.slice(0, 2000)}\n\`\`\`` : "",
+          "排查边界:",
+          "1. 先读取当前入口文件,确认是否有 Serial.begin(115200) 以及 setup/loop 中是否真的会 Serial.print/println。",
+          "2. 如果代码里已有 Serial.begin 且有明确输出语句,不要改文件,不要重跑完整编译;直接报告「串口无输出,真机运行待确认」,并给出最小人工检查:端口、波特率、板子是否复位运行、USB CDC 设置、是否刚烧录了正确固件。",
+          "3. 不要用 bash 的 screen / cu / cat / timeout 反复读串口;这些在本机不可靠。若确需重试,最多调用一次 mcp__hardware__arduino_monitor_sample。",
+          "4. 只有当你从代码中明确发现缺少 Serial.begin、波特率不一致、或没有任何输出语句时,才做最小代码修改;改完后再调用 mcp__hardware__hardware_project_validate 重新编译验证。",
+          "5. 不要伪造串口证据;没有真实输出就如实说明。",
+        ].filter(Boolean);
+        onPrompt("让 AI 排查串口无输出", parts.join("\n\n"));
+        onBackToChat?.();
+        return;
+      }
+
+      const count = failCount[kind];
       const escalated = count >= FAIL_ESCALATE_AT;
       const header = escalated
         ? `「${label}」已经连续失败 ${count} 次。不要再小修小补——请退一步，从整体排查:接线、电平(5V 与 3.3V 是否需要电平转换)、限流电阻、共地 GND、供电是否独立、库版本是否匹配,或换一种实现思路。`
@@ -684,16 +850,7 @@ export function HardwarePanel({
         if (!connected) {
           await app.AddHardwareMCPServer();
         }
-        const context = detect
-          ? `\n\n当前硬件检测摘要：项目类型=${detect.projectTypes.join(" / ") || "unknown"}；工具链=${detect.toolchains
-              .filter((tool) => tool.available)
-              .map((tool) => tool.name)
-              .join(", ") || "无"}；串口数量=${detect.serialPorts.length}；项目目录=${detect.projectDir || "unknown"}。`
-          : "";
-        const evidenceContext = evidence
-          ? `\n当前验证证据状态：status=${evidence.status || "unknown"}；currentRecords=${evidence.currentRecordCount || 0}；missing=${evidence.missingGroups.join(" / ") || "无"}；summary=${evidence.summary || evidence.error || "无"}。`
-          : "";
-        onPrompt(action.title, action.prompt + context + evidenceContext);
+        onPrompt(action.title, buildWorkflowActionPrompt({ action, detect, evidence }));
         onBackToChat?.();
       } catch (e) {
         setErr(String((e as Error)?.message ?? e));
@@ -714,7 +871,7 @@ export function HardwarePanel({
 
   return (
     <div className="hardware-view">
-      {/* IDE 风格顶部工具栏:板卡/串口/框架 + 一键编译烧录看串口 + MCP 徽章 + 返回对话 */}
+      {/* 设备实验台顶部工具栏:板卡/串口/框架 + 一键编译烧录看串口 + MCP 徽章 + 回到项目线程 */}
       <div className="hardware-view__toolbar">
         <div className="hardware-view__toolbar-group hardware-view__toolbar-group--selects">
           <label className="hardware-view__field">
@@ -735,17 +892,27 @@ export function HardwarePanel({
               ))}
             </select>
           </label>
-          <label className="hardware-view__field">
-            <span>串口</span>
-            <select value={port} onChange={(event) => setPort(event.target.value)}>
-              <option value="">{detectedPorts.length ? "未选" : "无设备"}</option>
-              {detectedPorts.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="hardware-view__port-picker">
+            <label className="hardware-view__field">
+              <span>串口</span>
+              <select value={port} onChange={(event) => setPort(event.target.value)}>
+                <option value="">{detectedPorts.length ? "未选" : "无设备"}</option>
+                {detectedPorts.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="chip chip--icon hardware-view__port-refresh"
+              disabled={portRefreshing}
+              onClick={() => void refreshSerialPorts()}
+              title="刷新串口列表"
+            >
+              <RefreshCw size={13} className={portRefreshing ? "hardware-spin" : undefined} />
+            </button>
+          </div>
           <label className="hardware-view__field">
             <span>框架</span>
             <select value={framework} onChange={(event) => setFramework(event.target.value)}>
@@ -808,15 +975,15 @@ export function HardwarePanel({
         <div className="hardware-view__toolbar-group hardware-view__toolbar-group--right">
           <div
             className={`hardware-view__mcp hardware-view__mcp--${connected ? "ok" : hardwareMCP?.available ? "warn" : "off"}`}
-            title="硬件助手 = 让 AI 能真的检测板卡 / 编译 / 烧录 / 看串口的后端(硬件 MCP）。显示「已启用」才说明它接进了当前对话，上面的编译/烧录/看串口才能用。"
+            title="硬件助手 = 接入当前对话的硬件 MCP。未接入时，一键编译/烧录仍可直接调用本地工具；接入后 AI 对话也能调用硬件工具。"
           >
             <span className="hardware-view__mcp-dot" />
             <span className="hardware-view__mcp-label">
-              {connected ? "硬件助手已启用" : hardwareMCP?.available ? "硬件助手未启用" : "硬件助手未安装"}
+              {connected ? "已接入对话" : hardwareMCP?.available ? "未接入对话" : "硬件助手未安装"}
             </span>
             {!connected && hardwareMCP?.available && (
               <button className="hardware-view__mcp-btn" disabled={busy} onClick={() => void enableHardware()}>
-                {busy ? "..." : "启用"}
+                {busy ? "..." : "接入"}
               </button>
             )}
           </div>
@@ -824,9 +991,9 @@ export function HardwarePanel({
             <RefreshCw size={13} />
           </button>
           {onBackToChat && (
-            <button className="hardware-view__back" onClick={onBackToChat} title="返回对话视图">
+            <button className="hardware-view__back" onClick={onBackToChat} title="回到项目线程">
               <ArrowLeft size={13} />
-              <span>返回对话</span>
+              <span>项目线程</span>
             </button>
           )}
         </div>
@@ -837,64 +1004,33 @@ export function HardwarePanel({
         {hardwareMCP?.error && !hardwareMCP.available && <div className="banner banner--error">{hardwareMCP.error}</div>}
         {detect?.error && <div className="banner banner--error">{detect.error}</div>}
 
-        {/* 一键安装的实时进度卡片:醒目、常驻 body 顶部,逐步刷新让用户看清正在装哪一步 */}
-        {installSteps && (
-          <div
-            className={`hardware-view__install-card hardware-view__install-card--${
-              installing ? "running" : installSteps.every((s) => s.status === "done") ? "ok" : "warn"
-            }`}
-          >
-            <div className="hardware-view__install-card-head">
-              {installing ? (
-                <Loader2 size={15} className="hardware-spin" />
-              ) : installSteps.every((s) => s.status === "done") ? (
-                <CheckCircle2 size={15} />
-              ) : (
-                <AlertTriangle size={15} />
-              )}
-              <span className="hardware-view__install-card-title">
-                {installing
-                  ? "正在安装工具链…首次下载较慢（尤其 ESP32 约 200MB），请耐心等待，不要关闭"
-                  : installSteps.every((s) => s.status === "done")
-                    ? "工具链已就绪 ✅ 现在可以直接编译 / 烧录"
-                    : "部分项未完成，看下方每步说明"}
-              </span>
-              {!installing && (
-                <button
-                  className="hardware-view__install-card-close"
-                  onClick={() => setInstallSteps(null)}
-                  title="关闭"
-                >
-                  ×
-                </button>
-              )}
+        <section className="hardware-workflow" aria-label="硬件三线流程">
+          <div className="hardware-workflow__intro">
+            <div className="hardware-workflow__eyebrow">设备实验台</div>
+            <h2>真实硬件动作在这里做，项目讨论回到对话线程</h2>
+            <p>编译、烧录、串口和 OTA 会占用真实设备资源；方案、代码、审查和修复由对话线程推进，证据账本记录验证状态。</p>
+          </div>
+          <div className="hardware-workflow__lanes">
+            <div className="hardware-workflow__lane">
+              <span className="hardware-workflow__lane-label">项目线程</span>
+              <strong>{hasHardwareProject ? "已识别项目" : "等待项目"}</strong>
+              <small>{detect?.projectTypes?.join(" / ") || "先从首页硬件项目卡启动"}</small>
             </div>
-            <div className="hardware-view__install-steps">
-              {installSteps.map((s) => (
-                <div key={s.tool} className={`hardware-view__install-step hardware-view__install-step--${s.status}`}>
-                  <span className="hardware-view__install-step-ico">
-                    {s.status === "running" ? (
-                      <Loader2 size={13} className="hardware-spin" />
-                    ) : s.status === "done" ? (
-                      <CheckCircle2 size={13} className="hardware-view__toolchain-ico--ok" />
-                    ) : s.status === "failed" ? (
-                      <AlertTriangle size={13} className="hardware-view__toolchain-ico--warn" />
-                    ) : (
-                      <span className="hardware-view__install-step-dot" />
-                    )}
-                  </span>
-                  <span className="hardware-view__install-step-label">{s.label}</span>
-                  <span className="hardware-view__install-step-msg">
-                    {s.status === "running" ? "正在处理…" : s.status === "pending" ? "等待中" : s.message || ""}
-                  </span>
-                </div>
-              ))}
+            <div className="hardware-workflow__lane hardware-workflow__lane--active">
+              <span className="hardware-workflow__lane-label">设备实验台</span>
+              <strong>{connected ? "硬件助手已接入对话" : hardwareMCP?.available ? "本地工具可直接用" : "未安装硬件助手"}</strong>
+              <small>{detectedPorts.length ? `${detectedPorts.length} 个串口可选` : "未检测到串口设备"}</small>
+            </div>
+            <div className={`hardware-workflow__lane hardware-workflow__lane--${evidenceTone}`}>
+              <span className="hardware-workflow__lane-label">证据账本</span>
+              <strong>{evidenceStatusText(evidence?.status)}</strong>
+              <small>{evidence ? `${evidence.currentRecordCount ?? 0} 条有效记录` : "尚未读取证据状态"}</small>
             </div>
           </div>
-        )}
+        </section>
 
         {/* 项目路径条:有项目时一行精简显示;无项目时给醒目空状态指引学生 */}
-        {detect?.projectDir ? (
+        {hasHardwareProject && detect?.projectDir ? (
           <div className="hardware-view__project-bar">
             <Cpu size={14} />
             <code title={detect.projectDir}>{detect.projectDir}</code>
@@ -949,21 +1085,101 @@ export function HardwarePanel({
                 </div>
               )}
             </div>
+            {installSteps && (
+              <div className={`hardware-view__install-pill hardware-view__install-pill--${installTone}`} title={installRunningStep?.message || installSummary}>
+                {installing ? (
+                  <Loader2 size={12} className="hardware-spin" />
+                ) : installAllDone ? (
+                  <CheckCircle2 size={12} />
+                ) : (
+                  <AlertTriangle size={12} />
+                )}
+                <span>{installSummary}</span>
+              </div>
+            )}
             {onOpenWorkspace && (
               <button className="chip" onClick={() => openWorkspace()} title="在文件面板打开">
                 打开项目文件
               </button>
             )}
           </div>
-        ) : (
+        ) : detect ? (
           <div className="hardware-view__empty">
-            <div className="hardware-view__empty-title">当前工作区不是硬件项目</div>
-            <p>请打开包含 <code>platformio.ini</code> 、<code>.ino</code> 或 <code>hardware_manifest.json</code> 的目录。AI 会自动识别并启用一键编译/烧录。</p>
+            <div className="hardware-view__empty-title">当前工作区还不是硬件项目</div>
+            <p>先回到项目线程确认目标、板卡和工程目录；打开包含 <code>platformio.ini</code> 、<code>.ino</code> 或 <code>hardware_manifest.json</code> 的目录后，实验台才会启用编译/烧录。</p>
+            {!!detect.candidateProjects?.length && (
+              <div className="hardware-view__candidates">
+                <div className="hardware-view__candidates-title">检测到的候选工程</div>
+                {detect.candidateProjects.slice(0, 4).map((candidate) => (
+                  <div className="hardware-view__candidate" key={`${candidate.kind}:${candidate.dir}`}>
+                    <strong title={candidate.dir}>{compactHardwarePath(candidate.dir)}</strong>
+                    <span>{candidate.kind}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             {onOpenWorkspace && (
               <button className="btn btn--primary" onClick={() => openWorkspace()}>
                 选择项目目录
               </button>
             )}
+          </div>
+        ) : (
+          /* detect===null 表示检测还没回来:显示加载提示,而不是误报"不是硬件项目"(会闪一下又消失)。 */
+          <div className="hardware-view__detecting">正在检测当前工作区…</div>
+        )}
+
+        {/* 一键安装的实时进度卡片:紧跟项目条显示,点击后第一眼就能看到正在做哪一步 */}
+        {installSteps && (
+          <div
+            className={`hardware-view__install-card hardware-view__install-card--${installTone}`}
+          >
+            <div className="hardware-view__install-card-head">
+              {installing ? (
+                <Loader2 size={15} className="hardware-spin" />
+              ) : installAllDone ? (
+                <CheckCircle2 size={15} />
+              ) : (
+                <AlertTriangle size={15} />
+              )}
+              <span className="hardware-view__install-card-title">
+                {installing
+                  ? `正在安装工具链…${installRunningStep?.label ?? "准备中"} · 已用 ${formatDuration(installElapsed)}`
+                  : installAllDone
+                    ? "工具链已就绪 ✅ 现在可以直接编译 / 烧录"
+                    : "部分项未完成，看下方每步说明"}
+              </span>
+              {!installing && (
+                <button
+                  className="hardware-view__install-card-close"
+                  onClick={() => setInstallSteps(null)}
+                  title="关闭"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div className="hardware-view__install-steps">
+              {installSteps.map((s) => (
+                <div key={s.tool} className={`hardware-view__install-step hardware-view__install-step--${s.status}`}>
+                  <span className="hardware-view__install-step-ico">
+                    {s.status === "running" ? (
+                      <Loader2 size={13} className="hardware-spin" />
+                    ) : s.status === "done" ? (
+                      <CheckCircle2 size={13} className="hardware-view__toolchain-ico--ok" />
+                    ) : s.status === "failed" ? (
+                      <AlertTriangle size={13} className="hardware-view__toolchain-ico--warn" />
+                    ) : (
+                      <span className="hardware-view__install-step-dot" />
+                    )}
+                  </span>
+                  <span className="hardware-view__install-step-label">{s.label}</span>
+                  <span className="hardware-view__install-step-msg">
+                    {s.status === "running" ? s.message || "正在处理…" : s.status === "pending" ? s.message || "等待中" : s.message || ""}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -978,11 +1194,17 @@ export function HardwarePanel({
           const tone = syntaxOnly ? "warn" : result.status === "passed" ? "ok" : result.status === "skipped" ? "warn" : "fail";
           const count = kind === "monitor" ? 0 : failCount[kind];
           const escalated = count >= FAIL_ESCALATE_AT;
+          // 从命令尾部抽出正在编/烧的 sketch 目录名(命令以 sketch 路径结尾),让"编译通过"
+          // 能看出是哪个项目通过的——多子项目父目录下尤其重要。按 "/" 切,含空格的中文路径也稳。
+          const sketchName = result.command
+            ? result.command.trim().replace(/["']+$/, "").split("/").filter(Boolean).pop()
+            : "";
           return (
             <div key={kind} className={`hardware-quickrun__result hardware-quickrun__result--${tone}`}>
               <div className="hardware-quickrun__head">
                 {result.status === "passed" && !syntaxOnly ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
                 <strong>{label} · {syntaxOnly ? "语法通过（未验证 API/真机）" : result.status}</strong>
+                {sketchName && <span className="hardware-quickrun__sketch" title="本次编译/烧录的项目目录">{sketchName}</span>}
                 {count >= 2 && <span className="hardware-quickrun__fails">连续失败 {count} 次</span>}
                 {result.summary && <span className="hardware-quickrun__summary">{result.summary}</span>}
               </div>
@@ -1060,9 +1282,9 @@ export function HardwarePanel({
           </section>
         ) : null}
 
-        {/* AI 写代码入口:学生描述需求,AI 给出方案 */}
+        {/* 项目线程入口:学生描述需求,AI 在对话线程里推进方案、代码与验证 */}
         <section className="hardware-section">
-          <div className="hardware-section__title">让 AI 写代码</div>
+          <div className="hardware-section__title">回到项目线程</div>
           <textarea
             className="hardware-view__task"
             value={task}
@@ -1078,7 +1300,7 @@ export function HardwarePanel({
               onClick={() => void runDirectCode()}
               title="简单项目:跳过方案确认,直接写代码并编译验证(仍会先读板卡/模块/知识库防幻觉)"
             >
-              直接写代码
+              直接生成并验证
             </button>
             <button
               className="btn"
@@ -1086,7 +1308,7 @@ export function HardwarePanel({
               onClick={() => void runGuidedPlan()}
               title="复杂项目:先生成接线图、引脚说明、程序逻辑,确认后再写代码"
             >
-              先出方案再写
+              先确认方案
             </button>
             {selectedKnowledgeCount > 0 && (
               <small className="hardware-view__task-hint">已选 {selectedKnowledgeCount} 个知识库参考资料</small>
@@ -1094,9 +1316,9 @@ export function HardwarePanel({
           </div>
         </section>
 
-        {/* AI 接管:调试 / 自动验证 / 代码审查 */}
+        {/* AI 接管:调试 / 自动验证 / 代码审查都回到项目线程执行 */}
         <section className="hardware-section">
-          <div className="hardware-section__title">让 AI 接管</div>
+          <div className="hardware-section__title">交给项目线程</div>
           <div className="hardware-actions">
             {actions.map((action) => (
               <button

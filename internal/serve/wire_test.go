@@ -48,3 +48,13 @@ func TestToWire(t *testing.T) {
 		}
 	})
 }
+
+// TestKindNamesComplete 保证 SSE 线路的 kindNames 覆盖到最后一个 event.Kind —— 否则新增的
+// Kind 会被 toWire 映射成 kind:"" 被 SSE 客户端静默丢弃。serve 侧此前完全没有这个守卫(L4)。
+func TestKindNamesComplete(t *testing.T) {
+	for k := event.Kind(0); k <= event.MCPSurfaceReady; k++ {
+		if kindNames[k] == "" {
+			t.Errorf("kind %d 没有 wire 名 — toWire 会发出 kind:\"\" 被前端丢弃", k)
+		}
+	}
+}

@@ -1,6 +1,6 @@
-# Reasonix Engineering Spec
+# OneCreat Engineering Spec
 
-> Reasonix is a coding agent: a thin harness driving multiple models, with **all
+> OneCreat is a coding agent: a thin harness driving multiple models, with **all
 > capabilities supplied by configuration and plugins**. This document is the
 > contract — code follows it. Change the contract first, then the code.
 
@@ -30,7 +30,7 @@ reasonix/
 ├── go.mod / go.sum          # module reasonix; require BurntSushi/toml
 ├── Makefile                 # build / cross / vet / fmt / test
 ├── README.md / README.zh-CN.md
-├── reasonix.example.toml         # sample config
+├── onecreat.example.toml         # sample config
 ├── docs/SPEC.md             # this file
 ├── cmd/reasonix/main.go          # entry; blank-imports built-in providers/tools
 ├── cmd/reasonix-plugin-example/  # reference MCP stdio plugin (a runnable example)
@@ -42,7 +42,7 @@ reasonix/
     ├── tool/                # Tool interface + Registry
     │   └── builtin/         # read_file/write_file/edit_file/bash/ls/glob/grep
     ├── permission/          # per-call Policy: allow/ask/deny rules → Decision
-    ├── command/             # custom slash commands loaded from .reasonix/commands/*.md
+    ├── command/             # custom slash commands loaded from .onecreat/commands/*.md
     ├── plugin/              # stdio JSON-RPC (MCP) client; adapts remote tools
     └── agent/               # Session + harness loop
 ```
@@ -176,7 +176,7 @@ prefix cache-stable:
 
 ### 3.6 Context management (compaction)
 
-Long tasks eventually fill the model's context window. Reasonix manages this with
+Long tasks eventually fill the model's context window. OneCreat manages this with
 **low-frequency compaction** that respects the cache-first design:
 
 - Each provider declares its `context_window` (tokens). When a turn's reported
@@ -188,7 +188,7 @@ Long tasks eventually fill the model's context window. Reasonix manages this wit
   messages. The boundary is aligned backward off any tool result so the recent
   tail never begins with an orphan tool message whose `tool_calls` were
   summarized away.
-- The dropped originals are archived to `~/.config/reasonix/archive/<timestamp>.jsonl`
+- The dropped originals are archived to `~/.config/onecreat/archive/<timestamp>.jsonl`
   (one message per line), so the full history stays traceable.
 
 This is the **only** point where the prompt prefix changes — a deliberate, rare
@@ -243,8 +243,8 @@ The chat TUI accepts `/command` input. Three kinds share one dispatch:
 
 - **Built-in actions** (`/compact`, `/new`, `/effort`, `/mcp`, `/help`) manipulate session
   state locally and never reach the model.
-- **Custom commands** are Markdown files under `.reasonix/commands/` (project) and
-  `~/.config/reasonix/commands/` (user); the project dir overrides the user dir on a
+- **Custom commands** are Markdown files under `.onecreat/commands/` (project) and
+  `~/.config/onecreat/commands/` (user); the project dir overrides the user dir on a
   name clash. A file `review.md` becomes `/review`; a subdirectory namespaces it
   (`git/commit.md` → `/git:commit`). Invoking one renders its body and sends the
   result as the next user turn.
@@ -259,7 +259,7 @@ Review the staged diff. Focus on $ARGUMENTS, list bugs with file:line.
 ```
 
 - Frontmatter is an optional `---`-fenced block of simple `key: value` lines;
-  `description` and `argument-hint` are recognised (no YAML dependency — Reasonix
+  `description` and `argument-hint` are recognised (no YAML dependency — OneCreat
   stays lean). The remainder is the body template.
 - Substitution in the body: `$ARGUMENTS` (all args, space-joined), `$1`…`$N`
   (positional, empty when absent), `$$` (a literal `$`). Arguments are the
@@ -323,7 +323,7 @@ type Chunk struct {
 
 ## 5. Configuration (TOML)
 
-Resolution order: **flag > project `./reasonix.toml` > user `~/.config/reasonix/config.toml`
+Resolution order: **flag > project `./onecreat.toml` > user `~/.config/onecreat/config.toml`
 > built-in defaults**. Secrets come from the environment via `api_key_env` and
 are never stored in config files. A `.env` in the working directory is loaded if
 present.
@@ -333,7 +333,7 @@ default_model = "deepseek"   # provider name (→ its default model) or "provide
 # language    = "zh"                # ui language tag; empty = auto-detect from $LANG / $REASONIX_LANG
 
 [agent]
-system_prompt = "You are Reasonix, a coding agent..."  # or system_prompt_file = "..."
+system_prompt = "You are OneCreat, a coding agent..."  # or system_prompt_file = "..."
 max_steps     = 25
 temperature   = 0.0
 # planner_model = "mimo"   # optional: two-model collaboration (low-frequency planner)
@@ -396,9 +396,9 @@ args    = []
 MCP servers may also be declared in a project-root `.mcp.json` using Claude
 Code's exact `mcpServers` schema (`command`/`args`/`env`, `type`/`url`/`headers`,
 `${VAR}` expansion). It is read after the TOML files and merged into
-`[[plugins]]`; on a name collision `reasonix.toml` wins (it is the more explicit,
-Reasonix-specific source). This lets a server already configured for Claude work in
-Reasonix unchanged.
+`[[plugins]]`; on a name collision `onecreat.toml` wins (it is the more explicit,
+OneCreat-specific source). This lets a server already configured for Claude work in
+OneCreat unchanged.
 
 ```json
 { "mcpServers": {

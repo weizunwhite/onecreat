@@ -287,6 +287,9 @@ func withFreshSystemPrompt(messages []provider.Message, system string) []provide
 
 // SetDefaultModel sets the config default and switches the live model to it.
 func (a *App) SetDefaultModel(ref string) error {
+	if gatewayActive() {
+		return errGatewayManaged
+	}
 	a.mu.Lock()
 	prev := a.model
 	a.model = ref
@@ -308,6 +311,9 @@ func (a *App) SetDefaultModel(ref string) error {
 
 // SetPlannerModel sets (or, with "", clears) the two-model planner.
 func (a *App) SetPlannerModel(ref string) error {
+	if gatewayActive() {
+		return errGatewayManaged
+	}
 	return a.applyConfigChange(func(c *config.Config) error {
 		if ref != "" {
 			if _, ok := c.ResolveModel(ref); !ok {
@@ -322,6 +328,9 @@ func (a *App) SetPlannerModel(ref string) error {
 // SaveProvider adds or updates a provider. A single model fills `model`; several
 // fill `models` (with `default`). The shared key/endpoint live on the entry.
 func (a *App) SaveProvider(p ProviderView) error {
+	if gatewayActive() {
+		return errGatewayManaged
+	}
 	return a.applyConfigChange(func(c *config.Config) error {
 		e := config.ProviderEntry{
 			Name: p.Name, Kind: p.Kind, BaseURL: p.BaseURL,
@@ -340,12 +349,18 @@ func (a *App) SaveProvider(p ProviderView) error {
 
 // DeleteProvider removes a provider (refused for the current default_model).
 func (a *App) DeleteProvider(name string) error {
+	if gatewayActive() {
+		return errGatewayManaged
+	}
 	return a.applyConfigChange(func(c *config.Config) error { return c.RemoveProvider(name) })
 }
 
 // SetProviderKey writes a secret to ./.env under the given env-var name (the one a
 // provider's api_key_env points at) and rebuilds so it resolves immediately.
 func (a *App) SetProviderKey(apiKeyEnv, value string) error {
+	if gatewayActive() {
+		return errGatewayManaged
+	}
 	if strings.TrimSpace(apiKeyEnv) == "" {
 		return fmt.Errorf("this provider has no api_key_env set")
 	}

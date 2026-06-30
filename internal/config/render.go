@@ -7,6 +7,19 @@ import (
 	"strings"
 )
 
+// escapeTOMLMultiline 转义字符串使其能安全嵌入 TOML 多行 basic string("""..."""）。
+// system_prompt 是 coding-agent 的提示词,常含代码围栏、docstring 的 """ 三引号、或以
+// 反斜杠结尾;若像原来那样当原始多行串直接拼进 """...""",这些字符会写出非法 TOML,下次
+// config.Load 解析失败 → boot.Build 报错 → 整个桌面 app / CLI 起不来(H5,自损配置)。
+// 多行 basic string 里反斜杠仍是转义引导符,故先把 \ 转成 \\(顺带修掉「内容以 \ 结尾被
+// 当成续行符」),再把每个 " 转成 \"(彻底杜绝任何 """ 闭合歧义)。这样既始终合法,又能
+// 精确 round-trip 回原文。
+func escapeTOMLMultiline(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
 // RenderTOML renders the config as annotated TOML in the `reasonix setup` house style:
 // comments preserved, system_prompt as a multi-line string, helpful hints. The
 // output round-trips back through Load (see render_test.go).
@@ -76,7 +89,7 @@ func RenderTOML(c *Config) string {
 
 	b.WriteString("[agent]\n")
 	b.WriteString("system_prompt = \"\"\"\n")
-	b.WriteString(c.Agent.SystemPrompt)
+	b.WriteString(escapeTOMLMultiline(c.Agent.SystemPrompt))
 	b.WriteString("\"\"\"\n")
 	if c.Agent.SystemPromptFile != "" {
 		fmt.Fprintf(&b, "system_prompt_file = %q\n", c.Agent.SystemPromptFile)

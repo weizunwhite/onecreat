@@ -19,6 +19,7 @@ import {
   Pencil,
   Trash2,
   Settings as SettingsIcon,
+  LogOut,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -60,11 +61,16 @@ import { StatusBar } from "./components/StatusBar";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { HelpDrawer } from "./components/HelpDrawer";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
 import { HardwarePanel } from "./components/HardwarePanel";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
+import { FolderPicker } from "./components/FolderPicker";
+import { useSession, setSessionStore } from "./lib/account";
+import { ConfirmHost, confirmDialog } from "./lib/confirm";
+import { openFolderPicker } from "./lib/folderPicker";
 import { app, onEvent } from "./lib/bridge";
 import { parseTodos } from "./lib/tools";
 import { useDetailMode, toggleDetailMode } from "./lib/detailMode";
@@ -168,6 +174,42 @@ function saveKnowledgeEnabled(on: boolean): void {
   } catch {
     /* ignore */
   }
+}
+
+function shouldBypassAutoKnowledge(rawText: string): boolean {
+  const compact = rawText
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[。！？!?，,；;：:.、]/g, "");
+
+  if (!compact || compact.length > 18) return false;
+
+  const exactFollowUps = new Set([
+    "上传",
+    "直接上传",
+    "帮我上传",
+    "你帮我上传",
+    "你直接帮我上传",
+    "烧录",
+    "直接烧录",
+    "帮我烧录",
+    "运行",
+    "直接运行",
+    "编译",
+    "验证",
+    "继续",
+    "可以",
+    "好的",
+    "重试",
+    "再试一次",
+  ]);
+  if (exactFollowUps.has(compact)) return true;
+
+  if (/^(你)?(直接)?(帮我)?(上传|烧录|运行|编译|验证|调试|继续|重试)(一下|下|吧)?$/.test(compact)) {
+    return true;
+  }
+
+  return /(上传|烧录).*(板子|开发板|设备)/.test(compact);
 }
 
 function loadSidebarWidth(): number {
@@ -350,7 +392,6 @@ export default function App() {
     deleteSession,
     renameSession,
     refreshMeta,
-    pickWorkspace,
     switchWorkspace,
     rewind,
 	setModel,
@@ -384,6 +425,10 @@ export default function App() {
   // A2:每个「非活动」标签挂一个轻量订阅,只为在标签栏上提示「该标签有待审批」。活动标签
   // 的弹窗由 useController 处理(并在切回时由 PendingPrompts 补显),这里跳过它避免重复。
   const [pendingTabs, setPendingTabs] = useState<Record<string, boolean>>({});
+  // 已登录态镜像到 ref:后台 tab 的事件订阅(下面)据此决定是否刷新余额,但不能把 session
+  // 放进该订阅 effect 的依赖里(否则每次刷新点数都会重订阅所有标签)。在下面 session 那个
+  // effect 里更新它。
+  const loggedInRef = useRef(false);
   useEffect(() => {
     const offs = tabs
       .filter((tab) => tab.id !== activeTabId)
@@ -393,6 +438,8 @@ export default function App() {
             setPendingTabs((p) => (p[tab.id] ? p : { ...p, [tab.id]: true }));
           } else if (e.kind === "turn_done") {
             setPendingTabs((p) => (p[tab.id] ? { ...p, [tab.id]: false } : p));
+            // L1:后台 tab 烧点也要刷新余额,否则只在活动 tab 下次结束时才更新、余额显示偏高。
+            if (loggedInRef.current) void app.RefreshAccountSession().then(setSessionStore).catch(() => {});
           }
         }),
       );
@@ -433,10 +480,30 @@ export default function App() {
   const [workspacePanelMaximized, setWorkspacePanelMaximized] = useState(false);
   const [workspacePreviewModeActive, setWorkspacePreviewModeActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
+  // 账号会话。session=null 表示加载中;未登录就是本地 API 模式,默认全功能。
+  const session = useSession();
+  const refreshSession = useCallback(() => {
+    app
+      .AccountSessionInfo()
+      .then(setSessionStore)
+      .catch(() =>
+        setSessionStore({ loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1 })
+      );
+  }, []);
+  useEffect(() => {
+    refreshSession();
+  }, [refreshSession]);
+  const canFeature = useCallback(
+    (key: string) => !!session && (!session.loggedIn || session.isAdmin || session.permissions.includes(key)),
+    [session],
+  );
   // 主区域视图模式:'chat' = 普通对话(Transcript),'hardware' = 硬件 IDE 工作台。
   // 两个视图同时挂载用 display:none 切换,防止 chat 流式输出被中断。
   const [mainView, setMainView] = useState<"chat" | "hardware">("chat");
+  // 硬件模式:对话区顶部的实验台 bar 是否收起。
+  const [hwCollapsed, setHwCollapsed] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState(loadKnowledgeSelectedBaseIds);
   // 知识库总开关 + 可选库列表(给输入框的内联选择器用)。默认开=自动检索全部。
@@ -575,6 +642,10 @@ export default function App() {
   const handleSend = useCallback(
     (displayText: string, submitText = displayText) => {
       const trimmed = displayText.trim();
+      if (session?.loggedIn && (/^\/model(?:\s|$)/.test(trimmed) || /^\/effort(?:\s|$)/.test(trimmed))) {
+        notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。", "info");
+        return;
+      }
       const model = /^\/model\s+(\S+)$/.exec(trimmed);
       if (model) {
         void switchModel(model[1]);
@@ -585,7 +656,9 @@ export default function App() {
         return;
       }
       if (trimmed === "/knowledge") {
-        setKnowledgeOpen(true);
+        // L2:/knowledge 命令与侧栏按钮一样受功能门控,未开通的机构点不动。
+        if (canFeature("knowledge")) setKnowledgeOpen(true);
+        else notice("本机构未开通知识库功能", "warn");
         return;
       }
       const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -613,9 +686,16 @@ export default function App() {
         return;
       }
       const rawSubmit = submitText.trim();
+      const programmaticPrompt = submitText !== displayText;
       // 知识库默认「自动」:开关打开时,任何非斜杠消息都自动检索——没手动选库就检索全部;
       // 选了就只用选中的;检索不到相关片段则原样发送(零副作用)。关闭开关则完全不检索。
-      if (knowledgeEnabled && trimmed && !trimmed.startsWith("/") && !rawSubmit.startsWith("/")) {
+      // “上传/烧录/继续”等短跟进动作必须优先沿用当前对话上下文,否则全库检索会把意图带偏。
+      if (canFeature("knowledge") && knowledgeEnabled && trimmed && !trimmed.startsWith("/") && !rawSubmit.startsWith("/")) {
+        if (selectedKnowledgeBaseIds.length === 0 && (programmaticPrompt || shouldBypassAutoKnowledge(rawSubmit))) {
+          send(trimmed, rawSubmit);
+          return;
+        }
+
         void (async () => {
           let baseIds = selectedKnowledgeBaseIds;
           try {
@@ -641,7 +721,7 @@ export default function App() {
       }
       send(trimmed, rawSubmit);
     },
-    [switchModel, openMemory, send, selectedKnowledgeBaseIds, knowledgeEnabled, notice, t],
+    [session?.loggedIn, switchModel, openMemory, send, selectedKnowledgeBaseIds, knowledgeEnabled, notice, t, canFeature],
   );
 
   const refreshSessions = useCallback(async () => {
@@ -675,6 +755,16 @@ export default function App() {
   useEffect(() => {
     if (!state.running) void refreshTabs();
   }, [state.running, refreshTabs]);
+
+  // 每轮对话结束(running 由 true→false)后,已登录则向平台刷新点数,让消耗实时可见。
+  const prevRunningRef = useRef(false);
+  useEffect(() => {
+    if (prevRunningRef.current && !state.running && session?.loggedIn) {
+      void app.RefreshAccountSession().then(setSessionStore).catch(() => {});
+    }
+    prevRunningRef.current = state.running;
+    loggedInRef.current = !!session?.loggedIn; // 供后台 tab 订阅判断是否刷新余额(L1)
+  }, [state.running, session]);
 
   // 当前活动标签从「装配中」变为就绪时,刷新标签栏以清掉它的 loading 小圈。
   useEffect(() => {
@@ -919,6 +1009,12 @@ export default function App() {
     }
   }, []);
 
+  // 进入硬件模式时默认展开右侧代码/文件区(像 IDE);只在切入那一刻触发,
+  // 用户之后可手动隐藏,不会被强制重开。
+  useEffect(() => {
+    if (mainView === "hardware") setWorkspacePanel(true);
+  }, [mainView, setWorkspacePanel]);
+
   const toggleWorkspacePanel = useCallback(() => {
     setWorkspacePanelOpen((open) => {
       const next = !open;
@@ -970,10 +1066,30 @@ export default function App() {
   // transcript and refreshes meta on a pick; refresh the sidebar sessions too so
   // the recent list belongs to the newly selected workspace. A cancel is a no-op.
   const switchFolder = useCallback(async (path?: string) => {
-    const picked = path === undefined ? await pickWorkspace() : await switchWorkspace(path);
+    // 拿到目标路径(无 path = 弹内置文件夹选择器,绕开 macOS 原生对话框跑窗口后面的 bug)。
+    let target = path;
+    if (target === undefined) {
+      target = await openFolderPicker();
+      if (!target) return ""; // 取消
+    }
+    // 工作目录(cwd)是全进程共享的:开着多个任务标签时切文件夹会让后台标签读写到错目录,
+    // 后端会直接拒绝。这里弹确认 → 自动关掉其它标签(只留当前活动标签)→ 再切。
+    const others = tabs.filter((tb) => tb.id !== activeTabId);
+    if (others.length > 0) {
+      const ok = await confirmDialog({
+        title: "切换项目文件夹",
+        message: `工作目录是全局的,切换前需要先关闭其它 ${others.length} 个任务标签(否则后台任务会读写到错误的目录)。\n\n关闭它们并切换?`,
+        confirmText: "关闭并切换",
+        danger: true,
+      });
+      if (!ok) return "";
+      for (const tb of others) await app.CloseTab(tb.id).catch(() => {});
+      await refreshTabs();
+    }
+    const picked = await switchWorkspace(target);
     if (picked) await refreshSessions();
     return picked;
-  }, [pickWorkspace, switchWorkspace, refreshSessions]);
+  }, [tabs, activeTabId, switchWorkspace, refreshSessions, refreshTabs]);
 
   const onRemember = useCallback(
     async (scope: string, note: string) => {
@@ -1071,9 +1187,13 @@ export default function App() {
           className="sidebar-session__delete"
           onClick={(e) => {
             e.stopPropagation();
-            if (window.confirm(t("sidebar.deleteSessionConfirm", { title: sessionTitle(session, t("history.emptySession")) }))) {
-              void onDeleteSession(session.path);
-            }
+            void confirmDialog({
+              message: t("sidebar.deleteSessionConfirm", { title: sessionTitle(session, t("history.emptySession")) }),
+              confirmText: t("common.delete"),
+              danger: true,
+            }).then((ok) => {
+              if (ok) void onDeleteSession(session.path);
+            });
           }}
           disabled={state.running || session.current}
           title="删除"
@@ -1117,7 +1237,12 @@ export default function App() {
       notice(t("sidebar.noRemovable"), "warn");
       return;
     }
-    if (!window.confirm(t("sidebar.deleteFolderConfirm", { name: folderDisplayName(group.cwd, group.label), count: removable.length }))) return;
+    const ok = await confirmDialog({
+      message: t("sidebar.deleteFolderConfirm", { name: folderDisplayName(group.cwd, group.label), count: removable.length }),
+      confirmText: t("common.delete"),
+      danger: true,
+    });
+    if (!ok) return;
     for (const s of removable) await deleteSession(s.path).catch(() => {});
     await refreshSessions();
   };
@@ -1128,6 +1253,9 @@ export default function App() {
     : sidebarCollapsed
       ? t("sidebar.expand")
       : t("sidebar.collapse");
+
+  // 会话还没拉到先空着;未登录继续进入本地 API 模式。
+  if (session === null) return <div className="app" />;
 
   return (
     <div className="app">
@@ -1171,6 +1299,8 @@ export default function App() {
       <div
         className={[
           "layout",
+          mainView === "hardware" ? "layout--hardware" : "",
+          mainView === "hardware" && hwCollapsed ? "layout--hw-rail-collapsed" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
           workspacePanelOpen ? "layout--workspace-open" : "",
@@ -1184,7 +1314,7 @@ export default function App() {
         <aside className={`sidebar${sidebarCollapsed ? " sidebar--collapsed" : ""}`} aria-label={t("sidebar.navigation")}>
           <div className="sidebar__brand">
             <img src={logo} alt="" className="sidebar__logo" />
-            <span>onecreat</span>
+            <span>OneCreat</span>
             <button
               className={`sidebar__toggle${sidebarExpandBlocked ? " sidebar__toggle--blocked" : ""}`}
               onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
@@ -1206,24 +1336,28 @@ export default function App() {
             <span>{t("topbar.newSession")}</span>
           </button>
 
-          <button
-            className={selectedKnowledgeBaseIds.length ? "sidebar__knowledge sidebar__knowledge--active" : "sidebar__knowledge"}
-            onClick={() => setKnowledgeOpen(true)}
-            title="知识库"
-          >
-            <BookOpen size={16} />
-            <span>知识库</span>
-            {selectedKnowledgeBaseIds.length > 0 && <small>{selectedKnowledgeBaseIds.length}</small>}
-          </button>
+          {canFeature("knowledge") && (
+            <button
+              className={selectedKnowledgeBaseIds.length ? "sidebar__knowledge sidebar__knowledge--active" : "sidebar__knowledge"}
+              onClick={() => setKnowledgeOpen(true)}
+              title="知识库"
+            >
+              <BookOpen size={16} />
+              <span>知识库</span>
+              {selectedKnowledgeBaseIds.length > 0 && <small>{selectedKnowledgeBaseIds.length}</small>}
+            </button>
+          )}
 
-          <button
-            className={`sidebar__hardware${mainView === "hardware" ? " sidebar__hardware--active" : ""}`}
-            onClick={() => setMainView(mainView === "hardware" ? "chat" : "hardware")}
-            title={t("sidebar.hardwareTitle")}
-          >
-            <Cpu size={16} />
-            <span>{t("sidebar.hardware")}</span>
-          </button>
+          {canFeature("hardware") && (
+            <button
+              className={`sidebar__hardware${mainView === "hardware" ? " sidebar__hardware--active" : ""}`}
+              onClick={() => setMainView(mainView === "hardware" ? "chat" : "hardware")}
+              title={t("sidebar.hardwareTitle")}
+            >
+              <Cpu size={16} />
+              <span>{t("sidebar.hardware")}</span>
+            </button>
+          )}
 
           <section className="sidebar__section">
             <div className="sidebar__section-head">
@@ -1401,6 +1535,10 @@ export default function App() {
               <Blocks size={15} />
               <span>{t("caps.title")}</span>
             </button>
+            <button className="sidebar__navitem" onClick={() => setHelpOpen(true)} title="使用教程 / 帮助">
+              <BookOpen size={15} />
+              <span>使用教程</span>
+            </button>
             <button
               className="sidebar__navitem"
               onClick={() => setSettingsOpen(true)}
@@ -1410,6 +1548,25 @@ export default function App() {
               <SettingsIcon size={15} />
               <span>{t("topbar.settings")}</span>
             </button>
+            {session.loggedIn && (
+              <button
+                className="sidebar__navitem"
+                onClick={() => {
+                  void confirmDialog({
+                    title: "退出登录",
+                    message: `当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""}\n退出后切回本地 API 模式。`,
+                    confirmText: "退出",
+                    danger: true,
+                  }).then((ok) => {
+                    if (ok) void app.AccountLogout().then(refreshSession);
+                  });
+                }}
+                title={`当前账号：${session.account}${session.isAdmin ? "（超级管理员）" : ""} — 点击退出登录`}
+              >
+                <LogOut size={15} />
+                <span>退出（{session.account}）</span>
+              </button>
+            )}
           </nav>
 
         </aside>
@@ -1428,16 +1585,51 @@ export default function App() {
           title={t("sidebar.resize")}
         />
 
+        {/* 硬件模式:实验台作为独立的第二栏(可收起)。四栏 = 导航 | 实验台 | 对话 | 代码。
+            竖向整列高度,内容放得下、可滚动,不再压住对话。 */}
+        {mainView === "hardware" && (
+          <aside className={`hw-rail${hwCollapsed ? " hw-rail--collapsed" : ""}`} aria-label={t("sidebar.hardware")}>
+            <div className="hw-rail__head">
+              <Cpu size={15} className="hw-rail__icon" />
+              {!hwCollapsed && <span className="hw-rail__title">{t("sidebar.hardware")}</span>}
+              <button
+                className="hw-rail__toggle"
+                onClick={() => setHwCollapsed((v) => !v)}
+                title={hwCollapsed ? "展开实验台" : "收起实验台"}
+                aria-label={hwCollapsed ? "展开实验台" : "收起实验台"}
+              >
+                {hwCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+              </button>
+            </div>
+            {!hwCollapsed && (
+              <div className="hw-rail__body">
+                <HardwarePanel
+                  onPrompt={handleSend}
+                  onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
+                  onBackToChat={() => setMainView("chat")}
+                  selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
+                  active={mainView === "hardware"}
+                />
+              </div>
+            )}
+          </aside>
+        )}
+
         <section className="chat-pane">
           <header className="topbar">
             <div className="topbar__identity" title={state.meta?.cwd || undefined}>
               <span className="topbar__title">
-                {state.meta?.cwd ? cwdFolderLabel(state.meta.cwd) : "onecreat"}
+                {state.meta?.cwd ? cwdFolderLabel(state.meta.cwd) : "OneCreat"}
               </span>
-              <span className="topbar__model">{state.meta?.label ?? "…"}</span>
+              {/* 网关模式(已登录)只显示档位名,绝不显示真实模型 / planner 名,与底栏档位切换器一致。 */}
+              <span className="topbar__model">
+                {session?.loggedIn
+                  ? (session.tiers?.find((tr) => tr.index === session.selectedTier)?.name ?? "智能")
+                  : (state.meta?.label ?? "…")}
+              </span>
             </div>
             {/* P1 翻面：顶部不再并列「对话 | 硬件编程」双 tab。对话是唯一主视图，
-                硬件工作台改为从首页「硬件项目」卡或侧栏按钮按需打开。 */}
+                设备实验台从侧栏按需打开。 */}
             <div className="topbar__spacer" />
             <button
               className="chip chip--icon topbar__workspace-toggle"
@@ -1464,13 +1656,15 @@ export default function App() {
               <button className="chip chip--icon" onClick={() => setCapsOpen(true)} title={t("caps.title")}>
                 <Blocks size={13} />
               </button>
-              <button
-                className={selectedKnowledgeBaseIds.length ? "chip chip--icon chip--on" : "chip chip--icon"}
-                onClick={() => setKnowledgeOpen(true)}
-                title={selectedKnowledgeBaseIds.length ? `知识库 · 已用于聊天 ${selectedKnowledgeBaseIds.length}` : "知识库"}
-              >
-                <BookOpen size={13} />
-              </button>
+              {canFeature("knowledge") && (
+                <button
+                  className={selectedKnowledgeBaseIds.length ? "chip chip--icon chip--on" : "chip chip--icon"}
+                  onClick={() => setKnowledgeOpen(true)}
+                  title={selectedKnowledgeBaseIds.length ? `知识库 · 已用于聊天 ${selectedKnowledgeBaseIds.length}` : "知识库"}
+                >
+                  <BookOpen size={13} />
+                </button>
+              )}
               <button
                 className="chip chip--icon"
                 onClick={() => setSettingsOpen(true)}
@@ -1504,16 +1698,16 @@ export default function App() {
               </div>
             ) : (
               <>
-                {/* Transcript 永远挂载,切到硬件视图时只是 display:none,
-                    确保流式输出不被中断、滚动位置保留。 */}
-                <div className="main__view main__view--chat" style={{ display: mainView === "chat" ? undefined : "none" }}>
+                {/* Transcript 永远挂载;硬件模式下它就是右侧聊天栏,不再 display:none。
+                    实验台(HardwarePanel)已迁到左侧 hw-rail。 */}
+                <div className="main__view main__view--chat">
                   <Transcript
                     items={state.items}
                     live={state.live}
                     footerHeight={footerHeight}
                     onPrompt={send}
-                    onRewind={rewind}
                     onOpenHardware={() => setMainView("hardware")}
+                    onRewind={rewind}
                   />
                   {/* 待办清单:任务进行时浮在对话区右上角,不再挤占左侧会话栏 */}
                   {showTodos && (
@@ -1523,15 +1717,6 @@ export default function App() {
                   )}
                   {/* 本次产出:聚合会话写过的文件,右下角浮条,点条目在工作区面板打开 */}
                   <SessionArtifacts items={state.items} onOpenFile={openWorkspaceFile} />
-                </div>
-                <div className="main__view main__view--hardware" style={{ display: mainView === "hardware" ? undefined : "none" }}>
-                  <HardwarePanel
-                    onPrompt={handleSend}
-                    onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
-                    onBackToChat={() => setMainView("chat")}
-                    selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
-                    active={mainView === "hardware"}
-                  />
                 </div>
               </>
             )}
@@ -1668,6 +1853,10 @@ export default function App() {
       )}
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onChanged={() => void refreshMeta()} />}
+      {helpOpen && <HelpDrawer onClose={() => setHelpOpen(false)} />}
+
+      {/* app 内置文件夹选择器(承诺式,全局一个;绕开 macOS 原生对话框跑窗口后面的 bug) */}
+      <FolderPicker />
 
       {capsOpen && (
         <CapabilitiesPanel
@@ -1689,6 +1878,7 @@ export default function App() {
         />
       )}
 
+      <ConfirmHost />
     </div>
   );
 }

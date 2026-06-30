@@ -52,7 +52,7 @@ function paint(text: string) {
 
   const title = document.createElement("div");
   title.className = "crash-overlay__title";
-  title.textContent = "onecreat 运行时异常";
+  title.textContent = "OneCreat 运行时异常";
   const body = document.createElement("pre");
   body.className = "crash-overlay__body";
   body.textContent = text;

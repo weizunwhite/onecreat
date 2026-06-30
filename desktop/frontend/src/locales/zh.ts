@@ -51,10 +51,10 @@ export const zh: Record<DictKey, string> = {
   "sidebar.historyFileRemark": "本机会话索引",
   "sidebar.memoryFileRemark": "已保存记忆事实",
   "sidebar.capabilitiesFileRemark": "MCP 与技能清单",
-  "sidebar.hardwareFileRemark": "硬件编程流程入口",
+  "sidebar.hardwareFileRemark": "设备实验台入口",
   "sidebar.workspace": "工作区",
   "sidebar.changeWorkspace": "更改",
-  "sidebar.navigation": "onecreat 导航",
+  "sidebar.navigation": "OneCreat 导航",
   "sidebar.collapse": "收起侧边栏",
   "sidebar.expand": "展开侧边栏",
   "sidebar.expandBlocked": "关闭右侧文件面板后可展开侧边栏",
@@ -74,10 +74,10 @@ export const zh: Record<DictKey, string> = {
   "sidebar.noRemovable": "该项目没有可删除的对话（正在用的那个不能删）",
   "sidebar.deleteFolderConfirm": "删除「{name}」下的 {count} 个对话?",
   "sidebar.deleteSessionConfirm": "删除会话「{title}」?",
-  "sidebar.hardware": "硬件编程",
-  "sidebar.hardwareTitle": "硬件编程工作台 — 选板卡、串口、开发环境,直接编译/烧录",
+  "sidebar.hardware": "实验台",
+  "sidebar.hardwareTitle": "设备实验台 — 编译、烧录、串口和真机证据",
   "tabs.chat": "对话",
-  "tabs.hardware": "硬件",
+  "tabs.hardware": "实验台",
 
   // 本次产出(会话写过的文件清单)
   "artifacts.title": "本次产出",
@@ -95,7 +95,7 @@ export const zh: Record<DictKey, string> = {
 
   // 首页垂直启动卡
   "welcome.v.hardware.title": "硬件项目",
-  "welcome.v.hardware.desc": "选板卡、编译、烧录、看串口 — 打开硬件工作台",
+  "welcome.v.hardware.desc": "打开设备实验台；问题仍由你输入",
   "welcome.v.proposal.title": "技术方案",
   "welcome.v.proposal.desc": "硬件选型 / 系统架构 / 软件流程",
   "welcome.v.paper.title": "竞赛论文",
@@ -198,7 +198,7 @@ export const zh: Record<DictKey, string> = {
   "welcome.hintSend": "发送",
 
   // 输入框
-  "composer.placeholder": "给 onecreat 发消息…  ( / 命令 · @ 文件 )",
+  "composer.placeholder": "给 OneCreat 发消息…  ( / 命令 · @ 文件 )",
   "composer.planMode": "计划模式",
   "composer.planModeOn": "计划模式已开",
   "composer.planHint": "shift+tab",

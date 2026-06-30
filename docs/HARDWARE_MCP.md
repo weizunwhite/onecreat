@@ -1,7 +1,7 @@
-# Reasonix Hardware MCP
+# OneCreat Hardware MCP
 
-`reasonix-hardware-mcp` is a first-pass hardware programming tool server for
-Reasonix. It adds structured tools for AI hardware teaching workflows:
+`onecreat-hardware-mcp` is a first-pass hardware programming tool server for
+OneCreat. It adds structured tools for AI hardware teaching workflows:
 
 - local toolchain and serial-port detection
 - teaching-friendly project scaffolds
@@ -26,27 +26,27 @@ make build
 The hardware MCP binary is generated at:
 
 ```sh
-bin/reasonix-hardware-mcp
+bin/onecreat-hardware-mcp
 ```
 
-## Configure Reasonix
+## Configure OneCreat
 
 The macOS desktop package installs the hardware-enabled app as
-`/Applications/Reasonix.app`. In the desktop app, open **硬件** from the left
+`/Applications/OneCreat.app`. In the desktop app, open **硬件** from the left
 sidebar and click **启用**. The backend resolves the hardware MCP binary in this
 order:
 
 1. `REASONIX_HARDWARE_MCP`
 2. bundled binary next to the desktop executable
-3. `reasonix-hardware-mcp` on `PATH`
-4. local `bin/reasonix-hardware-mcp` during development
+3. `onecreat-hardware-mcp` on `PATH`
+4. local `bin/onecreat-hardware-mcp` during development
 
-Add this to `reasonix.toml`:
+Add this to `onecreat.toml`:
 
 ```toml
 [[plugins]]
 name = "hardware"
-command = "bin/reasonix-hardware-mcp"
+command = "bin/onecreat-hardware-mcp"
 ```
 
 If `reasonix` is launched outside this repository, use the absolute path:
@@ -54,7 +54,7 @@ If `reasonix` is launched outside this repository, use the absolute path:
 ```toml
 [[plugins]]
 name = "hardware"
-command = "/Users/localwork/06_System/reasonix_source/DeepSeek-Reasonix/bin/reasonix-hardware-mcp"
+command = "/Users/localwork/06_System/reasonix_source/DeepSeek-Reasonix/bin/onecreat-hardware-mcp"
 ```
 
 Then run:
@@ -117,7 +117,7 @@ args = ["-C", "/path/to/project", "mcp-server"]
 
 ## Slash Commands
 
-Project commands are available under `.reasonix/commands/hardware/`:
+Project commands are available under `.onecreat/commands/hardware/`:
 
 - `/hardware:init`
 - `/hardware:plan`
@@ -126,7 +126,7 @@ Project commands are available under `.reasonix/commands/hardware/`:
 - `/hardware:review`
 
 They are prompt workflows. The actual device operations are exposed through the
-MCP tools, so they remain permission-gated by Reasonix.
+MCP tools, so they remain permission-gated by OneCreat.
 
 ## Automatic Validation
 
@@ -250,7 +250,7 @@ For a full local regression of the first-version hardware platform layer, run:
 make hardware-verify
 ```
 
-This builds `bin/reasonix-hardware-mcp`, scaffolds every supported platform,
+This builds `bin/onecreat-hardware-mcp`, scaffolds every supported platform,
 checks the common scaffold artifacts above, audits each generated project,
 validates each generated project, records evidence for each validation, checks
 the evidence status, and checks that hardware-dependent tools return diagnostic
@@ -265,7 +265,7 @@ make cross
 ```
 
 The `cross` target now builds both `reasonix-*` and
-`reasonix-hardware-mcp-*` binaries for macOS, Linux, and Windows.
+`onecreat-hardware-mcp-*` binaries for macOS, Linux, and Windows.
 
 To verify the Windows installer packaging layer, run:
 
@@ -273,8 +273,8 @@ To verify the Windows installer packaging layer, run:
 make windows-package-verify
 ```
 
-This builds `dist/Reasonix-windows-amd64-installer.exe`, extracts it with
-`7zz`, checks that `reasonix-desktop.exe` and `reasonix-hardware-mcp.exe` are
+This builds `dist/OneCreat-windows-amd64-installer.exe`, extracts it with
+`7zz`, checks that `onecreat-desktop.exe` and `onecreat-hardware-mcp.exe` are
 both present, verifies the hardware MCP Go metadata, and checks that the NSIS
 script installs the hardware MCP into the per-user install directory. A native
 Windows runner or VM is still required to verify process launch, silent
@@ -284,12 +284,12 @@ On a native Windows runner or VM, run:
 
 ```powershell
 scripts/windows-native-smoke.ps1 `
-  -InstallerPath "dist/Reasonix-windows-amd64-installer.exe" `
+  -InstallerPath "dist/OneCreat-windows-amd64-installer.exe" `
   -SummaryPath "$env:RUNNER_TEMP/windows-native-smoke-summary.json"
 ```
 
 This installs the NSIS package silently into a temporary per-user directory,
-checks that `reasonix-desktop.exe` and `reasonix-hardware-mcp.exe` are present,
+checks that `onecreat-desktop.exe` and `onecreat-hardware-mcp.exe` are present,
 calls the bundled hardware MCP (`tools/list` and `hardware_detect`), launches the
 desktop process briefly, uninstalls silently, and writes a JSON summary. The
 desktop release workflow runs this automatically on the Windows build runner.
@@ -379,9 +379,9 @@ should diagnose from the real CLI output instead of guessing.
 
 The desktop release packages the hardware MCP next to the desktop executable:
 
-- macOS: `Reasonix.app/Contents/MacOS/reasonix-hardware-mcp`
-- Linux: `reasonix-hardware-mcp` in the release tarball
-- Windows: `reasonix-hardware-mcp.exe` installed into `$INSTDIR` by NSIS
+- macOS: `OneCreat.app/Contents/MacOS/onecreat-hardware-mcp`
+- Linux: `onecreat-hardware-mcp` in the release tarball
+- Windows: `onecreat-hardware-mcp.exe` installed into `$INSTDIR` by NSIS
 
 ## First-Version Scope
 

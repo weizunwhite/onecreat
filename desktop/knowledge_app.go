@@ -299,16 +299,16 @@ func (a *App) KnowledgeBuildPrompt(baseIDs []string, question string, limit int)
 	}
 
 	var b strings.Builder
-	b.WriteString("你正在回答用户问题。下面是用户在 onecreat 知识库中显式选择的本地资料片段。\n")
-	b.WriteString("隐私与事实规则：这些片段只来自客户本机知识库；优先依据片段回答；资料不足时明确说明不足，不要编造；引用资料事实时标注来源编号，如 [1]。\n\n")
-	b.WriteString("# 本地知识库片段\n")
+	b.WriteString("你正在回答用户问题。用户问题和当前对话上下文优先；下面的本地知识库片段只是候选参考，可能与当前问题无关。\n")
+	b.WriteString("隐私与事实规则：这些片段只来自客户本机知识库；只在片段明显相关时使用；资料不相关时忽略；不得把片段中的任务类型、项目名称或提交要求强行套到用户问题上；引用资料事实时标注来源编号，如 [1]。\n\n")
+	b.WriteString("# 用户问题\n")
+	b.WriteString(question)
+	b.WriteString("\n\n# 本地知识库片段\n")
 	for i, m := range matches {
 		fmt.Fprintf(&b, "[%d] 知识库：%s / 文件：%s / 片段：%d\n", i+1, m.BaseName, m.DocumentName, m.ChunkIndex+1)
 		b.WriteString(strings.TrimSpace(m.Text))
 		b.WriteString("\n\n")
 	}
-	b.WriteString("# 用户问题\n")
-	b.WriteString(question)
 	return KnowledgePromptView{Prompt: b.String(), Sources: matches}, nil
 }
 
@@ -665,7 +665,7 @@ func knowledgeScore(query, text, name string) float64 {
 //   - 英文/数字(型号如 esp32、sr04):整词保留;
 //   - 中文:按「相邻二字词」(bigram)切，既能召回又比单字更精准
 //     (评分循环会跳过长度<2 的 token，所以单字不单独成 token，
-//      单字查询交给整句 strings.Contains 兜底)。
+//     单字查询交给整句 strings.Contains 兜底)。
 func knowledgeTokens(s string) []string {
 	s = strings.ToLower(s)
 	out := make([]string, 0, 16)

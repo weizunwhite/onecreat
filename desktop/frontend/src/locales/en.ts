@@ -50,10 +50,10 @@ export const en = {
   "sidebar.historyFileRemark": "Local session index",
   "sidebar.memoryFileRemark": "Saved memory facts",
   "sidebar.capabilitiesFileRemark": "MCP and skills inventory",
-  "sidebar.hardwareFileRemark": "Hardware workflow entry",
+  "sidebar.hardwareFileRemark": "Device lab entry",
   "sidebar.workspace": "Workspace",
   "sidebar.changeWorkspace": "Change",
-  "sidebar.navigation": "onecreat navigation",
+  "sidebar.navigation": "OneCreat navigation",
   "sidebar.collapse": "Collapse sidebar",
   "sidebar.expand": "Expand sidebar",
   "sidebar.expandBlocked": "Close the right file panel before expanding the sidebar",
@@ -73,10 +73,10 @@ export const en = {
   "sidebar.noRemovable": "No deletable conversations in this project (the active one can't be deleted)",
   "sidebar.deleteFolderConfirm": "Delete {count} conversation(s) under \"{name}\"?",
   "sidebar.deleteSessionConfirm": "Delete session \"{title}\"?",
-  "sidebar.hardware": "Hardware studio",
-  "sidebar.hardwareTitle": "Hardware workbench — pick board, port and toolchain; compile & flash directly",
+  "sidebar.hardware": "Device lab",
+  "sidebar.hardwareTitle": "Device lab — compile, flash, serial and hardware evidence",
   "tabs.chat": "Chat",
-  "tabs.hardware": "Hardware",
+  "tabs.hardware": "Lab",
 
   // Session artifacts (files written during this session)
   "artifacts.title": "Outputs",
@@ -94,7 +94,7 @@ export const en = {
 
   // Welcome vertical launch cards
   "welcome.v.hardware.title": "Hardware project",
-  "welcome.v.hardware.desc": "Pick board, compile, flash, serial — open the hardware workbench",
+  "welcome.v.hardware.desc": "Open the device lab; you still drive the prompt",
   "welcome.v.proposal.title": "Tech proposal",
   "welcome.v.proposal.desc": "Hardware selection / system architecture / software flow",
   "welcome.v.paper.title": "Competition paper",
@@ -197,7 +197,7 @@ export const en = {
   "welcome.hintSend": "send",
 
   // composer
-  "composer.placeholder": "Message onecreat…  ( / commands · @ files )",
+  "composer.placeholder": "Message OneCreat…  ( / commands · @ files )",
   "composer.planMode": "plan mode",
   "composer.planModeOn": "plan mode on",
   "composer.planHint": "shift+tab",

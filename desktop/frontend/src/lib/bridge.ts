@@ -6,12 +6,15 @@
 // developed and laid out without rebuilding the Go side.
 
 import type {
+  AccountLoginResult,
+  AccountSession,
   BalanceInfo,
   CapabilitiesView,
   CheckpointMeta,
   CommandInfo,
   ContextInfo,
   DirEntry,
+  FolderListing,
   EffortInfo,
   FilePreview,
   HistoryMessage,
@@ -102,6 +105,16 @@ export interface AppBindings {
   ListWorkspaces(): Promise<WorkspaceView[]>;
   PickWorkspace(): Promise<string>;
   SwitchWorkspace(path: string): Promise<string>;
+  // 内置文件夹选择器列目录(绕开 macOS 原生对话框跑到窗口后面的 bug)。
+  BrowseDir(path: string): Promise<FolderListing>;
+  // 账号 / 权限(登录门控):登录 / 登出 / 查当前会话(含功能权限清单)。
+  AccountLogin(account: string, password: string): Promise<AccountLoginResult>;
+  AccountLogout(): Promise<void>;
+  AccountSessionInfo(): Promise<AccountSession>;
+  // 订阅制:切换当前档位(1/2/3);背后映射到哪个模型由平台决定,客户端不知道。
+  SetOnecreatTier(index: number): Promise<void>;
+  // 每轮对话结束后向平台拉最新 points/tiers(让余额实时下降、看到消耗)。
+  RefreshAccountSession(): Promise<AccountSession>;
   ContextUsage(): Promise<ContextInfo>;
   // Balance queries the active provider's wallet balance (a network call);
   // returns an unavailable readout when no balance_url is configured or it fails.
@@ -276,6 +289,23 @@ const serialClosedListeners = new Set<(reason: string) => void>();
 let mockSerialTimer: ReturnType<typeof setInterval> | null = null;
 let mockSerialN = 0;
 
+// 账号 mock 会话(浏览器 dev / 无后端时):AccountLogin 改它,AccountSessionInfo 读它。
+const MOCK_ALL_FEATURES = ["hardware", "proposal", "paper", "lesson", "tutorial", "log", "jinpeng", "knowledge", "ota", "skills"];
+const MOCK_TIERS = [
+  { index: 1, name: "标准" },
+  { index: 2, name: "高级" },
+  { index: 3, name: "旗舰" },
+];
+let mockSession: AccountSession = {
+  loggedIn: false,
+  account: "",
+  isAdmin: false,
+  permissions: [],
+  tiers: [],
+  points: null,
+  selectedTier: 1,
+};
+
 export function onSerialData(cb: (chunk: string) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("serial:data", (d) => cb(String(d)));
@@ -342,9 +372,9 @@ function delay(ms: number): Promise<void> {
 
 function makeMockApp(): AppBindings {
   let cancelled = false;
-  let cwd = "~/projects/reasonix"; // mutable so PickWorkspace is visible in dev
+  let cwd = "~/projects/onecreat"; // mutable so PickWorkspace is visible in dev
   let workspaces = [
-    "~/projects/reasonix",
+    "~/projects/onecreat",
     "~/Documents/hardware/esp32_snake_web",
     "~/Documents/hardware/hardware_lessons",
     "~/projects/blade",
@@ -381,9 +411,9 @@ function makeMockApp(): AppBindings {
     { name: "init", description: "Scaffold a ONECREAT.md for this repo", scope: "builtin", runAs: "inline" },
   ];
   let capSkillRoots: SkillRootView[] = [
-    { dir: "~/projects/reasonix/.reasonix/skills", scope: "project", priority: 1, status: "missing", configured: false, skills: 0 },
+    { dir: "~/projects/onecreat/.onecreat/skills", scope: "project", priority: 1, status: "missing", configured: false, skills: 0 },
     { dir: "~/my-skills", scope: "custom", priority: 5, status: "ok", configured: true, skills: 1 },
-    { dir: "~/.reasonix/skills", scope: "global", priority: 6, status: "ok", configured: false, skills: 2 },
+    { dir: "~/.onecreat/skills", scope: "global", priority: 6, status: "ok", configured: false, skills: 2 },
   ];
   const mockSwitchWorkspace = async (path: string) => {
     cwd = path || "~";
@@ -414,7 +444,7 @@ function makeMockApp(): AppBindings {
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
     agent: { temperature: 0.2, maxSteps: 0, systemPrompt: "You are onecreat, a coding agent." },
-    configPath: "~/projects/reasonix/reasonix.toml",
+    configPath: "~/projects/onecreat/onecreat.toml",
     providerKinds: ["openai"],
     bypass: false,
   };
@@ -654,7 +684,45 @@ function makeMockApp(): AppBindings {
     async PickWorkspace() {
       // Browser dev has no native dialog; simulate picking a folder and re-root so
       // the topbar folder chip visibly changes.
-      return mockSwitchWorkspace(cwd.endsWith("another-project") ? "~/projects/reasonix" : "~/projects/another-project");
+      return mockSwitchWorkspace(cwd.endsWith("another-project") ? "~/projects/onecreat" : "~/projects/another-project");
+    },
+    async BrowseDir(path: string) {
+      // 浏览器 dev 模式给一组假目录,方便不在 shell 里也能调界面。
+      const p = path || "/Users/dev";
+      return {
+        path: p,
+        parent: p === "/" ? "/" : p.split("/").slice(0, -1).join("/") || "/",
+        dirs: ["项目A", "项目B", "超声波小车", "Desktop", "Documents"],
+        home: "/Users/dev",
+        desktop: "/Users/dev/Desktop",
+      } as FolderListing;
+    },
+    async AccountLogin(account: string, password: string) {
+      if (account === "admin" && password === "admin") {
+        mockSession = { loggedIn: true, account: "超级管理员", isAdmin: true, permissions: [...MOCK_ALL_FEATURES], tiers: MOCK_TIERS, points: null, selectedTier: 1 };
+        return { ok: true } as AccountLoginResult;
+      }
+      if (account === "demo" && password === "demo") {
+        mockSession = { loggedIn: true, account: "演示客户", isAdmin: false, permissions: ["hardware", "proposal", "paper", "knowledge"], tiers: MOCK_TIERS, points: 8500, selectedTier: 1 };
+        return { ok: true } as AccountLoginResult;
+      }
+      return { ok: false, error: "账号或密码不对" } as AccountLoginResult;
+    },
+    async AccountLogout() {
+      mockSession = { loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1 };
+    },
+    async AccountSessionInfo() {
+      return mockSession;
+    },
+    async SetOnecreatTier(index: number) {
+      if (index >= 1 && index <= 3) mockSession = { ...mockSession, selectedTier: index };
+    },
+    async RefreshAccountSession() {
+      // 浏览器 dev:模拟每轮扣几点
+      if (typeof mockSession.points === "number") {
+        mockSession = { ...mockSession, points: Math.max(0, mockSession.points - 3) };
+      }
+      return mockSession;
     },
     async SwitchWorkspace(path: string) {
       return mockSwitchWorkspace(path);
@@ -719,7 +787,7 @@ function makeMockApp(): AppBindings {
       return {
         name: "hardware",
         available: true,
-        command: "reasonix-hardware-mcp",
+        command: "onecreat-hardware-mcp",
         source: "browser mock",
         configured: Boolean(server),
         connected: server?.status === "connected",
@@ -738,6 +806,7 @@ function makeMockApp(): AppBindings {
         workspace: cwd,
         projectDir: cwd,
         projectTypes: ["platformio"],
+        candidateProjects: [],
         serialPorts: ["/dev/cu.usbserial-0001"],
         boards: [
           {
@@ -774,7 +843,7 @@ function makeMockApp(): AppBindings {
             name: "ESP-IDF idf.py",
             command: "idf.py --version",
             available: false,
-            hint: "Install ESP-IDF, then activate the environment before launching onecreat.",
+            hint: "Install ESP-IDF, then activate the environment before launching OneCreat.",
           },
         ],
         recommendations: ["ESP-IDF 工程建议优先接入官方 Tools MCP。"],
@@ -833,7 +902,7 @@ function makeMockApp(): AppBindings {
     },
     async HardwareEvidenceExport() {
       return [
-        "# 真机验证证据（onecreat 自动导出）",
+        "# 真机验证证据（OneCreat 自动导出）",
         "",
         "共 1 条验证记录。",
         "",
@@ -906,7 +975,7 @@ function makeMockApp(): AppBindings {
       return this.AddMCPServer({
         name: "hardware",
         transport: "stdio",
-        command: "reasonix-hardware-mcp",
+        command: "onecreat-hardware-mcp",
         args: [],
         url: "",
         env: {},
@@ -972,9 +1041,10 @@ function makeMockApp(): AppBindings {
       if (!search.matches.length) return { prompt: question, sources: [] };
       return {
         prompt:
-          "你正在回答用户问题。下面是用户在 onecreat 知识库中显式选择的本地资料片段。\n\n" +
-          search.matches.map((m, index) => `[${index + 1}] ${m.baseName} / ${m.documentName}\n${m.text}`).join("\n\n") +
-          `\n\n# 用户问题\n${question}`,
+          "你正在回答用户问题。用户问题和当前对话上下文优先；下面的本地知识库片段只是候选参考，可能与当前问题无关。\n" +
+          "隐私与事实规则：这些片段只来自客户本机知识库；只在片段明显相关时使用；资料不相关时忽略；不得把片段中的任务类型、项目名称或提交要求强行套到用户问题上；引用资料事实时标注来源编号，如 [1]。\n\n" +
+          `# 用户问题\n${question}\n\n# 本地知识库片段\n` +
+          search.matches.map((m, index) => `[${index + 1}] ${m.baseName} / ${m.documentName}\n${m.text}`).join("\n\n"),
         sources: search.matches,
       };
     },
@@ -1065,7 +1135,7 @@ function makeMockApp(): AppBindings {
     },
     async ReadFile(rel: string) {
       const samples: Record<string, string> = {
-        "README.md": "# onecreat\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
+        "README.md": "# OneCreat\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
         "go.mod": "module reasonix\n\ngo 1.23\n",
         "desktop/file.go": "package desktop\n\nfunc main() {\n\tprintln(\"workspace preview\")\n}\n",
         "internal/event.go": "package internal\n\n// mock file used by the browser dev seam\n",
@@ -1088,10 +1158,10 @@ function makeMockApp(): AppBindings {
       console.info("mock RevealWorkspacePath", rel);
     },
     async SavePastedImage(_dataUrl: string) {
-      return ".reasonix/attachments/mock.png";
+      return ".onecreat/attachments/mock.png";
     },
     async SavePastedFile(name: string, _dataUrl: string) {
-      return `.reasonix/attachments/mock-${name}`;
+      return `.onecreat/attachments/mock-${name}`;
     },
     async AttachmentDataURL(_path: string) {
       return "data:image/png;base64,iVBORw0KGgo=";
@@ -1112,15 +1182,15 @@ function makeMockApp(): AppBindings {
     async Memory() {
       return {
         available: true,
-        storeDir: "~/.config/reasonix/projects/-mock/memory",
+        storeDir: "~/.config/onecreat/projects/-mock/memory",
         docs: [
           {
             path: "ONECREAT.md",
             scope: "project",
-            body: "# onecreat project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
+            body: "# OneCreat project memory\n\nMock doc shown in the browser dev seam.\n\n## Notes\n\n- prefers concise replies",
           },
           {
-            path: "~/.config/reasonix/ONECREAT.md",
+            path: "~/.config/onecreat/ONECREAT.md",
             scope: "user",
             body: "# User memory\n\nAlways respond in 中文.",
           },
@@ -1134,7 +1204,7 @@ function makeMockApp(): AppBindings {
           },
         ],
         scopes: [
-          { scope: "user", path: "~/.config/reasonix/ONECREAT.md" },
+          { scope: "user", path: "~/.config/onecreat/ONECREAT.md" },
           { scope: "project", path: "ONECREAT.md" },
           { scope: "local", path: "ONECREAT.local.md" },
         ],
@@ -1218,7 +1288,7 @@ function makeMockApp(): AppBindings {
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {
-        window.open("https://github.com/esengine/reasonix/releases/latest", "_blank", "noopener");
+        window.open("https://github.com/weizunwhite/onecreat/releases/latest", "_blank", "noopener");
       }
     },
   };

@@ -30,12 +30,13 @@ import (
 // has no Wails dependency so the logic is unit-tested directly; updater_app.go is
 // the thin Wails binding that wires these into App methods and progress events.
 
-// Manifest endpoints — R2 CDN first (fast, especially in CN), GitHub releases as
-// fallback. Mirrors the v1 desktop's two-endpoint scheme.
+// 自动更新已禁用(CheckUpdate 为 no-op)。manifest 端点留空,杜绝任何指向上游 reasonix
+// 的残留;下载页指向本 fork 自己的发布页(即便不可达也不外泄)。以后要做 onecreat 自己的
+// 更新推送,把这两个 manifest 端点指到 onecreat 的发布渠道、并恢复 CheckUpdate 即可。
 const (
-	manifestPrimary     = "https://pub-147fb53b9c1e4bbf891a257968619ea7.r2.dev/latest/latest.json"
-	manifestFallback    = "https://github.com/esengine/reasonix/releases/latest/download/latest.json"
-	defaultDownloadPage = "https://github.com/esengine/reasonix/releases/latest"
+	manifestPrimary     = ""
+	manifestFallback    = ""
+	defaultDownloadPage = "https://github.com/weizunwhite/onecreat/releases/latest"
 	httpTimeout         = 15 * time.Second
 )
 

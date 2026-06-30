@@ -136,9 +136,10 @@ func TestToWireTurnDoneNoError(t *testing.T) {
 // --- kindNames completeness ---
 
 func TestKindNamesComplete(t *testing.T) {
-	// ToolProgress is the last Kind; every value through it must have a wire name,
+	// MCPSurfaceReady is the last Kind; every value through it must have a wire name,
 	// or toWire emits kind:"" and the frontend reducer falls through to undefined.
-	for k := event.Kind(0); k <= event.ToolProgress; k++ {
+	// (L4: 此前上界停在 ToolProgress,漏掉了其后追加的 MCPSurfaceReady — 守卫有缺口。)
+	for k := event.Kind(0); k <= event.MCPSurfaceReady; k++ {
 		if kindNames[k] == "" {
 			t.Errorf("kind %d has no wire name — toWire would emit kind:\"\"", k)
 		}

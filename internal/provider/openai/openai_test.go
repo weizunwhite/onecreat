@@ -81,6 +81,35 @@ func TestStreamAuthError(t *testing.T) {
 	}
 }
 
+func TestStreamGatewayAuthErrorUsesPlatformMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"登录已失效,请在 onecreat 重新登录","type":"authentication_error"}}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "onecreat",
+		BaseURL: srv.URL,
+		Model:   "tier-1",
+		APIKey:  "expired",
+		Extra:   map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("want gateway auth error")
+	}
+	if got := err.Error(); !strings.Contains(got, "登录已失效") || strings.Contains(got, "ONECREAT_GATEWAY_TOKEN") {
+		t.Fatalf("gateway auth error should use platform message without env leak: %q", got)
+	}
+}
+
 // TestBuildRequestAlwaysSerializesContent guards the DeepSeek 400 regression:
 // an assistant turn that is pure tool_calls (no preamble text) has empty
 // content, and DeepSeek rejects a message missing the `content` field. Every

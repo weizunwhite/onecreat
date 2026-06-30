@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="Reasonix" width="640"/>
+  <img src="docs/logo.svg" alt="OneCreat" width="640"/>
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 </p>
 
 > [!IMPORTANT]
-> **Reasonix 1.0 是用 Go 从零重写的版本** —— 本分支(`main-v2`)已是新的默认分支,后续开发都在这里。
+> **OneCreat 1.0 是用 Go 从零重写的版本** —— 本分支(`main-v2`)已是新的默认分支,后续开发都在这里。
 > 早期的 `0.x` TypeScript 版本转为 **legacy**,保留在 [`v1`](https://github.com/esengine/DeepSeek-Reasonix/tree/v1) 分支(仅维护)。
 > 详见**[迁移指南](./docs/MIGRATING.md)**。`npm i -g reasonix` 仍是安装命令——`1.0.0`+ 装的是 Go 二进制,`0.x` 是 legacy TS 版。(注意:1.0.0 尚未发到 npm,在此之前请从源码构建。)
 
@@ -49,7 +49,7 @@
 
 ## 特性
 
-- **配置驱动**：provider、agent、启用的工具、插件全部在 `reasonix.toml` 中声明，
+- **配置驱动**：provider、agent、启用的工具、插件全部在 `onecreat.toml` 中声明，
   内核无硬编码模型。
 - **多模型 · 可组合**：DeepSeek（flash/pro）与 MiMo 作为预设内置；任何 OpenAI 兼容
   端点都只是一条配置。可选让两个模型协同（执行器 + 规划器），各自独立、缓存稳定的 session。
@@ -68,7 +68,7 @@ make cross      # -> dist/（darwin|linux|windows × amd64|arm64）
 ## 快速开始
 
 ```sh
-reasonix setup                      # 配置向导 → ./reasonix.toml
+reasonix setup                      # 配置向导 → ./onecreat.toml
 export DEEPSEEK_API_KEY=sk-...  # 或写入 .env（见 .env.example）
 reasonix chat                       # 然后在会话里运行 /init 生成 AGENTS.md（项目记忆）
 reasonix run "把 main.go 里的 TODO 实现掉"
@@ -78,7 +78,7 @@ echo "解释这段代码" | reasonix run
 
 ## 配置
 
-优先级：**flag > `./reasonix.toml` > `~/.config/reasonix/config.toml` > 内置默认值**。
+优先级：**flag > `./onecreat.toml` > `~/.config/onecreat/config.toml` > 内置默认值**。
 密钥经环境变量通过 `api_key_env` 注入，绝不写入配置文件。
 
 ```toml
@@ -131,7 +131,7 @@ command = "reasonix-plugin-example"
 
 ### 插件（MCP）
 
-Reasonix 是一个 MCP 客户端。`[[plugins]]` 的 `type` 选择传输：`stdio`（默认）启动本地子进
+OneCreat 是一个 MCP 客户端。`[[plugins]]` 的 `type` 选择传输：`stdio`（默认）启动本地子进
 程（`command`/`args`/`env`）；`http`（Streamable HTTP）连接远程 `url`，可带静态
 `headers`（`${VAR}` / `${VAR:-default}` 从环境展开，密钥不入文件）。工具以
 `mcp__<server>__<tool>` 暴露给模型，与 Claude Code 一致；声明 MCP `readOnlyHint: true`
@@ -155,9 +155,9 @@ url     = "https://mcp.stripe.com"
 headers = { Authorization = "Bearer ${STRIPE_KEY}" }
 ```
 
-**已有 Claude Code 的 `.mcp.json`？** 直接放到项目根目录，Reasonix 会原样读取——其
+**已有 Claude Code 的 `.mcp.json`？** 直接放到项目根目录，OneCreat 会原样读取——其
 `mcpServers` 规范（`command`/`args`/`env`、`type`/`url`/`headers`、`${VAR}` 展开）
-与 `[[plugins]]` 字段一一对应。两处来源会合并加载；同名时以 `reasonix.toml` 为准。
+与 `[[plugins]]` 字段一一对应。两处来源会合并加载；同名时以 `onecreat.toml` 为准。
 
 ```json
 {
@@ -173,7 +173,7 @@ headers = { Authorization = "Bearer ${STRIPE_KEY}" }
 `reasonix chat` 里,内置命令(`/compact`、`/new`、`/rewind`、`/tree`、`/branch`、`/switch`、`/todo`、`/model`、`/effort`、`/mcp`、`/help`)在本地执行。
 `/tree` 查看已保存的对话分支,`/branch [name]` 从当前对话末端分支,`/branch <turn> [name]`
 从较早的 checkpoint 轮次分支,`/switch <id|name>` 切换到另一个分支。**自定义命令**
-是放在 `.reasonix/commands/`(项目)或 `~/.config/reasonix/commands/`(用户)下的 Markdown 文件——
+是放在 `.onecreat/commands/`(项目)或 `~/.config/onecreat/commands/`(用户)下的 Markdown 文件——
 `review.md` 即 `/review`,子目录构成命名空间(`git/commit.md` → `/git:commit`)。文件正文
 是 prompt 模板,调用即作为一轮对话发出。
 
@@ -190,7 +190,7 @@ Review the staged diff. Focus on $ARGUMENTS, list bugs with file:line.
 
 ### @ 引用
 
-在消息里写 `@` 引用,Reasonix 会在发送前解析成带标签的上下文块:`@path/to/file`(或
+在消息里写 `@` 引用,OneCreat 会在发送前解析成带标签的上下文块:`@path/to/file`(或
 `@dir`)注入本地文件内容(或目录清单),`@<server>:<uri>` 注入 MCP 资源。本地路径**只有
 真实存在**时才当作引用,普通 `@mention` 保持原文。敲 `/` 或 `@` 会弹出补全菜单——斜杠
 命令,或**逐层**的文件导航(一次只列当前一层目录、可下钻进子目录)外加 MCP 资源。
@@ -199,7 +199,7 @@ Review the staged diff. Focus on $ARGUMENTS, list bugs with file:line.
 
 `reasonix setup` 刻意保持首次体验极简：选 provider → 输入 key（所选 provider 的所有
 SKU 都会启用）。若要让两个模型协同（执行器 + 规划器，各自独立、缓存稳定的
-session），向导后手动在 `reasonix.toml` 加一行即可：
+session），向导后手动在 `onecreat.toml` 加一行即可：
 
 ```toml
 [agent]
@@ -210,7 +210,7 @@ Subagent skills 默认继承执行器模型。设置 `subagent_model` 可让它�
 模型；设置 `subagent_models` 则只覆盖 `review`、`security_review` 等指定 skill。
 
 交互式前端中，`agent.auto_plan = "ask"` 会让看起来复杂的任务自动进入 plan
-mode：Reasonix 先只读生成计划，待用户批准后才编辑文件或执行有副作用的命令。
+mode：OneCreat 先只读生成计划，待用户批准后才编辑文件或执行有副作用的命令。
 `auto_plan_classifier` 可以指定便宜的 provider，例如 `deepseek-flash`；它只在边界输入上调用，分类失败会回退到启发式规则。
 
 ## 架构
@@ -236,7 +236,7 @@ TUI（markdown、plan mode、上下文仪表盘、`/compact` `/new` `/tree` `/br
 MCP 客户端——**stdio + Streamable HTTP** 传输、工具（`mcp__server__tool`,支持
 `readOnlyHint`）、prompts（斜杠命令）、resources（`@` 引用）、`/mcp`，可经
 `[[plugins]]` 或 Claude 风格的项目 `.mcp.json` 配置——自定义斜杠命令
-（`.reasonix/commands/*.md`）、`@file` / `@resource` 引用、外加可运行的参考插件
+（`.onecreat/commands/*.md`）、`@file` / `@resource` 引用、外加可运行的参考插件
 （`cmd/reasonix-plugin-example`）、harness 主循环、CLI。chat 在终端普通缓冲区运行(原生
 scrollback)并带 `/` 与 `@` 输入补全。后续:给 `bash` 套 OS 级沙盒（macOS Seatbelt /
 Linux bubblewrap，"盒子里放行、边界上询问"）、Anthropic 原生 provider、MCP OAuth +
@@ -258,7 +258,7 @@ legacy SSE。见 `docs/SPEC.md` §9。
 
 ## 支持本项目
 
-如果 Reasonix 帮你省了时间或 token，欢迎请杯咖啡。捐助不会换来 feature 优先级，也不会影响 issue 的处理顺序——就是「谢谢」。
+如果 OneCreat 帮你省了时间或 token，欢迎请杯咖啡。捐助不会换来 feature 优先级，也不会影响 issue 的处理顺序——就是「谢谢」。
 
 - **国内** — 微信支付（扫下方二维码）
 - **海外** — PayPal: [paypal.me/yuhuahui](https://paypal.me/yuhuahui)
@@ -271,7 +271,7 @@ legacy SSE。见 `docs/SPEC.md` §9。
 
 ## 致谢
 
-下面这些朋友的工作塑造了 Reasonix 今天的样子 —— 综合 commit 数和代码量两个维度。
+下面这些朋友的工作塑造了 OneCreat 今天的样子 —— 综合 commit 数和代码量两个维度。
 **按字母顺序排列，排名不分先后。** 完整贡献者列表在
 [GitHub](https://github.com/esengine/DeepSeek-Reasonix/graphs/contributors)。
 
