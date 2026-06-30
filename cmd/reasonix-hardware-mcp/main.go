@@ -3218,12 +3218,21 @@ func runFirmwarePublish(args map[string]any) (string, error) {
 	if _, err := runCommandText("ssh", []string{sshHost, "mkdir -p " + shellArg(remoteProjectDir)}, "", 30*time.Second); err != nil {
 		return "", fmt.Errorf("ssh mkdir failed: %w", err)
 	}
-	// 传固件
-	if _, err := runCommandText("scp", []string{binPath, sshHost + ":" + shellArg(remoteProjectDir+"/firmware.bin")}, "", 150*time.Second); err != nil {
+	// 原子发布:先传到临时名,再 mv 覆盖,避免板子正好拉到"写了一半"的固件。
+	// 顺序也讲究:先让 firmware.bin 完整就位,最后才更新 version.txt——板子是先读版本号
+	// 再下固件,所以它看到新版本时固件一定已经完整在位。
+	binTmp := remoteProjectDir + "/firmware.bin.tmp"
+	if _, err := runCommandText("scp", []string{binPath, sshHost + ":" + shellArg(binTmp)}, "", 150*time.Second); err != nil {
 		return "", fmt.Errorf("scp firmware failed: %w", err)
 	}
-	// 写版本号(板子靠它判断要不要更新)
-	verCmd := "printf %s " + shellArg(version) + " > " + shellArg(remoteProjectDir+"/version.txt")
+	mvBin := "mv -f " + shellArg(binTmp) + " " + shellArg(remoteProjectDir+"/firmware.bin")
+	if _, err := runCommandText("ssh", []string{sshHost, mvBin}, "", 30*time.Second); err != nil {
+		return "", fmt.Errorf("ssh activate firmware failed: %w", err)
+	}
+	// 最后原子更新版本号(板子靠它判断要不要更新):同样先写临时名再 mv
+	verTmp := remoteProjectDir + "/version.txt.tmp"
+	verCmd := "printf %s " + shellArg(version) + " > " + shellArg(verTmp) +
+		" && mv -f " + shellArg(verTmp) + " " + shellArg(remoteProjectDir+"/version.txt")
 	if _, err := runCommandText("ssh", []string{sshHost, verCmd}, "", 30*time.Second); err != nil {
 		return "", fmt.Errorf("ssh write version failed: %w", err)
 	}

@@ -164,15 +164,22 @@ void loop() {
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <Preferences.h>
 
-const char* WIFI_SSID      = "%WIFI_SSID%";
-const char* WIFI_PASSWORD  = "%WIFI_PASSWORD%";
-const char* FW_VERSION_URL = "%FW_VERSION_URL%";
-const char* FW_BIN_URL     = "%FW_BIN_URL%";
-const char* CURRENT_VERSION = "1.0.0";   // 每次发布把它和服务器版本对齐
+const char* WIFI_SSID       = "%WIFI_SSID%";
+const char* WIFI_PASSWORD   = "%WIFI_PASSWORD%";
+const char* FW_VERSION_URL  = "%FW_VERSION_URL%";
+const char* FW_BIN_URL      = "%FW_BIN_URL%";
+const char* FACTORY_VERSION = "1.0.0";   // 出厂基线:板子第一次开机用它;之后以"已刷过的版本"为准,不用每次改它
 
 const unsigned long CHECK_INTERVAL_MS = 30000;
 unsigned long lastCheck = 0;
+Preferences prefs;   // 把"已刷版本"记在板子自己的 NVS,避免刷完又看自己版本不对、无限重刷
+
+// 读板子记下的当前版本(从没刷过就用出厂基线)
+String currentVersion() {
+  return prefs.getString("ver", FACTORY_VERSION);
+}
 
 void checkForUpdate() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -180,16 +187,25 @@ void checkForUpdate() {
   http.begin(client, FW_VERSION_URL);
   if (http.GET() != HTTP_CODE_OK) { http.end(); return; }
   String latest = http.getString(); latest.trim(); http.end();
-  if (latest == CURRENT_VERSION) return;
-  httpUpdate.update(client, FW_BIN_URL);   // 成功自动重启进新固件
+
+  String now = currentVersion();
+  if (latest == now) return;                 // 已是最新,不刷
+
+  prefs.putString("ver", latest);            // 先记下目标版本(刷成功会立刻重启,来不及事后再记)
+  t_httpUpdate_return ret = httpUpdate.update(client, FW_BIN_URL);
+  if (ret == HTTP_UPDATE_FAILED) {
+    prefs.putString("ver", now);             // 刷失败:回滚版本记录,下个周期重试
+  }
+  // 刷成功则已重启进新固件;新固件读到"已刷版本 == 服务器版本",不会再循环
 }
 
 void setup() {
   Serial.begin(115200);
+  prefs.begin("ota", false);   // 打开 NVS 命名空间 ota(读写)
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.printf("\nWiFi OK  v=%s\n", CURRENT_VERSION);
+  Serial.printf("\nWiFi OK  v=%s\n", currentVersion().c_str());
   checkForUpdate();
 }
 

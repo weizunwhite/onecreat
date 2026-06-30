@@ -81,6 +81,8 @@ export function OTAPanel({
         mode,
         wifiSSID: ssid.trim(),
         wifiPassword: wifiPwd,
+        // cloud 模式:把③配置的固件服务器地址写进板子代码,免学生手改占位符
+        nasBaseURL: mode === "cloud" ? pubServer.trim() : undefined,
       });
       if (r.ok) setScaffoldMsg({ ok: true, text: `已生成：${r.path ?? ""}`, path: r.path });
       else setScaffoldMsg({ ok: false, text: r.error ?? "生成失败" });
@@ -89,7 +91,7 @@ export function OTAPanel({
     } finally {
       setScaffolding(false);
     }
-  }, [scName, mode, ssid, wifiPwd]);
+  }, [scName, mode, ssid, wifiPwd, pubServer]);
 
   const wifiUpload = useCallback(async () => {
     setWifiUploading(true);
@@ -144,11 +146,22 @@ export function OTAPanel({
             </button>
           ))}
         </div>
+        {mode === "cloud" && (
+          <div className="ota__row">
+            <input
+              className="ota__in"
+              placeholder="固件服务器地址 如 http://47.95.176.214"
+              value={pubServer}
+              onChange={(e) => setPubServer(e.target.value)}
+              title="云端拉取:板子会从这个地址拉固件,和下方③「发布固件」是同一个地址"
+            />
+          </div>
+        )}
         <div className="ota__row">
           <input className="ota__in" placeholder="项目名(英文/数字)" value={scName} onChange={(e) => setScName(e.target.value)} />
           <input className="ota__in" placeholder="WiFi 名称" value={ssid} onChange={(e) => setSsid(e.target.value)} />
           <input className="ota__in" type="password" placeholder="WiFi 密码" value={wifiPwd} onChange={(e) => setWifiPwd(e.target.value)} />
-          <button className="btn btn--primary" disabled={scaffolding || !scName.trim() || !ssid.trim()} onClick={() => void scaffold()}>
+          <button className="btn btn--primary" disabled={scaffolding || !scName.trim() || !ssid.trim() || (mode === "cloud" && !pubServer.trim())} onClick={() => void scaffold()}>
             {scaffolding ? <Loader2 size={13} className="hardware-spin" /> : <FolderPlus size={13} />} 生成
           </button>
         </div>
