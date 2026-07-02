@@ -82,6 +82,14 @@ type App struct {
 	saveMu    sync.Mutex
 	saving    map[string]bool
 	saveAgain map[string]bool
+
+	// 硬件长操作互斥:装工具链(arduino-cli 写同一 core 目录)和烧录(esptool 抢同一
+	// 串口)各自不能并发。前端的按钮守卫是 HardwarePanel 组件内 state,面板随视图切换/
+	// 收起被卸载时守卫丢失,重挂载后按钮恢复可点 → 会并发起第二次安装/烧录(写坏 core /
+	// 串口抢占)。故在后端串行:进行中直接拒绝第二次并给出说明。
+	hwOpMu       sync.Mutex
+	hwInstalling bool
+	hwFlashing   bool
 }
 
 // tabRuntime 是一个独立任务标签的后端运行时:自己的 controller、事件 sink、
@@ -1801,7 +1809,29 @@ func (a *App) HardwareInstallArduinoCLI() HardwareInstallStepView {
 }
 
 // HardwareInstallCore 装单个板卡 core(已装秒跳过),返回单步结果。GUI 分步进度用。
+// beginHardwareOp 试图占用一个硬件长操作槽(install 或 flash)。已被占用返回 false,
+// 调用方应据此拒绝并提示;成功返回 true,调用方必须 defer endHardwareOp 释放。
+func (a *App) beginHardwareOp(flag *bool) bool {
+	a.hwOpMu.Lock()
+	defer a.hwOpMu.Unlock()
+	if *flag {
+		return false
+	}
+	*flag = true
+	return true
+}
+
+func (a *App) endHardwareOp(flag *bool) {
+	a.hwOpMu.Lock()
+	*flag = false
+	a.hwOpMu.Unlock()
+}
+
 func (a *App) HardwareInstallCore(core string) HardwareInstallStepView {
+	if !a.beginHardwareOp(&a.hwInstalling) {
+		return HardwareInstallStepView{Action: "failed", Message: "已有工具链安装正在进行,请等它完成再试。"}
+	}
+	defer a.endHardwareOp(&a.hwInstalling)
 	return hardwareInstallStep("hardware_install_core", map[string]any{"core": core})
 }
 
@@ -2297,6 +2327,10 @@ func (a *App) HardwareValidate(input HardwareRunInput) HardwareRunResult {
 // platforms (Unihiker / MaixCAM / RPi) fall back to "use chat" since they need
 // host + remote_path the student hasn't entered yet.
 func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
+	if !a.beginHardwareOp(&a.hwFlashing) {
+		return HardwareRunResult{Status: "skipped", Summary: "烧录进行中", NextStep: "已有一次烧录正在进行,请等它完成再试。"}
+	}
+	defer a.endHardwareOp(&a.hwFlashing)
 	command, err := a.requireHardwareMCP()
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}
@@ -2362,6 +2396,10 @@ func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
 // HardwareOTAUpload 通过 WiFi(OTA)把固件烧给已经跑着 ArduinoOTA 的板子,不用 USB。
 // 走 arduino-cli 网络口(espota);面向 arduino/esp32 工程。
 func (a *App) HardwareOTAUpload(input HardwareRunInput) HardwareRunResult {
+	if !a.beginHardwareOp(&a.hwFlashing) {
+		return HardwareRunResult{Status: "skipped", Summary: "烧录进行中", NextStep: "已有一次烧录正在进行,请等它完成再试。"}
+	}
+	defer a.endHardwareOp(&a.hwFlashing)
 	command, err := a.requireHardwareMCP()
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}

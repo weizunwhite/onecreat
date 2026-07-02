@@ -166,6 +166,28 @@ function flushPendingUser(s: State): State {
   };
 }
 
+// REPLY_KINDS are the event kinds that count as the server's first real reply to
+// the current turn — the arrival of any of them commits the deferred user bubble.
+// This is an allowlist, not a denylist, on purpose: side-channel events that can
+// land between submit and the first token — turn_started, and any kind this build
+// doesn't recognize such as the async mcp_surface_ready — must NOT commit the
+// bubble, or an Esc un-send right after submit would silently fail to restore it.
+const REPLY_KINDS: ReadonlySet<string> = new Set([
+  "text",
+  "reasoning",
+  "message",
+  "tool_dispatch",
+  "tool_result",
+  "tool_progress",
+  "usage",
+  "notice",
+  "phase",
+  "compaction_started",
+  "compaction_done",
+  "approval_request",
+  "ask_request",
+]);
+
 function applyEvent(s: State, e: WireEvent): State {
   // After an un-send, swallow the cancelled turn's still-buffered events so no
   // orphan assistant/tool bubble appears; its turn_done clears the discard.
@@ -173,10 +195,9 @@ function applyEvent(s: State, e: WireEvent): State {
     if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, currentAssistant: undefined, live: undefined };
     return s;
   }
-  // The first real packet means the server replied — commit the deferred user
-  // bubble before rendering it. turn_started is local (emitted before the
-  // request) and turn_done is handled in its own case, so neither commits.
-  if (s.pendingUser !== undefined && e.kind !== "turn_started" && e.kind !== "turn_done") {
+  // The first real reply packet means the server replied — commit the deferred
+  // user bubble before rendering it. turn_done is handled in its own case.
+  if (s.pendingUser !== undefined && REPLY_KINDS.has(e.kind)) {
     s = flushPendingUser(s);
   }
   switch (e.kind) {
