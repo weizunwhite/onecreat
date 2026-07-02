@@ -365,7 +365,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// Its tool activity nests under the invoking call, like `task`.
 	skillRunner := func(sctx context.Context, sk skill.Skill, task string) (string, error) {
 		prov, price, ctxWin := execProv, entry.Price, entry.ContextWindow
-		if modelRef := subagentModelRef(cfg, sk); modelRef != "" {
+		// 网关模式下不允许子代理走独立模型覆盖(subagent_model / skill frontmatter):它经
+		// cfg.ResolveModel 解析的是未被 applyOnecreatGateway 改写的原始 entry(直连厂商),会
+		// 绕过平台档位计量,或在无 key 时以泄露底层厂商名的 401 失败。与 planner/classifier
+		// 同理,网关模式统一回退到网关路由的主 executor provider。
+		if modelRef := subagentModelRef(cfg, sk); modelRef != "" && !onecreatGatewayActive() {
 			if me, ok := cfg.ResolveModel(modelRef); ok {
 				if p, err := NewProviderWithProxy(me, proxySpec); err == nil {
 					prov, price, ctxWin = p, me.Price, me.ContextWindow
