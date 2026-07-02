@@ -488,6 +488,12 @@ export function useController(tabId: string) {
   // pinned to the first render); cancel() reads it to decide un-send vs. cancel.
   const stateRef = useRef(state);
   stateRef.current = state;
+  // A message the user re-sent while a just-un-sent turn was still winding down on
+  // the backend (c.running not yet cleared). Submitting it immediately would hit
+  // runGuarded's "a turn is already in flight" guard and be silently dropped, so we
+  // park it here and flush it on the cancelled turn's turn_done (backend now idle).
+  const pendingResendRef = useRef<{ display: string; submit: string } | null>(null);
+  const doSubmitRef = useRef<(display: string, submit: string) => void>(() => {});
 
   // loadSessionData fetches Meta, ContextUsage, and History — called on mount
   // and again when agent:ready fires (boot.Build completed in the background).
@@ -519,6 +525,8 @@ export function useController(tabId: string) {
   useEffect(() => {
     // 切到这个标签时,先清掉上一个标签的 transcript,再订阅本标签通道并加载它的会话。
     dispatch({ type: "reset" });
+    // 丢掉可能残留的待发消息:它属于上一个标签,绝不能被本标签的 turn_done 冲走(串台)。
+    pendingResendRef.current = null;
     const off = onEvent(tabId, (e) => {
       dispatch({ type: "event", e });
       // The gauge's denominator (window) and post-turn prompt size come from the
@@ -537,6 +545,14 @@ export function useController(tabId: string) {
           .Effort()
           .then((effort) => dispatch({ type: "effort", effort }))
           .catch(() => {});
+        // A resend parked during the un-send window: the cancelled turn is now
+        // fully done (backend running cleared), so submit it for real. Use the
+        // unguarded doSubmit — the guard's discardTurn state hasn't re-rendered yet.
+        const queued = pendingResendRef.current;
+        if (queued) {
+          pendingResendRef.current = null;
+          doSubmitRef.current(queued.display, queued.submit);
+        }
       }
       // Background jobs start/finish via notices and bound around a turn, so
       // refresh the running set on both — keeps the status-bar count live.
@@ -591,13 +607,30 @@ export function useController(tabId: string) {
     };
   }, [loadSessionData, tabId]);
 
-  const send = useCallback((displayText: string, submitText = displayText) => {
+  // doSubmit renders the optimistic bubble and fires the request unconditionally.
+  const doSubmit = useCallback((displayText: string, submitText: string) => {
     dispatch({ type: "user", text: displayText });
     const display = displayText.trim();
     const submit = submitText.trim();
     const call = display !== submit ? app.SubmitDisplay(display, submit) : app.Submit(submit);
     call.catch(() => {});
   }, []);
+  doSubmitRef.current = doSubmit;
+
+  const send = useCallback(
+    (displayText: string, submitText = displayText) => {
+      // If the previous message was just un-sent (Esc) and the backend hasn't
+      // finished cancelling that turn yet, submitting now would be silently
+      // dropped by runGuarded. Park it; turn_done flushes it once the backend
+      // is idle again.
+      if (stateRef.current.discardTurn) {
+        pendingResendRef.current = { display: displayText, submit: submitText };
+        return;
+      }
+      doSubmit(displayText, submitText);
+    },
+    [doSubmit],
+  );
 
   const notice = useCallback((text: string, level: "info" | "warn" = "info") => {
     dispatch({ type: "local_notice", level, text });
