@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +63,12 @@ type Store struct {
 	done []*Checkpoint   // finalized turns
 	cur  *Checkpoint     // the active turn's checkpoint
 	seen map[string]bool // paths already snapshotted this turn (dedup)
+	// boundsMin is the lowest turn whose persisted conversation-rewind boundary
+	// (MsgIndex) can still be trusted. Compaction rewrites the message log in place,
+	// so every pre-compaction checkpoint's MsgIndex goes stale; it is bumped (and
+	// persisted) so a resumed session doesn't silently rewind to the wrong offset.
+	// 0 means nothing has invalidated boundaries yet.
+	boundsMin int
 }
 
 // New returns a store for the given checkpoint dir and workspace root, loading any
@@ -79,6 +86,11 @@ func New(dir, root string) *Store {
 }
 
 func (s *Store) load() {
+	if b, err := os.ReadFile(filepath.Join(s.dir, boundsMinFile)); err == nil {
+		if n, aerr := strconv.Atoi(strings.TrimSpace(string(b))); aerr == nil {
+			s.boundsMin = n
+		}
+	}
 	ents, err := os.ReadDir(s.dir)
 	if err != nil {
 		return
@@ -98,6 +110,9 @@ func (s *Store) load() {
 	}
 	sort.Slice(s.done, func(i, j int) bool { return s.done[i].Turn < s.done[j].Turn })
 }
+
+// boundsMinFile persists Store.boundsMin next to the per-turn checkpoints.
+const boundsMinFile = "bounds-min.txt"
 
 // Begin opens a checkpoint for a new user turn, finalizing the previous one. The
 // prompt labels it in the picker; msgIndex is the conversation-rewind boundary.
@@ -158,6 +173,70 @@ func (s *Store) persist(c *Checkpoint) {
 	if err := os.WriteFile(filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", c.Turn)), b, 0o644); err != nil {
 		slog.Warn("checkpoint: persist failed", "turn", c.Turn, "err", err)
 	}
+}
+
+// Prune drops every checkpoint for turn >= fromTurn, in memory and on disk. A
+// conversation rewind to turn T abandons turns >= T; without this their snapshots
+// linger, and because the resumed timeline re-uses those turn numbers a later
+// RestoreCode/Bounds can pick the abandoned timeline's snapshot — restoring stale
+// content, or (when the abandoned snapshot recorded a file's creation, Content==nil)
+// silently deleting a file the current timeline legitimately has. Called by the
+// controller after a conversation rewind.
+func (s *Store) Prune(fromTurn int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.done[:0]
+	for _, c := range s.done {
+		if c.Turn >= fromTurn {
+			s.removeFile(c.Turn)
+			continue
+		}
+		kept = append(kept, c)
+	}
+	s.done = kept
+	if s.cur != nil && s.cur.Turn >= fromTurn {
+		s.removeFile(s.cur.Turn)
+		s.cur = nil
+		s.seen = map[string]bool{}
+	}
+}
+
+// removeFile deletes a turn's persisted checkpoint. Caller holds the lock.
+func (s *Store) removeFile(turn int) {
+	if s.dir == "" {
+		return
+	}
+	if err := os.Remove(filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", turn))); err != nil && !os.IsNotExist(err) {
+		slog.Warn("checkpoint: prune remove failed", "turn", turn, "err", err)
+	}
+}
+
+// InvalidateBounds records that only turns >= minValidTurn have trustworthy
+// conversation-rewind boundaries — called when compaction rewrites the log in
+// place, invalidating every earlier checkpoint's MsgIndex. Persisted so the mark
+// survives a resume. Monotonic: a later (higher) compaction threshold wins.
+func (s *Store) InvalidateBounds(minValidTurn int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if minValidTurn <= s.boundsMin {
+		return
+	}
+	s.boundsMin = minValidTurn
+	if s.dir == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, boundsMinFile), []byte(strconv.Itoa(s.boundsMin)), 0o644); err != nil {
+		slog.Warn("checkpoint: persist bounds-min failed", "err", err)
+	}
+}
+
+// MinValidBoundTurn returns the lowest turn whose persisted conversation boundary
+// can still be trusted (0 when no compaction has invalidated any). Bounds for
+// turns below it were made stale by an in-place compaction and must be ignored.
+func (s *Store) MinValidBoundTurn() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.boundsMin
 }
 
 // NextTurn returns the turn number a new checkpoint should take: one past the

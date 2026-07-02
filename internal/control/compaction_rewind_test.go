@@ -92,3 +92,65 @@ func TestConversationRewindStaleBoundaryReportsFailure(t *testing.T) {
 		}
 	}
 }
+
+// F1 回归:对话 rewind 必须 Prune 掉被回退掉的 turn(>=T)的 checkpoint,否则复用 turn 号后
+// 废弃时间线的同号快照会污染 RestoreCode(按旧内容覆盖 / 静默删文件)。
+func TestConversationRewindPrunesAbandonedCheckpoints(t *testing.T) {
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "p0"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "a0"})
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "p1"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: t.TempDir(), Label: "test", Sink: event.Discard})
+	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+
+	// 造 turn 0 / turn 1 的 checkpoint + 对话边界。
+	c.cp.Begin(0, "t0", 0)
+	c.cp.Begin(1, "t1", 2)
+	c.mu.Lock()
+	c.cpTurn = 2
+	c.cpBound[0] = 0
+	c.cpBound[1] = 2
+	c.mu.Unlock()
+
+	if err := c.Rewind(1, RewindConversation); err != nil {
+		t.Fatalf("rewind: %v", err)
+	}
+	// turn>=1 的 checkpoint 应已被 Prune,不再残留污染。
+	for _, m := range c.cp.List() {
+		if m.Turn >= 1 {
+			t.Fatalf("rewind 到 turn 1 后 turn>=1 的 checkpoint 应被清除,仍有 turn %d", m.Turn)
+		}
+	}
+}
+
+// F2 回归:压缩失效边界后,即使 resume(rebindCheckpoints 从磁盘重载 checkpoint),压缩前
+// turn 的陈旧 MsgIndex 也不能被复活——对它做对话 rewind 必须报"不可用",而非静默切错位置。
+func TestCompactionBoundsInvalidationSurvivesResume(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "p0"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "a0"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", Sink: event.Discard})
+	path := agent.NewSessionPath(dir, "test")
+	c.SetSessionPath(path)
+
+	// turn 0 的对话边界(经 checkpoint store 持久化到磁盘)。
+	c.cp.Begin(0, "t0", 1)
+	c.mu.Lock()
+	c.cpTurn = 1
+	c.cpBound[0] = 1
+	c.mu.Unlock()
+
+	// 压缩失效边界(threshold=cpTurn=1;turn 0 < 1 → 陈旧),并把 marker 持久化。
+	c.InvalidateCheckpoints()
+
+	// 模拟 resume:同一 session 路径重新 rebind(新建 store 从磁盘加载 checkpoint + marker)。
+	c.rebindCheckpoints(path)
+
+	// turn 0 的陈旧边界不应被复活;对它做对话 rewind 必须失败,而不是静默成功切到错误位置。
+	if err := c.Rewind(0, RewindConversation); err == nil {
+		t.Fatal("resume 后对压缩前 turn 的对话 rewind 必须报不可用,却静默成功(陈旧边界被复活)")
+	}
+}

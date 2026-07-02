@@ -258,7 +258,14 @@ func New(opts Options) *Controller {
 func (c *Controller) InvalidateCheckpoints() {
 	c.mu.Lock()
 	c.cpBound = map[int]int{}
+	turn := c.cpTurn // 只有 turn>=cpTurn(压缩后新起的)边界才可信;之前的 MsgIndex 都陈旧
+	cp := c.cp
 	c.mu.Unlock()
+	// 把"边界失效"持久化,让它跨 resume 生效:否则 rebindCheckpoints 会从磁盘 checkpoint 的
+	// 陈旧 MsgIndex 无条件重填 cpBound,resume 后对压缩前 turn 做对话 rewind 会静默截到错误位置。
+	if cp != nil {
+		cp.InvalidateBounds(turn)
+	}
 }
 
 // ckptDir derives a session's checkpoint directory from its file path
@@ -281,6 +288,16 @@ func (c *Controller) rebindCheckpoints(sessionPath string) {
 	c.cpBound = c.cp.Bounds()  // rebuilt from persisted checkpoints so a resumed
 	if c.cpBound == nil {      // session can still rewind conversation / fork
 		c.cpBound = map[int]int{}
+	}
+	// 丢弃被压缩失效的陈旧边界:压缩原地重写了日志,压缩前 turn 的 MsgIndex 已失真。这些
+	// checkpoint 的文件快照(代码 rewind)仍有效,只是对话边界不可信——所以只剔 MsgIndex,
+	// 不删 checkpoint。剔掉后这些 turn 的对话 rewind 会诚实报"不可用",而非静默切错位置。
+	if min := c.cp.MinValidBoundTurn(); min > 0 {
+		for t := range c.cpBound {
+			if t < min {
+				delete(c.cpBound, t)
+			}
+		}
 	}
 }
 
@@ -894,7 +911,14 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 				delete(c.cpBound, k)
 			}
 		}
+		cp := c.cp
 		c.mu.Unlock()
+		// 删掉被回退掉的 turn(>=turn)的废弃 checkpoint(内存 + 磁盘)。否则复用 turn 号后
+		// RestoreCode / Bounds 会取到废弃时间线的同号快照——按旧内容覆盖,甚至(废弃快照记录
+		// 的是"文件新建",Content==nil)静默删除当前时间线合法存在的文件。
+		if cp != nil {
+			cp.Prune(turn)
+		}
 		if err := c.Snapshot(); err != nil {
 			slog.Warn("controller: snapshot after rewind", "err", err)
 		}
