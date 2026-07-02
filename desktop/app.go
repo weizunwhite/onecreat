@@ -2434,6 +2434,14 @@ func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunRes
 	if strings.TrimSpace(input.ProjectName) == "" || strings.TrimSpace(input.Version) == "" {
 		return HardwareRunResult{Status: "skipped", Summary: "缺少项目名或版本号", NextStep: "填项目名和版本号(如 1.0.2)后再发布。"}
 	}
+	// 用与脚手架相同的 sanitizeProjectName:脚手架把 sanitize 后的项目名烤进板子的
+	// FW_VERSION_URL(baseURL/<sanitized>/version.txt),这里发布也必须落到同一路径,
+	// 否则中文/含空格/首字符是数字的项目名会被脚手架改写、而发布用原名建目录 → 板子
+	// 永远轮询到 404,升级静默失败。
+	projectName := sanitizeProjectName(input.ProjectName)
+	if projectName == "" {
+		return HardwareRunResult{Status: "skipped", Summary: "项目名不合法", NextStep: "项目名请用英文字母/数字/下划线(要和新建 OTA 项目时填的一致)。"}
+	}
 	sshHost := strings.TrimSpace(input.SSHHost)
 	remoteDir := strings.TrimSpace(input.RemoteDir)
 	baseURL := strings.TrimSpace(input.BaseURL)
@@ -2446,7 +2454,7 @@ func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunRes
 		fqbn = "esp32:esp32:esp32"
 	}
 	args := map[string]any{
-		"project_name":    strings.TrimSpace(input.ProjectName),
+		"project_name":    projectName,
 		"version":         strings.TrimSpace(input.Version),
 		"ssh_host":        sshHost,
 		"remote_dir":      remoteDir,

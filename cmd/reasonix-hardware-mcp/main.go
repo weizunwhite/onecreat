@@ -3205,7 +3205,13 @@ func runFirmwarePublish(args map[string]any) (string, error) {
 			return "", err
 		}
 		defer os.RemoveAll(buildDir)
-		if _, cerr := runCommandText("arduino-cli", []string{"compile", "--fqbn", fqbn, "--output-dir", buildDir, sketch}, "", 240*time.Second); cerr != nil {
+		cmdArgs := []string{"compile", "--fqbn", fqbn, "--output-dir", buildDir, sketch}
+		// 与 runArduinoCompile 一致:项目自带库(<sketch>/libraries)必须显式带上,否则
+		// 自带依赖(如 LVGL)的项目「编译」过、而「发布固件」的内联编译会找不到库而失败。
+		if libDir := filepath.Join(sketch, "libraries"); exists(libDir) {
+			cmdArgs = append(cmdArgs, "--libraries", libDir)
+		}
+		if _, cerr := runCommandText("arduino-cli", cmdArgs, "", 240*time.Second); cerr != nil {
 			return "", fmt.Errorf("compile failed: %w", cerr)
 		}
 		binPath, err = findSketchBin(buildDir)

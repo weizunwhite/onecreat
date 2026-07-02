@@ -170,7 +170,7 @@ const char* WIFI_SSID       = "%WIFI_SSID%";
 const char* WIFI_PASSWORD   = "%WIFI_PASSWORD%";
 const char* FW_VERSION_URL  = "%FW_VERSION_URL%";
 const char* FW_BIN_URL      = "%FW_BIN_URL%";
-const char* FACTORY_VERSION = "1.0.0";   // 出厂基线:板子第一次开机用它;之后以"已刷过的版本"为准,不用每次改它
+const char* FACTORY_VERSION = "0.0.0";   // 出厂基线:板子第一次开机用它。故意设成 0.0.0(比任何真发布版本都低),这样第一次"发布固件"(默认 1.0.0)一定不同→板子会拉取升级;若这里等于发布默认版,首发就成静默 no-op
 
 const unsigned long CHECK_INTERVAL_MS = 30000;
 unsigned long lastCheck = 0;
