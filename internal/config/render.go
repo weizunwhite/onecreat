@@ -331,7 +331,7 @@ func renderLSP(b *strings.Builder, c *Config) {
 	sort.Strings(langs)
 	for _, lang := range langs {
 		s := c.LSP.Servers[lang]
-		fmt.Fprintf(b, "\n[lsp.servers.%s]\n", lang)
+		fmt.Fprintf(b, "\n[lsp.servers.%s]\n", tomlKey(lang))
 		if s.Command != "" {
 			fmt.Fprintf(b, "command      = %q\n", s.Command)
 		}
@@ -382,10 +382,29 @@ func renderStringMap(m map[string]string) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(&b, "%s = %q", k, m[k])
+		fmt.Fprintf(&b, "%s = %q", tomlKey(k), m[k])
 	}
 	b.WriteString(" }")
 	return b.String()
+}
+
+// tomlKey renders a map key as a TOML key: bare when it uses only bare-key-safe
+// characters (A-Za-z0-9_-), otherwise double-quoted. Without this, a user-defined
+// key like "c++" (a valid quoted TOML key that Load accepts) renders as the bare
+// key c++, which is invalid TOML — the SaveTo round-trip probe then rejects every
+// subsequent save with an error that doesn't point at the real cause.
+func tomlKey(k string) string {
+	if k == "" {
+		return `""`
+	}
+	for _, r := range k {
+		bareSafe := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !bareSafe {
+			return fmt.Sprintf("%q", k)
+		}
+	}
+	return k
 }
 
 // renderRuleList emits a permission rule list. A populated list renders as an

@@ -941,6 +941,7 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	// 标签时直接拒绝并说明,让用户先收尾其他标签——诚实报错优于数据错位。
 	a.mu.RLock()
 	tabCount := len(a.tabs)
+	sink := a.sink // 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,锁外裸读是数据竞争(M3)
 	a.mu.RUnlock()
 	if tabCount > 1 {
 		return "", fmt.Errorf("当前开着 %d 个任务标签;切换项目文件夹前请先关闭其他任务标签(工作目录是全局的,后台任务会读写到错误的目录)", tabCount)
@@ -956,7 +957,7 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 			model = e.Name + "/" + e.Model
 		}
 	}
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: a.sink})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink})
 	if err != nil {
 		_ = os.Chdir(cur) // roll back; the current session stays intact
 		return "", err
@@ -2966,19 +2967,29 @@ func (a *App) SetModel(name string) error {
 		return err
 	}
 	a.mu.Lock()
+	adopted := false
 	// 同步发起标签的运行时(SetModel 只作用于发起切换的那个 tab)。
 	if rt := a.tabs[targetTab]; rt != nil {
 		rt.ctrl = newCtrl
 		rt.model = name
 		rt.label = newCtrl.Label()
+		adopted = true
 	}
 	// 仅当发起标签仍是当前活动标签时,才更新活动镜像;否则用户已切走,别覆盖现活动镜像。
 	if a.activeTab == targetTab {
 		a.ctrl = newCtrl
 		a.model = name
 		a.label = newCtrl.Label()
+		adopted = true
 	}
 	a.mu.Unlock()
+	if !adopted {
+		// 发起标签在秒级 boot.Build 期间被 CloseTab 关掉了:没有任何标签引用新
+		// controller,必须 Close 它,否则它的 MCP 子进程 / LSP / goroutine 会泄漏到
+		// 进程退出(与 buildTab 的 A6 closed 检查同类)。
+		newCtrl.Close()
+		return nil
+	}
 	newCtrl.EnableInteractiveApproval()
 
 	path := ""
@@ -3033,15 +3044,24 @@ func (a *App) rebuildTabByID(tabID string) {
 		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
 	}
 	a.mu.Lock()
+	adopted := false
 	if rt := a.tabs[tabID]; rt != nil {
 		rt.ctrl = newCtrl
 		rt.label = newCtrl.Label()
+		adopted = true
 	}
 	if a.activeTab == tabID {
 		a.ctrl = newCtrl
 		a.label = newCtrl.Label()
+		adopted = true
 	}
 	a.mu.Unlock()
+	if !adopted {
+		// 目标标签在秒级 boot.Build 期间被关闭:没有任何标签引用新 controller,必须
+		// Close 它,否则 MCP 子进程 / LSP / goroutine 会泄漏到进程退出。
+		newCtrl.Close()
+		return
+	}
 	newCtrl.EnableInteractiveApproval()
 
 	path := ""

@@ -41,7 +41,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
 	effort, _ := cfg.Extra["effort"].(string)
-	deepseek := isDeepSeekBaseURL(cfg.BaseURL) || isDeepSeekModel(cfg.Model)
+	deepseek := isDeepSeekBaseURL(cfg.BaseURL) || isDeepSeekModel(cfg.Model) || isOnecreatTierModel(cfg.Model)
 	if deepseek {
 		effort = strings.ToLower(strings.TrimSpace(effort))
 		switch effort {
@@ -119,6 +119,17 @@ func isDeepSeekBaseURL(baseURL string) bool {
 // (e.g. the onecreat platform AI gateway), so behavior matches a direct connection.
 func isDeepSeekModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-")
+}
+
+// isOnecreatTierModel reports whether the model is a onecreat subscription-tier
+// placeholder ("tier-1", "tier-2", …) that applyOnecreatGateway substitutes for the
+// real model name in gateway mode. Every tier is backed by a DeepSeek thinking model
+// upstream, so we must keep sending thinking + effort exactly as a direct DeepSeek
+// connection would — otherwise paying users silently drop to non-thinking mode. The
+// thinking param reveals nothing about which model backs the tier, so this does not
+// violate the model-privacy policy.
+func isOnecreatTierModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "tier-")
 }
 
 func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {

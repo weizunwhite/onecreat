@@ -63,6 +63,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Codegraph = CodegraphConfig{Enabled: false, AutoInstall: false, Path: "/opt/codegraph"}
 	orig.LSP = LSPConfig{Enabled: false, Servers: map[string]LSPServer{
 		"elixir": {Command: "elixir-ls", LanguageID: "elixir", Extensions: []string{".ex", ".exs"}, InstallHint: "mix do local.hex"},
+		// 非裸键安全的语言键(含 '+'):必须渲染为引号键 [lsp.servers."c++"],否则渲染出的
+		// TOML 非法,SaveTo round-trip 探针拒绝写入,此后所有保存都失败。
+		"c++": {Command: "clangd", LanguageID: "cpp", Extensions: []string{".cpp", ".hpp"}},
 	}}
 	orig.Tools.Search = SearchConfig{Engine: "rg", RgPath: "/usr/local/bin/rg"}
 	orig.Plugins = []PluginEntry{
@@ -165,6 +168,10 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	el, ok := got.LSP.Servers["elixir"]
 	if !ok || el.Command != "elixir-ls" || el.LanguageID != "elixir" || len(el.Extensions) != 2 || el.InstallHint != "mix do local.hex" {
 		t.Errorf("lsp.servers.elixir not preserved: %+v (ok=%v)", el, ok)
+	}
+	cpp, ok := got.LSP.Servers["c++"]
+	if !ok || cpp.Command != "clangd" || cpp.LanguageID != "cpp" {
+		t.Errorf(`lsp.servers."c++" (quoted key) not preserved: %+v (ok=%v)`, cpp, ok)
 	}
 	if got.Tools.Search.Engine != "rg" || got.Tools.Search.RgPath != "/usr/local/bin/rg" {
 		t.Errorf("tools.search not preserved: %+v", got.Tools.Search)

@@ -375,6 +375,32 @@ func TestNewDeepSeekThinkingDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+// TestNewGatewayTierKeepsThinking guards the onecreat gateway path: in tier mode the
+// provider's BaseURL is the platform gateway (not *.deepseek.com) and the model is a
+// "tier-N" placeholder, so neither DeepSeek check matches — yet the tier is backed by a
+// DeepSeek thinking model upstream and must still send thinking + effort. Without this,
+// every paying user silently drops to non-thinking mode.
+func TestNewGatewayTierKeepsThinking(t *testing.T) {
+	p, err := New(provider.Config{Name: "onecreat", BaseURL: "https://gateway.example.com/api/onecreat/v1", Model: "tier-2"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	if !c.deepseek {
+		t.Fatalf("tier model over gateway must be treated as thinking-capable, deepseek=%v", c.deepseek)
+	}
+	if c.effort != "high" {
+		t.Fatalf("tier model must default effort to high, got %q", c.effort)
+	}
+	req := c.buildRequest(provider.Request{})
+	if req.Thinking == nil || req.Thinking.Type != "enabled" {
+		t.Fatalf("tier request must enable thinking, got %+v", req.Thinking)
+	}
+	if req.ReasoningEffort != "high" {
+		t.Fatalf("tier request ReasoningEffort = %q, want high", req.ReasoningEffort)
+	}
+}
+
 func TestNewReadsEffortFromConfig(t *testing.T) {
 	p, err := New(provider.Config{
 		Name:    "mimo",

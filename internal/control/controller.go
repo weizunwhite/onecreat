@@ -1494,7 +1494,15 @@ func (c *Controller) Label() string { return c.label }
 
 // Close stops plugin subprocesses and releases resources. A session that ever
 // started fires SessionEnd so a teardown hook runs.
+//
+// Close first cancels any in-flight turn: the turn's context is derived from
+// context.Background() (see runGuarded), not the controller lifetime, so without
+// this a controller torn down mid-turn (tab close, model switch, workspace switch,
+// app shutdown) would leave an orphan goroutine that keeps streaming from the
+// provider, executing tools against the workspace, and burning gateway credits with
+// no handle left to stop it.
 func (c *Controller) Close() {
+	c.Cancel()
 	c.mu.Lock()
 	started := c.startedOnce
 	c.mu.Unlock()
