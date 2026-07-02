@@ -17,11 +17,20 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 )
+
+// toolCallStreamSeq makes synthesized tool-call ids unique across model responses.
+// A gateway/backend that streams tool calls by index without ids (DeepSeek's own
+// API sends ids) would otherwise get call_<index> restarting at 0 every response,
+// and a UI that merges tool cards by id across the whole transcript would fold a
+// later turn's call_0 into an earlier turn's card. Each readStream bumps this and
+// prefixes its synthesized ids, so ids never collide across turns.
+var toolCallStreamSeq atomic.Uint64
 
 func init() {
 	provider.Register("openai", New)
@@ -326,6 +335,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	var order []int
 	var lastFinishReason string
 	var think thinkSplitter
+	streamNonce := toolCallStreamSeq.Add(1) // 前缀,保证合成的 tool_call id 跨回合唯一
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -397,7 +407,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				// 让 start 卡片与最终 ToolCall 用同一 id,前端能正确 merge、不悬挂 partial
 				// 卡片;多并行 call 时空 id 也不再互不可分(E10)。DeepSeek 官方带 id,不触发。
 				if cur.ID == "" {
-					cur.ID = fmt.Sprintf("call_%d", tc.Index)
+					cur.ID = fmt.Sprintf("call_%d_%d", streamNonce, tc.Index)
 				}
 				out <- provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}}
 			}
@@ -423,9 +433,10 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		tc := acc[idx]
 		if tc.ID == "" {
 			// Some OpenAI-compatible gateways stream tool calls by index with no id.
-			// Synthesize a stable one so the result can be paired back to its call —
-			// an empty tool_call_id collapses multi-tool turns downstream.
-			tc.ID = fmt.Sprintf("call_%d", idx)
+			// Synthesize a stable one (streamNonce-prefixed so it stays unique across
+			// turns) so the result can be paired back to its call and a UI merging by
+			// id doesn't fold this turn's call into an earlier turn's card.
+			tc.ID = fmt.Sprintf("call_%d_%d", streamNonce, idx)
 		}
 		out <- provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}
 	}

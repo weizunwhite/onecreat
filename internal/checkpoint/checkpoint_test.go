@@ -198,3 +198,27 @@ func TestInvalidateBoundsPersistsAcrossReload(t *testing.T) {
 		t.Fatalf("InvalidateBounds 必须单调,got %d want 3", got)
 	}
 }
+
+// F3 回归:含非法 UTF-8 字节的文件快照必须经 persist(json.Marshal)→resume(重载)→
+// RestoreCode 无损往返。否则 json.Marshal 会把非法字节换成 U+FFFD,rewind 写回损坏内容。
+func TestRestoreCodeBinaryContentSurvivesResume(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "s.ckpt")
+	f := filepath.Join(root, "bin.dat")
+	raw := string([]byte{0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01, 0x80}) // 非法 UTF-8(含 0xff/0xfe/0x80)
+	write(t, f, raw)
+
+	s := New(dir, root)
+	s.Begin(0, "t0", 0)
+	s.Snapshot(diff.Change{Path: f, Kind: diff.Modify, OldText: raw})
+	write(t, f, "edited-away") // 模拟编辑覆盖
+
+	// 模拟 resume:新建 store 从磁盘 json 重载快照。
+	s2 := New(dir, root)
+	if _, _, err := s2.RestoreCode(0); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, f); got != raw {
+		t.Fatalf("二进制内容经 persist/resume/restore 损坏了:\n got %x\nwant %x", got, raw)
+	}
+}

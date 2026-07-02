@@ -11,6 +11,7 @@
 package checkpoint
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"reasonix/internal/diff"
 )
@@ -30,6 +32,12 @@ import (
 type FileSnap struct {
 	Path    string  `json:"path"`
 	Content *string `json:"content"`
+	// B64 marks Content as base64-encoded raw bytes. Set when the original content
+	// was not valid UTF-8 (e.g. a binary file an edit tool read raw): json.Marshal
+	// replaces invalid UTF-8 with U+FFFD, so persisting such content as a plain JSON
+	// string would corrupt it on the persist→resume→restore round-trip. Base64 keeps
+	// the bytes intact. Absent (false) on older checkpoints, whose content was UTF-8.
+	B64 bool `json:"b64,omitempty"`
 }
 
 // Checkpoint anchors the pre-edit state of every distinct file touched during one
@@ -153,12 +161,20 @@ func (s *Store) Snapshot(ch diff.Change) {
 		return
 	}
 	s.seen[ch.Path] = true
-	var content *string
+	snap := FileSnap{Path: ch.Path}
 	if ch.Kind != diff.Create { // create == file didn't exist → leave nil (restore deletes)
 		old := ch.OldText
-		content = &old
+		if !utf8.ValidString(old) {
+			// 非法 UTF-8(如二进制文件被原样读入):base64 存,避免 json.Marshal 把非法字节
+			// 换成 U+FFFD 而在 resume 后 rewind 时写回损坏内容。
+			enc := base64.StdEncoding.EncodeToString([]byte(old))
+			snap.Content = &enc
+			snap.B64 = true
+		} else {
+			snap.Content = &old
+		}
 	}
-	s.cur.Files = append(s.cur.Files, FileSnap{Path: ch.Path, Content: content})
+	s.cur.Files = append(s.cur.Files, snap)
 	s.persist(s.cur)
 }
 
@@ -289,17 +305,19 @@ func (s *Store) all() []*Checkpoint {
 func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error) {
 	s.mu.Lock()
 	// earliest snapshot per path across checkpoints >= fromTurn (turn order → first wins).
-	earliest := map[string]*string{}
+	earliest := map[string]FileSnap{}
+	seen := map[string]bool{}
 	order := []string{}
 	for _, c := range s.all() {
 		if c.Turn < fromTurn {
 			continue
 		}
 		for _, f := range c.Files {
-			if _, ok := earliest[f.Path]; ok {
+			if seen[f.Path] {
 				continue
 			}
-			earliest[f.Path] = f.Content
+			seen[f.Path] = true
+			earliest[f.Path] = f
 			order = append(order, f.Path)
 		}
 	}
@@ -312,8 +330,8 @@ func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error)
 			err = gerr
 			continue
 		}
-		content := earliest[p]
-		if content == nil {
+		f := earliest[p]
+		if f.Content == nil {
 			if rmErr := os.Remove(abs); rmErr == nil {
 				deleted = append(deleted, p)
 			} else if !os.IsNotExist(rmErr) {
@@ -321,11 +339,20 @@ func (s *Store) RestoreCode(fromTurn int) (written, deleted []string, err error)
 			}
 			continue
 		}
+		data := []byte(*f.Content)
+		if f.B64 { // 二进制快照:还原原始字节(见 FileSnap.B64)
+			decoded, derr := base64.StdEncoding.DecodeString(*f.Content)
+			if derr != nil {
+				err = derr
+				continue
+			}
+			data = decoded
+		}
 		if mkErr := os.MkdirAll(filepath.Dir(abs), 0o755); mkErr != nil {
 			err = mkErr
 			continue
 		}
-		if wErr := os.WriteFile(abs, []byte(*content), 0o644); wErr != nil {
+		if wErr := os.WriteFile(abs, data, 0o644); wErr != nil {
 			err = wErr
 			continue
 		}
