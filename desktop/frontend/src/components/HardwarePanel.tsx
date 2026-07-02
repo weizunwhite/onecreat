@@ -394,12 +394,14 @@ export function HardwarePanel({
   onBackToChat,
   selectedKnowledgeCount,
   active = true,
+  cwd,
 }: {
   onPrompt: (display: string, submit?: string) => void;
   onOpenWorkspace?: (path?: string) => void;
   onBackToChat?: () => void;
   selectedKnowledgeCount: number;
   active?: boolean;
+  cwd?: string;
 }) {
   const [view, setView] = useState<CapabilitiesView | null>(null);
   const [hardwareMCP, setHardwareMCP] = useState<HardwareMCPView | null>(null);
@@ -468,9 +470,11 @@ export function HardwarePanel({
   }, []);
 
   useEffect(() => {
-    // 仅在视图可见时拉取硬件状态,切回 chat 视图时不再轮询。
+    // 仅在视图可见时拉取硬件状态,切回 chat 视图时不再轮询。cwd 进依赖:通过 Composer
+    // 文件夹菜单切换项目(mainView 不变、面板不卸载)时,重新 detect,否则 detect.projectDir
+    // 仍指向旧工作区,编译/烧录/OTA 会作用到上一个项目。
     if (active) void reload();
-  }, [reload, active]);
+  }, [reload, active, cwd]);
 
   useEffect(() => {
     if (!installing || installStartedAt === null) return;

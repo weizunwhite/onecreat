@@ -1609,6 +1609,7 @@ export default function App() {
                   onBackToChat={() => setMainView("chat")}
                   selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
                   active={mainView === "hardware"}
+                  cwd={state.meta?.cwd}
                 />
               </div>
             )}
