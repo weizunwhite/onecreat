@@ -437,10 +437,6 @@ function reducer(s: State, a: Action): State {
       // 切标签后已流入的 turn_started/turn_done live 事件打架(A3)。
       return a.running ? { ...s, running: true, turnActive: true } : s;
     case "history": {
-      // 切回一个正在跑的标签时,reset 后订阅已先流入 live 事件(items 非空):此时
-      // 用异步返回的 History() 整体替换会清掉这些已到达的工具卡片/文本段。只在 items
-      // 为空(idle 标签首次加载)时整体填充,非空则保留 live 内容(A3)。
-      if (s.items.length > 0) return s;
       // Only user/assistant turns with visible text or assistant reasoning — never
       // the system prompt or tool-result messages.
       const visible = a.messages.filter(
@@ -448,12 +444,19 @@ function reducer(s: State, a: Action): State {
           (m.role === "user" && m.content.trim() !== "") ||
           (m.role === "assistant" && (m.content.trim() !== "" || (m.reasoning ?? "").trim() !== "")),
       );
-      const items: Item[] = visible.map((m, i) =>
+      const historyItems: Item[] = visible.map((m, i) =>
         m.role === "user"
           ? { kind: "user", id: `h${i}`, text: m.content }
           : { kind: "assistant", id: `h${i}`, text: m.content, reasoning: m.reasoning ?? "", streaming: false },
       );
-      return { ...s, items, seq: s.seq + visible.length };
+      // 切回一个正在跑的标签时,reset 后订阅已先流入 live 事件(items 非空,是【本回合】
+      // 正在流式的助手片段)。History() 是过去的回合(含本回合的用户消息)——把它接在前面,
+      // 而不是整体丢弃,否则切回运行中标签会看不到之前的整段对话(修正 A3 的丢历史)。
+      // 历史项 id 用 h 前缀,与 live 项(a/u 前缀)不冲突,不会重复渲染。
+      if (s.items.length > 0) {
+        return { ...s, items: [...historyItems, ...s.items], seq: s.seq + visible.length };
+      }
+      return { ...s, items: historyItems, seq: s.seq + visible.length };
     }
     case "local_notice":
       return {
