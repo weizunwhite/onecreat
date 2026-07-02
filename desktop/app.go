@@ -2348,8 +2348,9 @@ func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
 			"port":            input.Port,
 			"timeout_seconds": 120,
 		}
-		if input.Board != "" {
-			args["fqbn"] = arduinoFQBNFromBoard(input.Board)
+		// FQBN 与「编译」同源(manifest.board 优先于 UI 下拉),避免编译与烧录目标芯片不一致。
+		if fqbn := resolveFlashFQBN(projectDir, input.Board); fqbn != "" {
+			args["fqbn"] = fqbn
 		}
 		return runHardwareSimple(command, "arduino_upload", args, 150*time.Second, "Arduino 烧录")
 	case "platformio":
@@ -2408,7 +2409,7 @@ func (a *App) HardwareOTAUpload(input HardwareRunInput) HardwareRunResult {
 		return HardwareRunResult{Status: "skipped", Summary: "缺少板子地址", NextStep: "填入板子的 WiFi 地址(IP 或 esp32-onecreat.local)后再点 WiFi 烧录。"}
 	}
 	projectDir := resolveHardwareProjectDir(input.ProjectDir)
-	fqbn := arduinoFQBNFromBoard(input.Board)
+	fqbn := resolveFlashFQBN(projectDir, input.Board) // manifest.board 优先,与「编译」一致
 	if fqbn == "" {
 		fqbn = "esp32:esp32:esp32" // OTA 以 ESP32 为主,板卡缺省时兜底
 	}
@@ -2449,7 +2450,7 @@ func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunRes
 		return HardwareRunResult{Status: "skipped", Summary: "未配置固件服务器", NextStep: "在「发布固件」里填好 服务器URL / SSH目标 / 远程目录(填你自己的 NAS 或 VPS)后再发布。"}
 	}
 	projectDir := resolveHardwareProjectDir(input.ProjectDir)
-	fqbn := arduinoFQBNFromBoard(input.Board)
+	fqbn := resolveFlashFQBN(projectDir, input.Board) // manifest.board 优先,与「编译」一致
 	if fqbn == "" {
 		fqbn = "esp32:esp32:esp32"
 	}
@@ -2617,6 +2618,39 @@ func runHardwareSimple(command, tool string, args map[string]any, timeout time.D
 // 彻底消除「编译走一处映射、烧录走另一处」的孪生漂移——以前要手工对齐两份 switch。
 func arduinoFQBNFromBoard(board string) string {
 	return boards.ArduinoFQBN(board)
+}
+
+// manifestBoard 读取项目 hardware_manifest.json 的 board 字段(读不到/无该字段返回空)。
+func manifestBoard(projectDir string) string {
+	if strings.TrimSpace(projectDir) == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "hardware_manifest.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Board string `json:"board"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.Board)
+}
+
+// resolveFlashFQBN 解析「烧录/发布」用的 FQBN,优先级与「编译」(validateArduinoProject)
+// 一致:项目 manifest.board > UI 下拉 board。这样同一项目编译和烧录目标芯片必然相同——
+// 否则 manifest 定 esp32s3、UI 停在默认板时,编译按 S3、烧录按 UI,烧的是错芯片的固件。
+// 两者都为空时返回空,调用方保持各自兜底。
+func resolveFlashFQBN(projectDir, uiBoard string) string {
+	board := strings.TrimSpace(uiBoard)
+	if mb := manifestBoard(projectDir); mb != "" {
+		board = mb
+	}
+	if board == "" {
+		return ""
+	}
+	return arduinoFQBNFromBoard(board)
 }
 
 // AddHardwareMCPServer connects the first available hardware MCP binary to the

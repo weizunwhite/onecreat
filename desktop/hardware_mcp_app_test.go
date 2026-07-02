@@ -103,6 +103,28 @@ func TestArduinoFQBNFromBoardCoversFrontendPresets(t *testing.T) {
 	}
 }
 
+// TestResolveFlashFQBNPrefersManifestBoard 钉死:烧录/发布解析 FQBN 时项目 manifest.board
+// 必须优先于 UI 下拉板型,与「编译」(validateArduinoProject)同一优先级——否则同一项目
+// 编译按 manifest、烧录按 UI,会烧错芯片的固件。
+func TestResolveFlashFQBNPrefersManifestBoard(t *testing.T) {
+	dir := t.TempDir()
+	// 无 manifest:回退到 UI 板型。
+	if got := resolveFlashFQBN(dir, "esp32_arduino"); got != "esp32:esp32:esp32" {
+		t.Fatalf("no manifest: got %q, want esp32:esp32:esp32", got)
+	}
+	// 有 manifest.board:必须优先于 UI 板型。
+	if err := os.WriteFile(filepath.Join(dir, "hardware_manifest.json"), []byte(`{"board":"uno"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveFlashFQBN(dir, "esp32_arduino"); got != "arduino:avr:uno" {
+		t.Fatalf("manifest board must win over UI board: got %q, want arduino:avr:uno", got)
+	}
+	// 两者都空:返回空,让调用方保持各自兜底。
+	if got := resolveFlashFQBN(t.TempDir(), ""); got != "" {
+		t.Fatalf("empty board: got %q, want empty", got)
+	}
+}
+
 func exeSuffix() string {
 	if runtime.GOOS == "windows" {
 		return ".exe"
