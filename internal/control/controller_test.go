@@ -150,9 +150,13 @@ func TestDisconnectMCPServerRemovesLazyPlaceholder(t *testing.T) {
 }
 
 func TestRemoveMCPServerRemovesUnconnectedLazyPlaceholder(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	if err := os.WriteFile("reasonix.toml", []byte(`
+	// 1b:MCP 增删改走用户级配置(UserConfigPath = <REASONIX_CONFIG_DIR>/config.toml),
+	// 不再写项目 reasonix.toml。把 lazy 占位服务器写进隔离的用户级配置,验证 RemoveMCPServer
+	// 从那里删掉。t.Chdir 到空目录排除项目级 toml 干扰 config.Load()。
+	cfgDir := t.TempDir()
+	t.Setenv("REASONIX_CONFIG_DIR", cfgDir)
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
 [[plugins]]
 name = "mock"
 command = "mock-mcp"
@@ -177,6 +181,13 @@ tier = "lazy"
 	}
 	if names := c.ConfiguredMCPNames(); len(names) != 0 {
 		t.Fatalf("ConfiguredMCPNames() = %v, want empty after remove", names)
+	}
+	// 1b:绝不在项目目录落 onecreat.toml/reasonix.toml——写项目级会把全量快照落进项目
+	// 文件、遮蔽用户级配置。
+	for _, name := range []string{"onecreat.toml", "reasonix.toml"} {
+		if _, serr := os.Stat(name); !os.IsNotExist(serr) {
+			t.Fatalf("MCP 操作不应创建项目级 %s(会遮蔽用户级配置)", name)
+		}
 	}
 }
 

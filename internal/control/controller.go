@@ -1342,14 +1342,19 @@ func (c *Controller) AddMCPServer(e config.PluginEntry) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	cfg, lerr := config.Load()
-	if lerr != nil {
-		return n, fmt.Errorf("connected, but reloading config to save failed: %w", lerr)
+	// 持久化到【用户级】配置(和桌面设置面板 applyConfigChange 同一层单文件编辑),而不是
+	// SourcePath 偏好的项目级 onecreat.toml。写项目级会把全量合并快照落进项目文件,之后
+	// 遮蔽用户级配置的所有修改(默认模型 / provider / system_prompt)静默失效。项目级 MCP
+	// 隔离应走 .mcp.json,不经这里。
+	path := config.UserConfigPath()
+	if path == "" {
+		return n, fmt.Errorf("connected, but cannot resolve user config path to save")
 	}
+	cfg := config.LoadForEdit(path)
 	if err := cfg.UpsertPlugin(e); err != nil {
 		return n, fmt.Errorf("connected, but config rejected the entry: %w", err)
 	}
-	if err := cfg.Save(); err != nil {
+	if err := cfg.SaveTo(path); err != nil {
 		return n, fmt.Errorf("connected, but saving config failed: %w", err)
 	}
 	return n, nil
@@ -1473,16 +1478,19 @@ func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error)
 			}
 		}
 	}
-	cfg, lerr := config.Load()
-	if lerr != nil {
-		return disconnected, lerr
+	// 从【用户级】配置删除(与 AddMCPServer 对称,不写项目级快照)。.mcp.json 里声明的
+	// 服务器不在这里(inConfig=false):它只断开本会话,下次启动仍回来——那不是我们该编辑的文件。
+	path := config.UserConfigPath()
+	if path == "" {
+		return disconnected, fmt.Errorf("cannot resolve user config path")
 	}
+	cfg := config.LoadForEdit(path)
 	inConfig := cfg.RemovePlugin(name)
 	if inConfig {
 		if !disconnected && c.reg != nil {
 			c.reg.RemovePrefix(plugin.ToolPrefix(name))
 		}
-		if serr := cfg.Save(); serr != nil {
+		if serr := cfg.SaveTo(path); serr != nil {
 			return disconnected, serr
 		}
 	}
