@@ -230,19 +230,28 @@ func (a *App) rebuild() error {
 		return err
 	}
 	a.mu.Lock()
+	adopted := false
 	if rt := a.tabs[targetTab]; rt != nil {
 		rt.ctrl = ctrl
 		rt.model = model
 		rt.label = ctrl.Label()
 		rt.startupErr = ""
+		adopted = true
 	}
 	if a.activeTab == targetTab {
 		a.ctrl = ctrl
 		a.model = model
 		a.label = ctrl.Label()
 		a.startupErr = ""
+		adopted = true
 	}
 	a.mu.Unlock()
+	if !adopted {
+		// 发起设置变更的标签在秒级 boot.Build 期间被关闭:没有任何标签引用新 controller,
+		// 必须 Close 它,否则 MCP 子进程 / LSP / goroutine 泄漏到进程退出(同 SetModel A5b)。
+		ctrl.Close()
+		return nil
+	}
 	ctrl.EnableInteractiveApproval()
 	path := ""
 	if dir := ctrl.SessionDir(); dir != "" {
