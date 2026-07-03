@@ -381,6 +381,11 @@ type PluginEntry struct {
 // (not editable by us) rather than reasonix.toml.
 func (e PluginEntry) fromMCPJSON() bool { return e.Source == pluginSourceMCPJSON }
 
+// FromMCPJSON is the exported predicate: the entry came from a project-root
+// .mcp.json, which is not ours to write back — a caller removing it can only
+// disconnect for this session and must tell the user to edit that file.
+func (e PluginEntry) FromMCPJSON() bool { return e.fromMCPJSON() }
+
 const pluginSourceMCPJSON = "mcp.json"
 
 func (e PluginEntry) ShouldAutoStart() bool {
@@ -736,6 +741,11 @@ func CommandDirs() []string {
 	dirs = append(dirs, conventionSubdirsAsc(".", "commands")...)
 	return dirs
 }
+
+// ProjectConfigPaths lists the project-level TOML files (relative to cwd) that
+// Load merges, so a caller editing a project file targets the same set. onecreat
+// first (the current name), reasonix.toml second (legacy).
+func ProjectConfigPaths() []string { return []string{"onecreat.toml", "reasonix.toml"} }
 
 // SourcePath returns the highest-priority config file that exists, or "" if none.
 func SourcePath() string {

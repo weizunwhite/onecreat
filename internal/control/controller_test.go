@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,6 +189,106 @@ tier = "lazy"
 		if _, serr := os.Stat(name); !os.IsNotExist(serr) {
 			t.Fatalf("MCP 操作不应创建项目级 %s(会遮蔽用户级配置)", name)
 		}
+	}
+}
+
+// A3:服务器只声明在项目 onecreat.toml → RemoveMCPServer 外科式从项目文件删块,不写全量
+// 快照(项目文件不多出 [[providers]]/default_model 无关键),也不创建用户级文件。
+func TestRemoveMCPServerProjectLevelSurgical(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("REASONIX_CONFIG_DIR", cfgDir)
+	t.Chdir(t.TempDir())
+	proj := `default_model = "deepseek-pro"
+
+[[plugins]]
+name = "mock"
+command = "mock-mcp"
+tier = "lazy"
+`
+	if err := os.WriteFile("onecreat.toml", []byte(proj), 0o644); err != nil {
+		t.Fatalf("write project toml: %v", err)
+	}
+
+	reg := tool.NewRegistry()
+	reg.Add(fakeControlTool{name: "mcp__mock__connect"})
+	c := New(Options{Host: plugin.NewHost(), Registry: reg})
+
+	disconnected, err := c.RemoveMCPServer("mock")
+	if err != nil {
+		t.Fatalf("RemoveMCPServer: %v", err)
+	}
+	if disconnected {
+		t.Fatal("reported a live disconnect for an unconnected lazy placeholder")
+	}
+	if _, found := reg.Get("mcp__mock__connect"); found {
+		t.Fatalf("lazy placeholder still registered after remove; names=%v", reg.Names())
+	}
+	out, _ := os.ReadFile("onecreat.toml")
+	text := string(out)
+	if strings.Contains(text, "mock") {
+		t.Fatalf("项目 toml 里 mock 块未删:\n%s", text)
+	}
+	if !strings.Contains(text, `default_model = "deepseek-pro"`) {
+		t.Fatalf("项目 toml 的 default_model 被改动:\n%s", text)
+	}
+	if strings.Contains(text, "[[providers]]") {
+		t.Fatalf("项目 toml 被撑成全量快照(多出 [[providers]]):\n%s", text)
+	}
+	// 项目级删除不应落用户级文件。
+	if _, serr := os.Stat(filepath.Join(cfgDir, "config.toml")); !os.IsNotExist(serr) {
+		t.Fatal("项目级删除不应创建用户级 config.toml")
+	}
+	if names := c.ConfiguredMCPNames(); len(names) != 0 {
+		t.Fatalf("ConfiguredMCPNames() = %v, want empty after remove", names)
+	}
+}
+
+// A3:服务器声明在项目根 .mcp.json → 不由我们写回;RemoveMCPServer 本会话断开 + 发 notice
+// 告知需手动编辑该文件,不再静默复活,且不改动 .mcp.json。
+func TestRemoveMCPServerFromMCPJSONEmitsNotice(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("REASONIX_CONFIG_DIR", cfgDir)
+	t.Chdir(t.TempDir())
+	mcpJSON := `{"mcpServers":{"mock":{"command":"mock-mcp"}}}`
+	if err := os.WriteFile(".mcp.json", []byte(mcpJSON), 0o644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+
+	var notices []string
+	reg := tool.NewRegistry()
+	reg.Add(fakeControlTool{name: "mcp__mock__connect"})
+	c := New(Options{
+		Host:     plugin.NewHost(),
+		Registry: reg,
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.Notice {
+				notices = append(notices, e.Text)
+			}
+		}),
+	})
+
+	disconnected, err := c.RemoveMCPServer("mock")
+	if err != nil {
+		t.Fatalf("RemoveMCPServer: %v", err)
+	}
+	if disconnected {
+		t.Fatal("reported a live disconnect for an unconnected lazy placeholder")
+	}
+	found := false
+	for _, n := range notices {
+		if strings.Contains(n, ".mcp.json") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a notice mentioning .mcp.json, got %v", notices)
+	}
+	out, _ := os.ReadFile(".mcp.json")
+	if string(out) != mcpJSON {
+		t.Fatalf(".mcp.json 被改动,应保持原样:\n%s", string(out))
+	}
+	if _, ok := reg.Get("mcp__mock__connect"); ok {
+		t.Fatalf("lazy placeholder still registered after remove; names=%v", reg.Names())
 	}
 }
 

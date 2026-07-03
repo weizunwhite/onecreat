@@ -358,6 +358,131 @@ func (c *Config) SaveTo(path string) error {
 	return fileutil.ReplaceFile(tmpPath, path)
 }
 
+// RemovePluginFromFile 从 path 指向的单个 TOML 文件里【外科式】删掉 name 匹配的那个
+// [[plugins]] 块(含它的 [plugins.*] 子表、以及紧贴其上无空行间隔的注释行),文件其余内容
+// 保持原样——不经 RenderTOML 整份重渲染。这样绝不会把 Default() 的 provider/default_model
+// 等无关键写进项目文件(那正是 1b 全量快照遮蔽用户配置的根因)。返回是否删到了条目;写盘前
+// 用同一个解码器校验结果仍是合法 TOML,再原子替换。文件不存在或没有该条目 → (false, nil)。
+func RemovePluginFromFile(path, name string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	lines := strings.Split(string(raw), "\n")
+
+	// 定位 name 匹配的顶层 [[plugins]] 块的行区间 [start,end)。
+	start, end := -1, -1
+	for i := 0; i < len(lines); i++ {
+		if !isPluginsArrayHeader(lines[i]) {
+			continue
+		}
+		j := i + 1
+		for j < len(lines) && !endsPluginBlock(lines[j]) {
+			j++
+		}
+		if pluginBlockName(lines[i:j]) == name {
+			start, end = i, j
+			break
+		}
+		i = j - 1
+	}
+	if start < 0 {
+		return false, nil
+	}
+	// 紧贴块头之上、无空行间隔的注释行是这个块的注解,一并删掉。
+	for start > 0 && strings.HasPrefix(strings.TrimSpace(lines[start-1]), "#") {
+		start--
+	}
+
+	kept := make([]string, 0, len(lines)-(end-start))
+	kept = append(kept, lines[:start]...)
+	kept = append(kept, lines[end:]...)
+	result := strings.Join(kept, "\n")
+
+	// 写盘前校验删除后仍是合法 TOML,避免把项目配置改坏。
+	var probe Config
+	if _, derr := toml.Decode(result, &probe); derr != nil {
+		return false, fmt.Errorf("remove plugin %q from %s: 删除后不是合法 TOML,已放弃写入: %w", name, path, derr)
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".reasonix.*.toml.tmp")
+	if err != nil {
+		return false, fmt.Errorf("remove plugin: create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(result); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return false, fmt.Errorf("remove plugin: write: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return false, fmt.Errorf("remove plugin: close temp: %w", err)
+	}
+	if err := fileutil.ReplaceFile(tmpPath, path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// isPluginsArrayHeader 判断一行是否是数组表头 [[plugins]](允许行首空白与行尾注释)。
+func isPluginsArrayHeader(line string) bool {
+	t := strings.TrimSpace(line)
+	if i := strings.IndexByte(t, '#'); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	return t == "[[plugins]]"
+}
+
+// endsPluginBlock 判断一行是否终结当前 [[plugins]] 块:遇到下一个顶层表头即终结,但
+// [plugins.xxx] / [[plugins.xxx]] 子表仍属于当前块,不终结。
+func endsPluginBlock(line string) bool {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "[") {
+		return false
+	}
+	if strings.HasPrefix(t, "[plugins.") || strings.HasPrefix(t, "[[plugins.") {
+		return false
+	}
+	return true
+}
+
+// pluginBlockName 从一个 [[plugins]] 块的行里取出顶层 name 值("" 表示没写 name)。
+func pluginBlockName(block []string) string {
+	for _, ln := range block {
+		t := strings.TrimSpace(ln)
+		rest := strings.TrimPrefix(t, "name")
+		if rest == t { // 该行不以 name 开头
+			continue
+		}
+		rest = strings.TrimSpace(rest)
+		if !strings.HasPrefix(rest, "=") {
+			continue
+		}
+		return unquoteTOMLValue(strings.TrimSpace(rest[1:]))
+	}
+	return ""
+}
+
+// unquoteTOMLValue 取 TOML 基本/字面字符串的内容(去引号、忽略行尾注释),仅用于读 name。
+func unquoteTOMLValue(s string) string {
+	if len(s) < 2 {
+		return ""
+	}
+	q := s[0]
+	if q != '"' && q != '\'' {
+		return ""
+	}
+	if end := strings.IndexByte(s[1:], q); end >= 0 {
+		return s[1 : 1+end]
+	}
+	return ""
+}
+
 // Save writes the configuration back to the file it was loaded from
 // (SourcePath), or to ./onecreat.toml when none exists yet — the conventional
 // project-local target a fresh GUI session would create. SourcePath still finds a

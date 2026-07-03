@@ -1472,8 +1472,11 @@ func (c *Controller) connectCodegraphMCPServer(cfg *config.Config) (int, error) 
 // RemoveMCPServer disconnects a live MCP server — its tools vanish from the next
 // turn — and removes it from the config file. It reports whether a live server was
 // disconnected; an error only when the name is neither connected nor in config (or
-// the config save fails). A server declared in .mcp.json disconnects for this
-// session but returns on the next start, since that file isn't ours to edit.
+// the config save fails). The persistence target follows the entry's source:
+// user-level toml → edit the user file; project-level onecreat.toml/reasonix.toml →
+// surgically drop just that [[plugins]] block from the project file (never a full
+// snapshot, which would shadow the user's config — the 1b regression); .mcp.json →
+// disconnect for this session only and tell the user to edit that file (not ours).
 func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error) {
 	if c.host != nil {
 		if prefix, ok := c.host.Remove(name); ok {
@@ -1483,21 +1486,56 @@ func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error)
 			}
 		}
 	}
-	// 从【用户级】配置删除(与 AddMCPServer 对称,不写项目级快照)。.mcp.json 里声明的
-	// 服务器不在这里(inConfig=false):它只断开本会话,下次启动仍回来——那不是我们该编辑的文件。
-	path := config.UserConfigPath()
-	if path == "" {
-		return disconnected, fmt.Errorf("cannot resolve user config path")
+
+	// 判定该服务器的配置来源。Load 的合并视图只区分 .mcp.json 与 toml;用户级 vs 项目级
+	// 在下面用"先删用户级、删不到再删项目级"区分,不依赖 Source。
+	fromMCPJSON := false
+	if cfg, e := config.Load(); e == nil {
+		for _, p := range cfg.Plugins {
+			if p.Name == name {
+				fromMCPJSON = p.FromMCPJSON()
+				break
+			}
+		}
 	}
-	cfg := config.LoadForEdit(path)
-	inConfig := cfg.RemovePlugin(name)
-	if inConfig {
+
+	// .mcp.json 声明的服务器:该文件不由我们写回。本会话已断开,发 notice 告知需手动编辑,
+	// 不再静默让它下次启动复活。
+	if fromMCPJSON {
 		if !disconnected && c.reg != nil {
 			c.reg.RemovePrefix(plugin.ToolPrefix(name))
 		}
-		if serr := cfg.SaveTo(path); serr != nil {
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+			Text: fmt.Sprintf("已断开 %q(本会话);它声明在项目根 .mcp.json 里,需手动编辑该文件才能永久移除", name)})
+		return disconnected, nil
+	}
+
+	// 先从【用户级】配置删除(与 AddMCPServer 对称,不写项目级快照)。
+	userPath := config.UserConfigPath()
+	if userPath == "" {
+		return disconnected, fmt.Errorf("cannot resolve user config path")
+	}
+	inConfig := false
+	userCfg := config.LoadForEdit(userPath)
+	if userCfg.RemovePlugin(name) {
+		if serr := userCfg.SaveTo(userPath); serr != nil {
 			return disconnected, serr
 		}
+		inConfig = true
+	} else {
+		// 不在用户级 → 声明在项目 toml。外科式删掉那个 [[plugins]] 块(不整份重渲染,
+		// 绝不把 Default 的 provider/default_model 写进项目文件 → 不复现 1b 遮蔽)。
+		for _, projPath := range config.ProjectConfigPaths() {
+			removed, rerr := config.RemovePluginFromFile(projPath, name)
+			if rerr != nil {
+				return disconnected, rerr
+			}
+			inConfig = inConfig || removed
+		}
+	}
+
+	if inConfig && !disconnected && c.reg != nil {
+		c.reg.RemovePrefix(plugin.ToolPrefix(name))
 	}
 	if !disconnected && !inConfig {
 		return false, fmt.Errorf("no MCP server named %q", name)
