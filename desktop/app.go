@@ -1777,6 +1777,13 @@ func (a *App) HardwareDetect() HardwareDetectView {
 // 首次会联网下载 core,耗时可能几分钟,所以用长超时;前端按钮自己转圈。
 func (a *App) HardwareInstallToolchain(cores []string) HardwareInstallToolchainView {
 	view := HardwareInstallToolchainView{Steps: []HardwareInstallStepView{}}
+	// 与 HardwareInstallCore 同一把互斥锁:三个安装入口并发写同一个 arduino-cli(.download.tmp
+	// → rename)会互相写坏。被占用时拒绝并给一致话术。
+	if !a.beginHardwareOp(&a.hwInstalling) {
+		view.Error = "已有工具链安装正在进行,请等它完成再试。"
+		return view
+	}
+	defer a.endHardwareOp(&a.hwInstalling)
 	command, _, err := resolveHardwareMCP()
 	if err != nil {
 		view.Error = err.Error()
@@ -1805,6 +1812,13 @@ func (a *App) HardwareInstallToolchain(cores []string) HardwareInstallToolchainV
 // HardwareInstallArduinoCLI 只装 arduino-cli 本体,返回单步结果。GUI 分步进度用:
 // 前端先调这个,再逐个调 HardwareInstallCore,中间刷新进度,用户能看到正在装哪一步。
 func (a *App) HardwareInstallArduinoCLI() HardwareInstallStepView {
+	// 分步安装第一步实际调用的就是这里,必须与 HardwareInstallCore 共用同一把互斥锁——否则
+	// 面板卸载→重挂载丢前端守卫后重复点击,两个下载并发写同一 .download.tmp,rename 出损坏的
+	// arduino-cli,之后所有编译烧录静默失败。
+	if !a.beginHardwareOp(&a.hwInstalling) {
+		return HardwareInstallStepView{Action: "failed", Message: "已有工具链安装正在进行,请等它完成再试。"}
+	}
+	defer a.endHardwareOp(&a.hwInstalling)
 	return hardwareInstallStep("hardware_install_arduino_cli", nil)
 }
 

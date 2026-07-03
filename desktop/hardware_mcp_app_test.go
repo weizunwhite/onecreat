@@ -39,6 +39,28 @@ func TestResolveHardwareMCPRejectsBadEnv(t *testing.T) {
 	}
 }
 
+// D1 回归:三个工具链安装入口(Toolchain/ArduinoCLI/Core)共享同一把互斥锁。占住
+// hwInstalling 槽后,三者都必须返回"已有工具链安装正在进行"忙碌话术,而不是并发去写同一个
+// arduino-cli。去掉 Toolchain/ArduinoCLI 的 beginHardwareOp 守卫,本测试应挂。
+func TestHardwareInstallEntriesMutualExclusion(t *testing.T) {
+	a := &App{}
+	if !a.beginHardwareOp(&a.hwInstalling) {
+		t.Fatal("首次占用 hwInstalling 槽应成功")
+	}
+	defer a.endHardwareOp(&a.hwInstalling)
+
+	const busy = "已有工具链安装正在进行,请等它完成再试。"
+	if got := a.HardwareInstallArduinoCLI(); got.Action != "failed" || got.Message != busy {
+		t.Fatalf("HardwareInstallArduinoCLI 忙碌时 = %+v, want failed/%q", got, busy)
+	}
+	if got := a.HardwareInstallCore("arduino:avr"); got.Action != "failed" || got.Message != busy {
+		t.Fatalf("HardwareInstallCore 忙碌时 = %+v, want failed/%q", got, busy)
+	}
+	if got := a.HardwareInstallToolchain(nil); got.Error != busy {
+		t.Fatalf("HardwareInstallToolchain 忙碌时 Error = %q, want %q", got.Error, busy)
+	}
+}
+
 func TestHardwareDetectUsesResolvedMCP(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "reasonix-hardware-mcp"+exeSuffix())
