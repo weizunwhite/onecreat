@@ -219,6 +219,45 @@ func TestGatewayStatusMessageNoVendorText(t *testing.T) {
 	}
 }
 
+// B2 回归:上游把大 reasoning/大 tool_call arguments 作为单个 ~2MB data: 帧下发时,scanner
+// 不得报 bufio.ErrTooLong 整轮失败。缓冲上限提到 32MB 后应正常解析。
+func TestReadStreamLargeFrameNoErrTooLong(t *testing.T) {
+	big := strings.Repeat("A", 2*1024*1024) // ~2MB 单帧文本增量,远超旧 1MB 上限
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"` + big + `"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "tok",
+		Extra: map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var text strings.Builder
+	for chunk := range ch {
+		switch chunk.Type {
+		case provider.ChunkText:
+			text.WriteString(chunk.Text)
+		case provider.ChunkError:
+			t.Fatalf("大帧不应报错(ErrTooLong 回归?): %v", chunk.Err)
+		}
+	}
+	if text.Len() != len(big) {
+		t.Fatalf("解析出的文本长度 = %d, want %d(大帧被截断/丢弃)", text.Len(), len(big))
+	}
+}
+
 // TestBuildRequestAlwaysSerializesContent guards the DeepSeek 400 regression:
 // an assistant turn that is pure tool_calls (no preamble text) has empty
 // content, and DeepSeek rejects a message missing the `content` field. Every

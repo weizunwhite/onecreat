@@ -311,7 +311,10 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 	haveUsage := false
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// 单个 data: 帧上限 32MB。大 reasoning 块 / 大 tool_call arguments 作为单帧下发时可能
+	// 超 1MB,旧上限会让 Scan 报 bufio.ErrTooLong、整轮失败且 mid-stream 不重试。32MB 远超
+	// 任何合理单帧,又仍对真正异常流兜底(不做无界读)。
+	scanner.Buffer(make([]byte, 0, 64*1024), 32*1024*1024)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

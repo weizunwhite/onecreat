@@ -203,6 +203,31 @@ func TestReadStream(t *testing.T) {
 	}
 }
 
+// B2 回归:单个 ~2MB 的 data: 帧(大 thinking / 大 tool_call arguments 作为单帧下发)不得
+// 触发 bufio.ErrTooLong 整轮失败。缓冲上限提到 32MB 后应正常解析。
+func TestReadStreamLargeFrameNoErrTooLong(t *testing.T) {
+	big := strings.Repeat("A", 2*1024*1024) // ~2MB 单帧文本增量,远超旧 1MB 上限
+	sse := `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + big + `"}}` + "\n\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+	c := &client{name: "anthropic"}
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
+	ch := make(chan provider.Chunk)
+	go c.readStream(resp, ch)
+
+	var text strings.Builder
+	for ck := range ch {
+		switch ck.Type {
+		case provider.ChunkText:
+			text.WriteString(ck.Text)
+		case provider.ChunkError:
+			t.Fatalf("大帧不应报错(ErrTooLong 回归?): %v", ck.Err)
+		}
+	}
+	if text.Len() != len(big) {
+		t.Fatalf("解析出的文本长度 = %d, want %d(大帧被截断/丢弃)", text.Len(), len(big))
+	}
+}
+
 // TestReadStreamError surfaces a mid-stream error event as a ChunkError.
 func TestReadStreamError(t *testing.T) {
 	sse := "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n"
