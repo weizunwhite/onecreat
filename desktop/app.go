@@ -2442,6 +2442,13 @@ func (a *App) HardwareOTAUpload(input HardwareRunInput) HardwareRunResult {
 // HardwarePublishFirmware 把固件发布到远程固件服务器(③ 云端拉取),板子自己来拉。
 // 服务器配置(SSH 目标 / 远程目录 / 公网 URL)由前端面板提供,各人填自己的 NAS/VPS。
 func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunResult {
+	// 用 hwFlashing 槽(而非新增槽):发布同样要先编译 sketch(sketch_dir+fqbn),与烧录共享
+	// 本地 arduino-cli 构建产物;两个"编译+部署"并发会互相写坏本地构建目录,也会让两次发布
+	// 交错写远端 tmp。同槽把 USB 烧录/OTA 烧录/远程发布一起串行,是最贴合的安全边界。
+	if !a.beginHardwareOp(&a.hwFlashing) {
+		return HardwareRunResult{Status: "skipped", Summary: "有硬件操作进行中", NextStep: "已有一次烧录或发布正在进行,请等它完成再试。"}
+	}
+	defer a.endHardwareOp(&a.hwFlashing)
 	command, err := a.requireHardwareMCP()
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}

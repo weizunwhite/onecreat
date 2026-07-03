@@ -3227,7 +3227,11 @@ func runFirmwarePublish(args map[string]any) (string, error) {
 	// 原子发布:先传到临时名,再 mv 覆盖,避免板子正好拉到"写了一半"的固件。
 	// 顺序也讲究:先让 firmware.bin 完整就位,最后才更新 version.txt——板子是先读版本号
 	// 再下固件,所以它看到新版本时固件一定已经完整在位。
-	binTmp := remoteProjectDir + "/firmware.bin.tmp"
+	// 临时名带唯一后缀(纳秒时间戳):防两个客户端并发发布到同一项目目录时写坏同一个
+	// firmware.bin.tmp——本进程互斥锁拦不住另一台机器,每个 scp 写各自的临时文件、mv 只
+	// 转正各自那份完整文件。binTmp 与 verTmp 共用同一 nonce 便于配对。
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
+	binTmp := remoteProjectDir + "/firmware.bin.tmp." + nonce
 	if _, err := runCommandText("scp", []string{binPath, sshHost + ":" + shellArg(binTmp)}, "", 150*time.Second); err != nil {
 		return "", fmt.Errorf("scp firmware failed: %w", err)
 	}
@@ -3236,7 +3240,7 @@ func runFirmwarePublish(args map[string]any) (string, error) {
 		return "", fmt.Errorf("ssh activate firmware failed: %w", err)
 	}
 	// 最后原子更新版本号(板子靠它判断要不要更新):同样先写临时名再 mv
-	verTmp := remoteProjectDir + "/version.txt.tmp"
+	verTmp := remoteProjectDir + "/version.txt.tmp." + nonce
 	verCmd := "printf %s " + shellArg(version) + " > " + shellArg(verTmp) +
 		" && mv -f " + shellArg(verTmp) + " " + shellArg(remoteProjectDir+"/version.txt")
 	if _, err := runCommandText("ssh", []string{sshHost, verCmd}, "", 30*time.Second); err != nil {

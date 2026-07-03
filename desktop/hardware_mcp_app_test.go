@@ -61,6 +61,21 @@ func TestHardwareInstallEntriesMutualExclusion(t *testing.T) {
 	}
 }
 
+// D2 回归:HardwarePublishFirmware 与烧录共用 hwFlashing 互斥槽。占住槽后发布必须返回忙碌,
+// 不并发去交错写远端固件。去掉发布入口的 beginHardwareOp 守卫,本测试应挂。
+func TestHardwarePublishFirmwareMutualExclusion(t *testing.T) {
+	a := &App{}
+	if !a.beginHardwareOp(&a.hwFlashing) {
+		t.Fatal("首次占用 hwFlashing 槽应成功")
+	}
+	defer a.endHardwareOp(&a.hwFlashing)
+
+	got := a.HardwarePublishFirmware(HardwarePublishInput{})
+	if got.Status != "skipped" || got.Summary != "有硬件操作进行中" {
+		t.Fatalf("发布忙碌时 = %+v, want skipped/有硬件操作进行中", got)
+	}
+}
+
 func TestHardwareDetectUsesResolvedMCP(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "reasonix-hardware-mcp"+exeSuffix())
