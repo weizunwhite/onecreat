@@ -110,6 +110,115 @@ func TestStreamGatewayAuthErrorUsesPlatformMessage(t *testing.T) {
 	}
 }
 
+// B1 回归:网关模式上游 400 body 含 "for model deepseek-…",返回的 error 必须只剩平台话术+
+// 状态码,绝不含 deepseek/model 原文(否则击穿档位抽象、违反 ModelPrivacyPolicy)。
+func TestStreamGatewayHTTPErrorRedactsUpstreamBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"maximum context length exceeded for model deepseek-v4-pro"}}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name: "onecreat", BaseURL: srv.URL, Model: "tier-1", APIKey: "tok",
+		Extra: map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("want gateway HTTP error")
+	}
+	got := err.Error()
+	if strings.Contains(strings.ToLower(got), "deepseek") || strings.Contains(got, "for model") {
+		t.Fatalf("网关错误泄露了上游 body/模型名: %q", got)
+	}
+	if !strings.Contains(got, "400") {
+		t.Fatalf("网关错误应保留状态码 400: %q", got)
+	}
+}
+
+// B1:非网关(用户自带 key 直连)保持现状——透传上游 body 原文,方便自行排障。
+func TestStreamNonGatewayHTTPErrorPassesThroughBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request for model deepseek-v4-pro"}}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4-pro", APIKey: "tok",
+		Extra: map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("want HTTP error")
+	}
+	if !strings.Contains(err.Error(), "deepseek-v4-pro") {
+		t.Fatalf("非网关应透传上游 body(含模型名),got %q", err.Error())
+	}
+}
+
+// B1 回归:网关模式流中 error 帧 message 含 deepseek → ChunkError 必须脱敏成通用话术。
+func TestStreamGatewayMidStreamErrorRedacted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"rate limited for model deepseek-v4-pro\"}}\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name: "onecreat", BaseURL: srv.URL, Model: "tier-1", APIKey: "tok",
+		Extra: map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var gotErr error
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			gotErr = chunk.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("want a mid-stream ChunkError")
+	}
+	if strings.Contains(strings.ToLower(gotErr.Error()), "deepseek") {
+		t.Fatalf("流中错误泄露了模型名: %q", gotErr.Error())
+	}
+}
+
+// B1:状态码映射本身不得含任何厂商/模型字样,且保留状态码线索。
+func TestGatewayStatusMessageNoVendorText(t *testing.T) {
+	for _, s := range []int{400, 429, 500, 503, 404} {
+		msg := gatewayStatusMessage(s)
+		if strings.Contains(strings.ToLower(msg), "deepseek") || strings.Contains(strings.ToLower(msg), "model") {
+			t.Fatalf("gatewayStatusMessage(%d)=%q 含厂商/模型字样", s, msg)
+		}
+	}
+	if !strings.Contains(gatewayStatusMessage(429), "429") {
+		t.Fatalf("429 应保留状态码: %q", gatewayStatusMessage(429))
+	}
+	if !strings.Contains(gatewayStatusMessage(500), "5xx") {
+		t.Fatalf("5xx 应有 5xx 提示: %q", gatewayStatusMessage(500))
+	}
+}
+
 // TestBuildRequestAlwaysSerializesContent guards the DeepSeek 400 regression:
 // an assistant turn that is pure tool_calls (no preamble text) has empty
 // content, and DeepSeek rejects a message missing the `content` field. Every

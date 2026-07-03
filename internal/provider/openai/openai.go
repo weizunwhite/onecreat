@@ -214,13 +214,42 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 			}
 			return nil, &provider.AuthError{Provider: c.name, KeyEnv: c.keyEnv, Status: resp.StatusCode}
 		}
-		statusErr := fmt.Errorf("%s: status %d: %s", c.name, resp.StatusCode, strings.TrimSpace(string(msg)))
+		var statusErr error
+		if c.isGateway() {
+			// 网关模式:绝不把上游 body 原文拼进 error(400 的 "for model deepseek-…" 会泄露
+			// 真实模型名),只映射成平台话术+状态码。
+			statusErr = fmt.Errorf("%s: %s", c.name, gatewayStatusMessage(resp.StatusCode))
+		} else {
+			statusErr = fmt.Errorf("%s: status %d: %s", c.name, resp.StatusCode, strings.TrimSpace(string(msg)))
+		}
 		if !isRetryableStatus(resp.StatusCode) {
 			return nil, statusErr
 		}
 		lastErr = statusErr
 	}
 	return nil, lastErr
+}
+
+// isGateway reports whether this client talks to the OneCreat platform gateway
+// (authed via ONECREAT_GATEWAY_TOKEN). In that mode the real provider/model is a
+// billing secret, so error text must never carry upstream body/message verbatim.
+func (c *client) isGateway() bool { return c.keyEnv == "ONECREAT_GATEWAY_TOKEN" }
+
+// gatewayStatusMessage maps an upstream HTTP status to platform-safe wording that
+// contains no vendor/model text. A DeepSeek 400 body typically reads "…for model
+// deepseek-…", which would pierce the 标准/高级/旗舰 tier abstraction if surfaced —
+// so the gateway path returns only this mapping plus the status code.
+func gatewayStatusMessage(status int) string {
+	switch {
+	case status == http.StatusBadRequest:
+		return "请求内容过长或不合法,请精简后重试(400)"
+	case status == http.StatusTooManyRequests:
+		return "当前档位请求繁忙,请稍后重试(429)"
+	case status >= 500 && status <= 599:
+		return "服务暂时不可用,请稍后重试(5xx)"
+	default:
+		return fmt.Sprintf("请求失败,请稍后重试(%d)", status)
+	}
 }
 
 func openAIErrorMessage(body []byte) string {
@@ -352,11 +381,21 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 
 		var sr streamResponse
 		if err := json.Unmarshal([]byte(data), &sr); err != nil {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: decode stream: %w", c.name, err)}
+			chunkErr := fmt.Errorf("%s: decode stream: %w", c.name, err)
+			if c.isGateway() {
+				// 网关模式:json 解析错误可能回显上游帧原文,同样脱敏成通用话术。
+				chunkErr = fmt.Errorf("%s: 连接中断,请重试", c.name)
+			}
+			out <- provider.Chunk{Type: provider.ChunkError, Err: chunkErr}
 			return
 		}
 		if sr.Error != nil {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: %s", c.name, sr.Error.Message)}
+			chunkErr := fmt.Errorf("%s: %s", c.name, sr.Error.Message)
+			if c.isGateway() {
+				// 网关模式:流中错误 message 同样不得带上游原文。
+				chunkErr = fmt.Errorf("%s: 连接中断,请重试", c.name)
+			}
+			out <- provider.Chunk{Type: provider.ChunkError, Err: chunkErr}
 			return
 		}
 		if len(sr.Choices) > 0 && sr.Choices[0].FinishReason != nil && *sr.Choices[0].FinishReason != "" {
