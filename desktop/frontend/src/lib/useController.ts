@@ -103,6 +103,11 @@ interface State {
   // until its turn_done settles.
   pendingUser?: string;
   discardTurn?: boolean;
+  // sawTurnDone 标记「自本次 reset(切入本标签)以来是否已观察到 turn_done」。切回运行中标签时
+  // 事件订阅在 reset 后同步注册,本回合的 turn_done 可能先于 app.Meta() 的 promise 解析到达并
+  // 清掉 running;随后陈旧的 meta.running=true 又把 running 置回 true → 后端已 idle 不再发
+  // turn_done → spinner 永久转。restoreRunning 用它做门禁(G3)。reset 后为 undefined(falsy)。
+  sawTurnDone?: boolean;
   // turnStartAt is the wall-clock ms the current turn began (0 when idle), and
   // turnTokens accumulates the output tokens reported this turn — together they
   // drive the live "thinking… (12s · ↓3.6k tokens)" activity readout. Pure
@@ -201,7 +206,7 @@ function applyEvent(s: State, e: WireEvent): State {
   // After an un-send, swallow the cancelled turn's still-buffered events so no
   // orphan assistant/tool bubble appears; its turn_done clears the discard.
   if (s.discardTurn) {
-    if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, currentAssistant: undefined, live: undefined };
+    if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, currentAssistant: undefined, live: undefined, sawTurnDone: true };
     // 管理命令(#note QuickAdd、/tree /branch /switch 及 managementNotice 类)只发 notice、
     // 永不发 turn_done。没有真回合在飞(!turnActive)时,notice 就是它们的终结事件:必须同样清
     // discardTurn,否则 discardTurn 永久 true、applyEvent 吞光后续事件、send() 把消息全 park 掉,
@@ -410,7 +415,7 @@ function applyEvent(s: State, e: WireEvent): State {
       const items: Item[] = e.err
         ? [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: friendlyTurnError(e.err) }]
         : finalized;
-      return { ...s, items, live: undefined, running: false, turnActive: false, currentAssistant: undefined, approval: undefined, ask: undefined, seq: s.seq + 1 };
+      return { ...s, items, live: undefined, running: false, turnActive: false, currentAssistant: undefined, approval: undefined, ask: undefined, seq: s.seq + 1, sawTurnDone: true };
     }
     // An unrecognized event kind (e.g. one the kernel added but this build's wire
     // map doesn't name yet) must not collapse state to undefined — ignore it.
@@ -449,8 +454,10 @@ function reducer(s: State, a: Action): State {
       return { ...s, jobs: a.jobs };
     case "restoreRunning":
       // 只「向上」恢复 running(切回正在跑的标签),不从这里强制清 running——避免与
-      // 切标签后已流入的 turn_started/turn_done live 事件打架(A3)。
-      return a.running ? { ...s, running: true, turnActive: true } : s;
+      // 切标签后已流入的 turn_started/turn_done live 事件打架(A3)。若本次加载后已观察到
+      // turn_done(回合在 Meta() 解析前就结束、running 已被清),则不得再被陈旧的 meta.running
+      // 置回 true——后端已 idle 不会再发 turn_done,否则 spinner 永久转、Composer 永久禁用(G3)。
+      return a.running && !s.sawTurnDone ? { ...s, running: true, turnActive: true } : s;
     case "history": {
       // Only user/assistant turns with visible text or assistant reasoning — never
       // the system prompt or tool-result messages.
