@@ -950,9 +950,16 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	a.mu.RLock()
 	tabCount := len(a.tabs)
 	sink := a.sink // 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,锁外裸读是数据竞争(M3)
+	activeCtrl := a.ctrl // 活动标签 controller,用于运行态守卫(D3)
 	a.mu.RUnlock()
 	if tabCount > 1 {
 		return "", fmt.Errorf("当前开着 %d 个任务标签;切换项目文件夹前请先关闭其他任务标签(工作目录是全局的,后台任务会读写到错误的目录)", tabCount)
+	}
+	// 后端运行态守卫:活动标签有回合在跑时,os.Chdir 会让在途 bash(cmd.Dir 为空 → 用进程
+	// cwd)在被取消前落到【新】项目目录执行,可能对错误项目做删除/部署。前端 disabled={running}
+	// 只覆盖 UI 入口,这里补后端防线(与 SetEffort 同款)。
+	if activeCtrl != nil && activeCtrl.Running() {
+		return "", fmt.Errorf("有任务正在运行,请先停止再切换项目文件夹")
 	}
 	if err := os.Chdir(dir); err != nil {
 		return "", err

@@ -11,6 +11,43 @@ import (
 	"reasonix/internal/control"
 )
 
+// blockingWorkspaceRunner 阻塞在 Run 里,让 controller 的 Running() 稳定为 true,用于 D3。
+type blockingWorkspaceRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingWorkspaceRunner) Run(ctx context.Context, input string) error {
+	b.started <- struct{}{}
+	<-b.release
+	return nil
+}
+
+// D3 回归:活动标签有回合在跑时,SwitchWorkspace 必须后端拒绝——前端 disabled={running} 只
+// 覆盖 UI 入口,os.Chdir 后在途 bash(cmd.Dir 空 → 用进程 cwd)会落到新项目目录执行。去掉
+// 运行态守卫,本测试应挂。
+func TestSwitchWorkspaceRejectsWhileRunning(t *testing.T) {
+	runner := &blockingWorkspaceRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: runner})
+	defer ctrl.Close()
+
+	a := &App{ctx: context.Background()}
+	a.ctrl = ctrl
+	a.tabs = map[string]*tabRuntime{"t": {}} // tabCount==1,让 tabCount 守卫先放行
+
+	ctrl.Submit("hello") // 起一个会阻塞的回合 → Running() 变 true
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("回合未在 2s 内进入 runner")
+	}
+	defer close(runner.release) // 让阻塞的回合收尾
+
+	if _, err := a.SwitchWorkspace(t.TempDir()); err == nil || !strings.Contains(err.Error(), "有任务正在运行") {
+		t.Fatalf("运行中切换项目应被拒绝,got err=%v", err)
+	}
+}
+
 func TestCommandsIncludesEffortNotThinking(t *testing.T) {
 	clearGatewayEnv(t)
 	app := NewApp()
