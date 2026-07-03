@@ -576,6 +576,13 @@ func applyOnecreatGateway(e *config.ProviderEntry) {
 	}
 }
 
+// ApplyOnecreatGateway / OnecreatGatewayActive 是上面两个内部函数的导出封装,供 ACP 等
+// 平行装配路径(不走 Build)复用同一网关入口逻辑,避免各自实现漂移导致计费旁路 / 泄露厂商。
+func ApplyOnecreatGateway(e *config.ProviderEntry) { applyOnecreatGateway(e) }
+
+// OnecreatGatewayActive 报告是否处于 onecreat 网关模式(见 onecreatGatewayActive)。
+func OnecreatGatewayActive() bool { return onecreatGatewayActive() }
+
 // NewProvider builds a provider.Provider from a configured entry. Exported so
 // custom assemblers (e.g. the ACP per-session factory) can reuse it without
 // going through the full Build.

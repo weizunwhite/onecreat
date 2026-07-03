@@ -86,6 +86,11 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 	if !ok {
 		return nil, fmt.Errorf("unknown model %q", f.model)
 	}
+	// onecreat 网关模式:与 boot.Build 同一处理——把 provider 改走平台网关(登录 token 鉴权、
+	// 平台统一计费)。否则 ACP 这条平行装配会绕过档位计量直连厂商、甚至以命名 DEEPSEEK_API_KEY
+	// 的错误泄露厂商。非网关模式下 ApplyOnecreatGateway 为 no-op,行为不变(F1)。
+	boot.ApplyOnecreatGateway(entry)
+	gatewayActive := boot.OnecreatGatewayActive()
 	proxySpec := cfg.NetworkProxySpec()
 	execProv, err := boot.NewProviderWithProxy(entry, proxySpec)
 	if err != nil {
@@ -94,6 +99,10 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 	sysPrompt, err := cfg.ResolveSystemPrompt()
 	if err != nil {
 		return nil, err
+	}
+	// 网关模式下追加模型隐私政策(与 chat 一致):问"你是什么模型"不得答真名。非网关不变。
+	if gatewayActive {
+		sysPrompt += "\n\n" + config.ModelPrivacyPolicy
 	}
 
 	// Built-ins rooted at the session cwd. Writes confine to that cwd by default
@@ -153,7 +162,9 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 
 	var runner agent.Runner = executor
 	label := entry.Model
-	if pm := cfg.Agent.PlannerModel; pm != "" {
+	// 网关模式下关掉 planner:planner 是独立 provider,不走网关(ApplyOnecreatGateway 只改主
+	// provider),会直连厂商 → 绕过计费 + 泄露厂商。与 boot.Build 的 !gatewayActive 门禁一致(F1)。
+	if pm := cfg.Agent.PlannerModel; pm != "" && !gatewayActive {
 		pe, ok := cfg.ResolveModel(pm)
 		if !ok {
 			cleanup()

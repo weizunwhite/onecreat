@@ -1538,6 +1538,10 @@ func (c *Controller) DisconnectMCPServer(name string) bool {
 // Label returns the human-readable model label, e.g. "deepseek-flash".
 func (c *Controller) Label() string { return c.label }
 
+// SystemPrompt returns the resolved system prompt this controller was built with
+// (used to verify assembly, e.g. that the gateway path folded in ModelPrivacyPolicy).
+func (c *Controller) SystemPrompt() string { return c.systemPrompt }
+
 // Close stops plugin subprocesses and releases resources. A session that ever
 // started fires SessionEnd so a teardown hook runs.
 //
