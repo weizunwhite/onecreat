@@ -855,10 +855,16 @@ const (
 
 // Checkpoints lists the session's rewind points (one per user turn), oldest first.
 func (c *Controller) Checkpoints() []checkpoint.Meta {
-	if c.cp == nil {
+	// Resume/SetSessionPath 会在 c.mu 下替换 c.cp;裸读指针与之构成数据竞争(桌面端
+	// "打开 rewind 抽屉" 与 "恢复历史会话" 是不同 goroutine)。照 InvalidateCheckpoints
+	// 的写法:锁内捕获 cp 后解锁再用(cp.List 自带内部锁,不必持 c.mu)。
+	c.mu.Lock()
+	cp := c.cp
+	c.mu.Unlock()
+	if cp == nil {
 		return nil
 	}
-	return c.cp.List()
+	return cp.List()
 }
 
 // rewindFail emits the error as a Warn notice (so a frontend that swallows the

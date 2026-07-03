@@ -192,3 +192,26 @@ func TestSummarizeBoundsInvalidationSurvivesResume(t *testing.T) {
 		t.Fatal("resume 后对 summarize 前 turn 的对话 rewind 必须报不可用,却静默成功(陈旧边界被复活)")
 	}
 }
+
+// A2 回归:Checkpoints() 与替换 c.cp 的 rebindCheckpoints(SetSessionPath/Resume)并发时
+// 不得数据竞争。裸读 c.cp 指针会被 `go test -race` 判为 race;加锁捕获后本测试应干净通过。
+func TestCheckpointsConcurrentWithRebindNoRace(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", Sink: event.Discard})
+	path := agent.NewSessionPath(dir, "test")
+	c.SetSessionPath(path)
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 200; i++ {
+			c.SetSessionPath(path) // 每次都在 c.mu 下替换 c.cp 指针
+		}
+		close(done)
+	}()
+	for i := 0; i < 200; i++ {
+		_ = c.Checkpoints() // 与上面的替换并发读 c.cp
+	}
+	<-done
+}
