@@ -193,6 +193,12 @@ function applyEvent(s: State, e: WireEvent): State {
   // orphan assistant/tool bubble appears; its turn_done clears the discard.
   if (s.discardTurn) {
     if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, currentAssistant: undefined, live: undefined };
+    // 管理命令(#note QuickAdd、/tree /branch /switch 及 managementNotice 类)只发 notice、
+    // 永不发 turn_done。没有真回合在飞(!turnActive)时,notice 就是它们的终结事件:必须同样清
+    // discardTurn,否则 discardTurn 永久 true、applyEvent 吞光后续事件、send() 把消息全 park 掉,
+    // 本标签后续消息静默消失(G1)。真回合撤回后 turnActive 为 true,继续吞到 turn_done,不被
+    // mid-turn notice 提前解除(避免退回 0da04238 的孤儿气泡)。
+    if (e.kind === "notice" && !s.turnActive) return { ...s, discardTurn: false };
     return s;
   }
   // The first real reply packet means the server replied — commit the deferred
@@ -622,11 +628,12 @@ export function useController(tabId: string) {
 
   const send = useCallback(
     (displayText: string, submitText = displayText) => {
-      // If the previous message was just un-sent (Esc) and the backend hasn't
-      // finished cancelling that turn yet, submitting now would be silently
-      // dropped by runGuarded. Park it; turn_done flushes it once the backend
-      // is idle again.
-      if (stateRef.current.discardTurn) {
+      // 只在有【真回合】在飞时(turnActive)才 park:那时后端 c.running 仍为 true,立刻重发会被
+      // runGuarded 的"a turn is already in flight"丢弃(0da04238 的防丢),park 后由该回合的
+      // turn_done 冲刷。管理命令(只发 notice、无 turn_done)或后端已 idle 时 turnActive 为 false:
+      // 直接 doSubmit 自愈——doSubmit 的 user action 会清 discardTurn,不会像旧代码那样永久卡死
+      // (G1)。注:unsend reducer 已把 running 置 false,所以这里必须用 turnActive 而非 running。
+      if (stateRef.current.discardTurn && stateRef.current.turnActive) {
         pendingResendRef.current = { display: displayText, submit: submitText };
         return;
       }
