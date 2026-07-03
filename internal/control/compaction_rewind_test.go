@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -152,5 +153,42 @@ func TestCompactionBoundsInvalidationSurvivesResume(t *testing.T) {
 	// turn 0 的陈旧边界不应被复活;对它做对话 rewind 必须失败,而不是静默成功切到错误位置。
 	if err := c.Rewind(0, RewindConversation); err == nil {
 		t.Fatal("resume 后对压缩前 turn 的对话 rewind 必须报不可用,却静默成功(陈旧边界被复活)")
+	}
+}
+
+// A1 回归:Summarize(SummarizeFrom/UpTo)和压缩一样原地重写日志,必须把"边界失效"持久化;
+// 否则 resume 后 rebindCheckpoints 复活陈旧 MsgIndex,对 summarize 前 turn 做对话 rewind 会
+// 静默切到错误偏移(悬空 tool_calls → 请求 400)。去掉 summarizeAt 里的 InvalidateCheckpoints
+// 持久化,本测试应挂。
+func TestSummarizeBoundsInvalidationSurvivesResume(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "p0"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "a0"})
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "p1"})
+	// 假 provider 让 summarize() 拿到非空摘要而不真连模型。
+	exec := agent.New(&classifierProvider{text: "compacted summary"}, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", Sink: event.Discard})
+	path := agent.NewSessionPath(dir, "test")
+	c.SetSessionPath(path)
+
+	// turn 0 的对话边界(经 checkpoint store 持久化到磁盘)。boundary=2 → "从这轮之后总结"。
+	c.cp.Begin(0, "t0", 2)
+	c.mu.Lock()
+	c.cpTurn = 1
+	c.cpBound[0] = 2
+	c.mu.Unlock()
+
+	// SummarizeFrom 原地重写日志,应像压缩一样把边界失效持久化。
+	if err := c.SummarizeFrom(context.Background(), 0); err != nil {
+		t.Fatalf("SummarizeFrom: %v", err)
+	}
+
+	// 模拟 resume:同一 session 路径重新 rebind(新建 store 从磁盘加载 checkpoint + marker)。
+	c.rebindCheckpoints(path)
+
+	// turn 0 的陈旧边界不应被复活;对它做对话 rewind 必须失败,而不是静默成功切到错误位置。
+	if err := c.Rewind(0, RewindConversation); err == nil {
+		t.Fatal("resume 后对 summarize 前 turn 的对话 rewind 必须报不可用,却静默成功(陈旧边界被复活)")
 	}
 }

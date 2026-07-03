@@ -1155,12 +1155,11 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	if err != nil {
 		return c.rewindFail(err)
 	}
-	// The log was restructured; existing boundaries no longer map. Drop them (keep
-	// cpTurn monotonic so new turns don't collide with the store) — conversation
-	// rewind degrades to "unavailable" until fresh turns rebuild boundaries.
-	c.mu.Lock()
-	c.cpBound = map[int]int{}
-	c.mu.Unlock()
+	// 日志被原地重写,现存边界的 MsgIndex 全部失真。走与压缩完全相同的失效路径:清内存
+	// cpBound 的同时把"边界失效"持久化到磁盘(boundsMin),否则 resume 后 rebindCheckpoints
+	// 会从磁盘 checkpoint 的陈旧 MsgIndex 无条件回填 cpBound,对 summarize 前的 turn 做对话
+	// rewind 会静默切到错误偏移(悬空 tool_calls → 请求 OpenAI 兼容端点 400)。
+	c.InvalidateCheckpoints()
 	if err := c.Snapshot(); err != nil {
 		slog.Warn("controller: post-summarize snapshot", "err", err)
 	}
