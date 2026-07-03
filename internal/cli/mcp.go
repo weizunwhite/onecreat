@@ -221,16 +221,10 @@ func mcpAddCLI(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if err := cfg.UpsertPlugin(entry); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if err := cfg.Save(); err != nil {
+	// 持久化到【用户级】配置(config.AddPluginPersisted),不再 config.Load()+Save() 落项目级。
+	// 在项目目录跑一次 add 若落项目级,会把含默认 provider/default_model 的全量合并快照写进
+	// 项目 onecreat.toml,永久遮蔽用户之后在设置面板改的默认模型/provider(1b)。
+	if err := config.AddPluginPersisted(entry); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -244,25 +238,27 @@ func mcpRemoveCLI(args []string) int {
 		return 2
 	}
 	name := args[0]
-	cfg, err := config.Load()
+	// 与 Controller.RemoveMCPServer 共享同一按来源分流的删除逻辑(用户级 / 项目级外科式 / .mcp.json)。
+	outcome, err := config.RemovePluginPersisted(name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if !cfg.RemovePlugin(name) {
+	switch outcome {
+	case config.PluginRemovedUser, config.PluginRemovedProject:
+		fmt.Printf("removed MCP server %q\n", name)
+		return 0
+	case config.PluginFromMCPJSON:
+		fmt.Fprintf(os.Stderr, "%q 声明在项目根 .mcp.json 里,不由 reasonix 写回;请手动编辑该文件移除\n", name)
+		return 1
+	default: // config.PluginNotFound
 		fmt.Fprintf(os.Stderr, "no MCP server named %q in config\n", name)
 		return 1
 	}
-	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	fmt.Printf("removed MCP server %q\n", name)
-	return 0
 }
 
 func mcpUsage() {
-	fmt.Println(`Manage MCP servers (persisted to reasonix.toml).
+	fmt.Println(`Manage MCP servers (persisted to your user config; project servers live in .mcp.json).
 
 Usage:
   reasonix mcp list

@@ -1,12 +1,60 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"reasonix/internal/config"
 	"reasonix/internal/plugin"
 )
+
+// C1 回归:在项目目录跑 `reasonix mcp add`/`remove` 必须落【用户级】config.toml,绝不在
+// 项目根创建 onecreat.toml/reasonix.toml(那会把全量合并快照落进项目文件、永久遮蔽用户级配置)。
+func TestMCPAddRemoveCLIWritesUserLevelNotProject(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("REASONIX_CONFIG_DIR", cfgDir)
+	t.Chdir(t.TempDir())
+
+	if code := mcpAddCLI([]string{"mock", "mock-mcp"}); code != 0 {
+		t.Fatalf("mcpAddCLI exit = %d, want 0", code)
+	}
+	userPath := filepath.Join(cfgDir, "config.toml")
+	if !pluginPresent(t, userPath, "mock") {
+		t.Fatal("用户级 config.toml 未写入 mock 条目")
+	}
+	assertNoProjectToml(t)
+
+	if code := mcpRemoveCLI([]string{"mock"}); code != 0 {
+		t.Fatalf("mcpRemoveCLI exit = %d, want 0", code)
+	}
+	if pluginPresent(t, userPath, "mock") {
+		t.Fatal("remove 后用户级 config.toml 仍有 mock 条目")
+	}
+	assertNoProjectToml(t)
+}
+
+func pluginPresent(t *testing.T, path, name string) bool {
+	t.Helper()
+	cfg := config.LoadForEdit(path)
+	for _, p := range cfg.Plugins {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func assertNoProjectToml(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"onecreat.toml", "reasonix.toml"} {
+		if _, err := os.Stat(name); !os.IsNotExist(err) {
+			t.Fatalf("mcp 操作不应创建项目级 %s(会遮蔽用户级配置)", name)
+		}
+	}
+}
 
 func TestParseMCPAddStdio(t *testing.T) {
 	e, err := parseMCPAdd([]string{"fs", "npx", "-y", "@modelcontextprotocol/server-filesystem", "."})

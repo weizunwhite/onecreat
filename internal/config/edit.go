@@ -429,6 +429,77 @@ func RemovePluginFromFile(path, name string) (bool, error) {
 	return true, nil
 }
 
+// PluginRemoveOutcome reports which file (if any) RemovePluginPersisted edited, so
+// callers can message the user precisely.
+type PluginRemoveOutcome int
+
+const (
+	PluginNotFound       PluginRemoveOutcome = iota // 三处都没有
+	PluginRemovedUser                               // 从用户级 config.toml 删除
+	PluginRemovedProject                            // 从项目 onecreat.toml/reasonix.toml 外科式删除
+	PluginFromMCPJSON                               // 声明在 .mcp.json,不由我们写回(未删)
+)
+
+// AddPluginPersisted upserts e into the【user-level】config and saves it there —
+// never the project-level SourcePath, whose full snapshot would shadow the user's
+// settings (the 1b regression). Shared persistence path for the desktop AddMCPServer
+// and the `reasonix mcp add` CLI, so the two can't drift.
+func AddPluginPersisted(e PluginEntry) error {
+	path := UserConfigPath()
+	if path == "" {
+		return fmt.Errorf("cannot resolve user config path")
+	}
+	cfg := LoadForEdit(path)
+	if err := cfg.UpsertPlugin(e); err != nil {
+		return err
+	}
+	return cfg.SaveTo(path)
+}
+
+// RemovePluginPersisted removes the named MCP server from persisted config,
+// honoring its source: user-level toml → edit the user file; project-level
+// onecreat.toml/reasonix.toml → surgical [[plugins]] block removal (never a full
+// snapshot); .mcp.json → not ours to edit (reported, not removed). Shared by the
+// desktop RemoveMCPServer and the `reasonix mcp remove` CLI.
+func RemovePluginPersisted(name string) (PluginRemoveOutcome, error) {
+	// .mcp.json 声明的服务器不由我们写回。
+	if cfg, err := Load(); err == nil {
+		for _, p := range cfg.Plugins {
+			if p.Name == name {
+				if p.FromMCPJSON() {
+					return PluginFromMCPJSON, nil
+				}
+				break
+			}
+		}
+	}
+	// 先试用户级(与 AddPluginPersisted 对称,不写项目级全量快照)。
+	userPath := UserConfigPath()
+	if userPath == "" {
+		return PluginNotFound, fmt.Errorf("cannot resolve user config path")
+	}
+	userCfg := LoadForEdit(userPath)
+	if userCfg.RemovePlugin(name) {
+		if err := userCfg.SaveTo(userPath); err != nil {
+			return PluginNotFound, err
+		}
+		return PluginRemovedUser, nil
+	}
+	// 不在用户级 → 声明在项目 toml:外科式删块。
+	removed := false
+	for _, projPath := range ProjectConfigPaths() {
+		r, err := RemovePluginFromFile(projPath, name)
+		if err != nil {
+			return PluginNotFound, err
+		}
+		removed = removed || r
+	}
+	if removed {
+		return PluginRemovedProject, nil
+	}
+	return PluginNotFound, nil
+}
+
 // isPluginsArrayHeader 判断一行是否是数组表头 [[plugins]](允许行首空白与行尾注释)。
 func isPluginsArrayHeader(line string) bool {
 	t := strings.TrimSpace(line)

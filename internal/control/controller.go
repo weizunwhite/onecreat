@@ -1487,60 +1487,31 @@ func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error)
 		}
 	}
 
-	// 判定该服务器的配置来源。Load 的合并视图只区分 .mcp.json 与 toml;用户级 vs 项目级
-	// 在下面用"先删用户级、删不到再删项目级"区分,不依赖 Source。
-	fromMCPJSON := false
-	if cfg, e := config.Load(); e == nil {
-		for _, p := range cfg.Plugins {
-			if p.Name == name {
-				fromMCPJSON = p.FromMCPJSON()
-				break
-			}
-		}
+	// 持久化按来源分流,走与 `reasonix mcp remove` CLI 共享的同一函数(消灭第二份实现)。
+	outcome, perr := config.RemovePluginPersisted(name)
+	if perr != nil {
+		return disconnected, perr
 	}
-
-	// .mcp.json 声明的服务器:该文件不由我们写回。本会话已断开,发 notice 告知需手动编辑,
-	// 不再静默让它下次启动复活。
-	if fromMCPJSON {
+	switch outcome {
+	case config.PluginFromMCPJSON:
+		// .mcp.json 不由我们写回。本会话已断开,发 notice 告知需手动编辑,不再静默复活。
 		if !disconnected && c.reg != nil {
 			c.reg.RemovePrefix(plugin.ToolPrefix(name))
 		}
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 			Text: fmt.Sprintf("已断开 %q(本会话);它声明在项目根 .mcp.json 里,需手动编辑该文件才能永久移除", name)})
 		return disconnected, nil
-	}
-
-	// 先从【用户级】配置删除(与 AddMCPServer 对称,不写项目级快照)。
-	userPath := config.UserConfigPath()
-	if userPath == "" {
-		return disconnected, fmt.Errorf("cannot resolve user config path")
-	}
-	inConfig := false
-	userCfg := config.LoadForEdit(userPath)
-	if userCfg.RemovePlugin(name) {
-		if serr := userCfg.SaveTo(userPath); serr != nil {
-			return disconnected, serr
+	case config.PluginRemovedUser, config.PluginRemovedProject:
+		if !disconnected && c.reg != nil {
+			c.reg.RemovePrefix(plugin.ToolPrefix(name))
 		}
-		inConfig = true
-	} else {
-		// 不在用户级 → 声明在项目 toml。外科式删掉那个 [[plugins]] 块(不整份重渲染,
-		// 绝不把 Default 的 provider/default_model 写进项目文件 → 不复现 1b 遮蔽)。
-		for _, projPath := range config.ProjectConfigPaths() {
-			removed, rerr := config.RemovePluginFromFile(projPath, name)
-			if rerr != nil {
-				return disconnected, rerr
-			}
-			inConfig = inConfig || removed
+		return disconnected, nil
+	default: // PluginNotFound
+		if !disconnected {
+			return false, fmt.Errorf("no MCP server named %q", name)
 		}
+		return disconnected, nil
 	}
-
-	if inConfig && !disconnected && c.reg != nil {
-		c.reg.RemovePrefix(plugin.ToolPrefix(name))
-	}
-	if !disconnected && !inConfig {
-		return false, fmt.Errorf("no MCP server named %q", name)
-	}
-	return disconnected, nil
 }
 
 // DisconnectMCPServer disconnects a live server for this session without touching
