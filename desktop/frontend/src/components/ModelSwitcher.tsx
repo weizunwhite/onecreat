@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronsUpDown, Coins } from "lucide-react";
 import { app } from "../lib/bridge";
+import { alertDialog } from "../lib/confirm";
 import { useT } from "../lib/i18n";
 import { useSession, setSessionStore } from "../lib/account";
 import type { ModelInfo } from "../lib/types";
@@ -42,8 +43,13 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
     const curName = tiers.find((x) => x.index === sel)?.name ?? tiers[0]?.name ?? "档位";
     const pickTier = (index: number) => {
       setOpen(false);
-      void app.SetOnecreatTier(index);
+      const prevTier = sel;
       setSessionStore({ ...session, selectedTier: index }); // 乐观更新
+      app.SetOnecreatTier(index).catch((e) => {
+        // 后端拒绝(有标签正在跑任务,切档会重建其 controller 丢在途回合):回滚乐观更新并提示。
+        setSessionStore({ ...session, selectedTier: prevTier });
+        void alertDialog(String((e as { message?: string })?.message ?? e));
+      });
     };
     return (
       <div className="modelsw">

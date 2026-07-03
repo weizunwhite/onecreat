@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reasonix/internal/control"
 )
 
 // seedTempConfigDir 把账号会话目录(os.UserConfigDir 派生)重定向到临时 HOME,使测试不碰
@@ -62,6 +64,38 @@ func TestRefreshDoesNotClobberConcurrentTierChange(t *testing.T) {
 	}
 	if final.Points == nil || *final.Points != 42 {
 		t.Fatalf("refresh 应合并服务端 points,得到 %v", final.Points)
+	}
+}
+
+// E1 回归:有标签(含后台)正在跑回合时,切档必须整个拒绝并返回中文错误——绝不静默重建
+// 每个 tab 的 controller、Close 掉运行中 tab 丢在途回合。去掉运行态守卫,本测试应挂。
+func TestSetOnecreatTierRejectsWhileTabRunning(t *testing.T) {
+	seedTempConfigDir(t)
+	enablePlatformAccountMode(t)
+	sessionFileMu.Lock()
+	_ = saveSessionFileLocked(persistedSession{Token: "tok", SelectedTier: 1})
+	sessionFileMu.Unlock()
+
+	// 一个正在跑回合的后台标签:阻塞 runner 让 Running() 稳定为 true。
+	runner := &blockingWorkspaceRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: runner})
+	defer ctrl.Close()
+	ctrl.Submit("hello")
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("回合未在 2s 内进入 runner")
+	}
+	defer close(runner.release)
+
+	a := &App{}
+	a.tabs = map[string]*tabRuntime{"bg": {ctrl: ctrl}}
+
+	if err := a.SetOnecreatTier(2); err == nil || !strings.Contains(err.Error(), "有标签正在运行") {
+		t.Fatalf("有标签在跑时切档应被拒绝,got err=%v", err)
+	}
+	if got := a.AccountSessionInfo().SelectedTier; got != 1 {
+		t.Fatalf("被拒绝的切档不应持久化,tier=%d,想要 1", got)
 	}
 }
 

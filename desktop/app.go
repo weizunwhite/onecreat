@@ -3190,6 +3190,26 @@ func (a *App) rebuildTabByID(tabID string) {
 // 的 token 继续打计费端点(H2)。boot.Build 秒级,锁内只快照 tab id 列表,锁外逐个重建。
 // 注:正在跑的后台 tab 会被 Close 重建(其历史已带过)—— 登出时这正是要的(撤销 token 不
 // 能再被使用);切档时会中断该 tab 当前这一轮,与既有「活动 tab 切模型即重建」行为一致。
+// anyTabRunning 报告是否有任意标签(含后台)正在跑回合。切档前的运行态守卫用(E1):切档
+// 会全量重建每个 tab 的 controller,Close 掉运行中 tab 会丢在途流式回合。锁内捕获各 tab 的
+// ctrl,锁外调 Running()(与 SetEffort 同款,避免在 a.mu 下调 controller 方法)。
+func (a *App) anyTabRunning() bool {
+	a.mu.RLock()
+	ctrls := make([]*control.Controller, 0, len(a.tabs))
+	for _, rt := range a.tabs {
+		if rt != nil && rt.ctrl != nil {
+			ctrls = append(ctrls, rt.ctrl)
+		}
+	}
+	a.mu.RUnlock()
+	for _, ctrl := range ctrls {
+		if ctrl.Running() {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) rebuildAllTabs() {
 	if a.ctx == nil {
 		return

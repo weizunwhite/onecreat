@@ -342,12 +342,19 @@ func (a *App) AccountSessionInfo() AccountSession {
 
 // SetOnecreatTier 切换当前档位(1/2/3):写回 session.json + 刷新网关 env + 重建 controller,
 // 让下一条消息按新档位走。背后是什么模型客户端不知道(平台映射)。
-func (a *App) SetOnecreatTier(index int) {
+func (a *App) SetOnecreatTier(index int) error {
 	if !platformAccountEnabled() {
-		return
+		return nil
 	}
 	if index < 1 || index > 3 {
-		return
+		return nil
+	}
+	// E1:切档要全量重建每个 tab 的 controller(tier 被烤进 provider),任一标签有回合在跑时
+	// 重建会 Close 掉它、丢掉在途流式回合。与 SetEffort 同款:有标签在跑则整个操作拒绝,让用户
+	// 先等它跑完或停掉。登录/登出也走 rebuildAllTabs,但那两条路径 Close 运行中 tab 是有意的
+	// (撤销 token / 切网关),所以守卫只加在切档这条路径,不动 rebuildAllTabs。
+	if a.anyTabRunning() {
+		return fmt.Errorf("有标签正在运行任务,请等待完成或停止后再切换档位")
 	}
 	sessionFileMu.Lock()
 	p, ok := loadSessionFileLocked()
@@ -357,12 +364,13 @@ func (a *App) SetOnecreatTier(index int) {
 	}
 	sessionFileMu.Unlock()
 	if !ok {
-		return
+		return nil
 	}
 	// 切档后重建「所有」标签:tier 在 boot.Build 时被烤进每个 tab 的 provider,只重建活动 tab
 	// 会让后台 tab 继续按旧档计费(H2)。
 	applyGatewayEnvFromSession()
 	a.rebuildAllTabs()
+	return nil
 }
 
 // RefreshAccountSession 向平台 /api/onecreat/session 拉最新 points/tiers(每轮对话结束后调,
