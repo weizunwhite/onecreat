@@ -567,6 +567,8 @@ export interface OTAScaffoldInput {
 export interface OTAScaffoldResult {
   ok: boolean;
   path?: string;
+  // name 是 sanitize 后、烤进板子 FW_VERSION_URL 的项目名(H1:发布名一致性校验用)。
+  name?: string;
   error?: string;
 }
 

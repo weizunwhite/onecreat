@@ -65,12 +65,37 @@ export function OTAPanel({
   const [pubDir, setPubDir] = useState(() => localStorage.getItem("ota.pub.dir") ?? "");
   const [publishing, setPublishing] = useState(false);
   const [pubResult, setPubResult] = useState<HardwareRunResult | null>(null);
+  // H1:记住最近一次脚手架 sanitize 后、烤进板子的项目名;发布名与它 sanitize 后不一致 →
+  // 板子永远拉 404,这里给醒目警告(不阻断)。
+  const [scaffoldedName, setScaffoldedName] = useState("");
+  const [pubNameWarn, setPubNameWarn] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("ota.pub.server", pubServer);
     localStorage.setItem("ota.pub.ssh", pubSsh);
     localStorage.setItem("ota.pub.dir", pubDir);
   }, [pubServer, pubSsh, pubDir]);
+
+  // H1:发布名与新建名 sanitize 后是否一致——复用后端 sanitizeProjectName,不在前端重实现。
+  useEffect(() => {
+    let alive = true;
+    const name = pubName.trim();
+    if (!scaffoldedName || !name) {
+      setPubNameWarn(false);
+      return;
+    }
+    void app
+      .SanitizeProjectName(name)
+      .then((s) => {
+        if (alive) setPubNameWarn(s !== scaffoldedName);
+      })
+      .catch(() => {
+        if (alive) setPubNameWarn(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [pubName, scaffoldedName]);
 
   const scaffold = useCallback(async () => {
     setScaffolding(true);
@@ -84,8 +109,12 @@ export function OTAPanel({
         // cloud 模式:把③配置的固件服务器地址写进板子代码,免学生手改占位符
         nasBaseURL: mode === "cloud" ? pubServer.trim() : undefined,
       });
-      if (r.ok) setScaffoldMsg({ ok: true, text: `已生成：${r.path ?? ""}`, path: r.path });
-      else setScaffoldMsg({ ok: false, text: r.error ?? "生成失败" });
+      if (r.ok) {
+        setScaffoldMsg({ ok: true, text: `已生成：${r.path ?? ""}`, path: r.path });
+        // H1:联动填充发布名默认值(仍可改),并记住烤进板子的 sanitize 名用于一致性校验。
+        setScaffoldedName(r.name ?? "");
+        setPubName(scName.trim());
+      } else setScaffoldMsg({ ok: false, text: r.error ?? "生成失败" });
     } catch (e) {
       setScaffoldMsg({ ok: false, text: String((e as Error)?.message ?? e) });
     } finally {
@@ -224,6 +253,12 @@ export function OTAPanel({
             {publishing ? <Loader2 size={13} className="hardware-spin" /> : <UploadCloud size={13} />} 发布固件
           </button>
         </div>
+        {pubNameWarn && (
+          <div className="ota__msg ota__msg--fail">
+            <AlertTriangle size={12} />
+            <span>项目名与新建时不一致(整理后 ≠「{scaffoldedName}」),板子将拉取不到更新。</span>
+          </div>
+        )}
         {pubResult && <ResultLine label="发布固件" r={pubResult} />}
       </div>
     </details>

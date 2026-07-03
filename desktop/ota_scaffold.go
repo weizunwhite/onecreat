@@ -20,10 +20,12 @@ type OTAScaffoldInput struct {
 	NasBaseURL   string `json:"nasBaseURL,omitempty"` // cloud 模式:固件服务器基址,默认 NAS
 }
 
-// OTAScaffoldResult 返回生成的 .ino 路径。
+// OTAScaffoldResult 返回生成的 .ino 路径。Name 是 sanitize 后、烤进板子 FW_VERSION_URL
+// 的项目名——前端据它判断"发布名"是否与新建时一致(H1),避免板子 404。
 type OTAScaffoldResult struct {
 	OK    bool   `json:"ok"`
 	Path  string `json:"path,omitempty"`
+	Name  string `json:"name,omitempty"`
 	Error string `json:"error,omitempty"`
 }
 
@@ -65,8 +67,12 @@ func (a *App) HardwareScaffoldOTA(input OTAScaffoldInput) OTAScaffoldResult {
 	if err := os.WriteFile(inoPath, []byte(code), 0o644); err != nil {
 		return OTAScaffoldResult{Error: "写文件失败:" + err.Error()}
 	}
-	return OTAScaffoldResult{OK: true, Path: projectDir}
+	return OTAScaffoldResult{OK: true, Path: projectDir, Name: name}
 }
+
+// SanitizeProjectName 把项目名归一成烤进板子 / 发布落盘用的名字(复用脚手架/发布同一实现)。
+// 前端拿它比对"新建名"与"发布名" sanitize 后是否一致,避免自行重实现一份 sanitize(H1)。
+func (a *App) SanitizeProjectName(name string) string { return sanitizeProjectName(name) }
 
 // sanitizeProjectName 只留字母数字下划线连字符,首字符非字母则前缀 p_(Arduino 工程名要求)。
 func sanitizeProjectName(s string) string {

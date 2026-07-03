@@ -152,6 +152,8 @@ export interface AppBindings {
   HardwareOTAUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
   HardwarePublishFirmware(input: HardwarePublishInput): Promise<HardwareRunResult>;
   HardwareScaffoldOTA(input: OTAScaffoldInput): Promise<OTAScaffoldResult>;
+  // 项目名归一（复用后端 sanitizeProjectName）：前端比对"新建名"与"发布名"是否一致（H1）。
+  SanitizeProjectName(name: string): Promise<string>;
   // 串口监视器（常驻双向串口）：SerialOpen 后数据走 serial:data 事件，SerialWrite 反向发送。
   SerialPorts(): Promise<string[]>;
   SerialOpen(port: string, baud: number): Promise<SerialResult>;
@@ -945,7 +947,12 @@ function makeMockApp(): AppBindings {
       return { status: "passed", summary: "dev mock — 已模拟发布固件到 NAS" } as HardwareRunResult;
     },
     async HardwareScaffoldOTA(input: OTAScaffoldInput) {
-      return { ok: true, path: `/dev/mock/onecreat-projects/${input.projectName}` } as OTAScaffoldResult;
+      const name = input.projectName.trim();
+      return { ok: true, path: `/dev/mock/onecreat-projects/${name}`, name } as OTAScaffoldResult;
+    },
+    // 浏览器 dev stub:真实 sanitize 在后端(Go sanitizeProjectName),这里只 trim 占位,不重实现。
+    async SanitizeProjectName(name: string) {
+      return name.trim();
     },
     async SerialPorts() {
       return ["/dev/cu.usbserial-mock"];
