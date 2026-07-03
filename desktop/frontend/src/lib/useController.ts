@@ -140,6 +140,15 @@ type Action =
   | { type: "clearAsk" }
   | { type: "reset" };
 
+// sameMessage 判断两个 item 是否是"同一条消息"(role + 去空白文本)。History() 只产出
+// user/assistant 文本条目,tool/notice 从不出现在 history 里,故永不与之相等——用于 history
+// 回填时的重叠消除(G2)。
+function sameMessage(a: Item, b: Item): boolean {
+  if (a.kind === "user" && b.kind === "user") return a.text.trim() === b.text.trim();
+  if (a.kind === "assistant" && b.kind === "assistant") return a.text.trim() === b.text.trim();
+  return false;
+}
+
 // ensureAssistant returns the items array containing the active assistant item
 // (creating one if the turn hasn't produced text yet), its id, and the next seq.
 function ensureAssistant(s: State): { items: Item[]; id: string; seq: number } {
@@ -456,11 +465,25 @@ function reducer(s: State, a: Action): State {
           : { kind: "assistant", id: `h${i}`, text: m.content, reasoning: m.reasoning ?? "", streaming: false },
       );
       // 切回一个正在跑的标签时,reset 后订阅已先流入 live 事件(items 非空,是【本回合】
-      // 正在流式的助手片段)。History() 是过去的回合(含本回合的用户消息)——把它接在前面,
-      // 而不是整体丢弃,否则切回运行中标签会看不到之前的整段对话(修正 A3 的丢历史)。
-      // 历史项 id 用 h 前缀,与 live 项(a/u 前缀)不冲突,不会重复渲染。
+      // 正在流式的助手片段)。History() 是过去的回合(含本回合的用户消息)——把它接在前面。
       if (s.items.length > 0) {
-        return { ...s, items: [...historyItems, ...s.items], seq: s.seq + visible.length };
+        // 重叠消除(G2):若本回合在 History() 解析【之前】就结束并落库,History() 也带回同一条
+        // 助手回复,而 live 已把它落成 item → 直接前置会渲染两次。从 history 尾部 vs live 头部找
+        // 最大重叠段(role+文本),剔掉 live 中已在 history 的前缀,只保留 live 独有的尾巴(history
+        // 快照之后新流入的),保证每条消息恰好一次、历史完整——无论回合先于/晚于 History() 结束。
+        let overlap = 0;
+        const maxK = Math.min(historyItems.length, s.items.length);
+        for (let k = 1; k <= maxK; k++) {
+          let matched = true;
+          for (let j = 0; j < k; j++) {
+            if (!sameMessage(historyItems[historyItems.length - k + j], s.items[j])) {
+              matched = false;
+              break;
+            }
+          }
+          if (matched) overlap = k;
+        }
+        return { ...s, items: [...historyItems, ...s.items.slice(overlap)], seq: s.seq + visible.length };
       }
       return { ...s, items: historyItems, seq: s.seq + visible.length };
     }
