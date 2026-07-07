@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   ChevronDown,
   ChevronRight,
   Columns2,
   FileText,
   Folder,
+  FolderOpen,
   Maximize2,
   Minus,
   Minimize2,
@@ -176,6 +177,13 @@ export function WorkspacePanel({
   const [treeVisible, setTreeVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(loadWorkspaceTreeWidth);
   const [treeResizing, setTreeResizing] = useState(false);
+  // 文件树右键菜单:存工作区相对路径 + 视口坐标(position:fixed 定位,和侧栏「⋯」菜单同一套样式)。
+  const [ctxMenu, setCtxMenu] = useState<{ path: string; pos: { top: number; left: number } } | null>(null);
+  // 右键点某个条目,弹「在文件夹中打开」。dir 路径尾部带 "/",后端 workspacePath 会 Clean 掉,无碍。
+  const openContextMenu = useCallback((event: ReactMouseEvent, path: string) => {
+    event.preventDefault();
+    setCtxMenu({ path, pos: { top: event.clientY, left: event.clientX } });
+  }, []);
 
   const loadDir = useCallback(async (dir: string) => {
     const entries = await app.ListDir(dir).catch(() => []);
@@ -324,6 +332,16 @@ export function WorkspacePanel({
     if (open && !treeVisible && !previewVisible) onClose();
   }, [onClose, open, previewVisible, treeVisible]);
 
+  // 右键菜单:Esc 关闭(点空白由遮罩负责)。
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setCtxMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [ctxMenu]);
+
   const hideTreeOrClosePanel = useCallback(() => {
     if (previewVisible) {
       setTreeVisible(false);
@@ -401,6 +419,7 @@ export function WorkspacePanel({
           className={`workspace-tree__row${active ? " workspace-tree__row--active" : ""}`}
           key={path}
           onClick={() => (entry.isDir ? toggleDir(path) : selectFile(path))}
+          onContextMenu={(e) => openContextMenu(e, path)}
           title={path}
           style={{ paddingLeft: 8 + depth * 14 }}
         >
@@ -485,6 +504,15 @@ export function WorkspacePanel({
           </div>
 
           <div className="workspace-preview__window-actions">
+            {selectedPath && (
+              <button
+                className="workspace-iconbtn"
+                onClick={() => void app.RevealWorkspacePath(selectedPath).catch(() => {})}
+                title={t("sidebar.openInFolder")}
+              >
+                <FolderOpen size={15} />
+              </button>
+            )}
             <button className="workspace-iconbtn" onClick={onToggleMaximized} title={maximized ? t("workspace.restore") : t("workspace.maximize")}>
               {maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
             </button>
@@ -608,6 +636,7 @@ export function WorkspacePanel({
                     className={`workspace-tree__row workspace-tree__row--search${selectedPath === path ? " workspace-tree__row--active" : ""}`}
                     key={path}
                     onClick={() => (entry.isDir ? toggleDir(path) : selectFile(path))}
+                    onContextMenu={(e) => openContextMenu(e, path)}
                     title={cleanPath}
                   >
                     {entry.isDir ? (
@@ -629,6 +658,25 @@ export function WorkspacePanel({
             : renderRows("", 0)}
         </div>
       </section>
+
+      {/* 文件树右键菜单:遮罩点空白关闭 + 弹层。复用侧栏「⋯」菜单的样式类,不新造浮层体系。 */}
+      {ctxMenu && (
+        <>
+          <div className="folder-menu-backdrop" onClick={() => setCtxMenu(null)} />
+          <div className="sidebar-folder__pop" style={{ top: ctxMenu.pos.top, left: ctxMenu.pos.left }}>
+            <button
+              className="sidebar-folder__pop-item"
+              onClick={() => {
+                void app.RevealWorkspacePath(ctxMenu.path).catch(() => {});
+                setCtxMenu(null);
+              }}
+            >
+              <FolderOpen size={13} />
+              {t("sidebar.openInFolder")}
+            </button>
+          </div>
+        </>
+      )}
     </aside>
   );
 }

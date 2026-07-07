@@ -391,6 +391,7 @@ function formatDuration(seconds: number): string {
 export function HardwarePanel({
   onPrompt,
   onOpenWorkspace,
+  onPickProjectDir,
   onBackToChat,
   selectedKnowledgeCount,
   active = true,
@@ -398,6 +399,9 @@ export function HardwarePanel({
 }: {
   onPrompt: (display: string, submit?: string) => void;
   onOpenWorkspace?: (path?: string) => void;
+  // 切换整个工作区到某个硬件工程目录(无参 = 弹内置文件夹选择器)。区别于 onOpenWorkspace
+  // (只在右侧文件面板打开某个文件/目录,不改工作区)。
+  onPickProjectDir?: (path?: string) => void;
   onBackToChat?: () => void;
   selectedKnowledgeCount: number;
   active?: boolean;
@@ -1113,17 +1117,25 @@ export function HardwarePanel({
             <p>先回到项目线程确认目标、板卡和工程目录；打开包含 <code>platformio.ini</code> 、<code>.ino</code> 或 <code>hardware_manifest.json</code> 的目录后，实验台才会启用编译/烧录。</p>
             {!!detect.candidateProjects?.length && (
               <div className="hardware-view__candidates">
-                <div className="hardware-view__candidates-title">检测到的候选工程</div>
+                <div className="hardware-view__candidates-title">检测到的候选工程{onPickProjectDir ? "(点击切换)" : ""}</div>
                 {detect.candidateProjects.slice(0, 4).map((candidate) => (
-                  <div className="hardware-view__candidate" key={`${candidate.kind}:${candidate.dir}`}>
+                  // 候选目录 candidate.dir 是绝对路径(后端 detectHardwareProjectCandidates 走绝对根),
+                  // 直接切工作区即可。SwitchWorkspace 收绝对路径。
+                  <button
+                    type="button"
+                    className="hardware-view__candidate hardware-view__candidate--pick"
+                    key={`${candidate.kind}:${candidate.dir}`}
+                    onClick={() => onPickProjectDir?.(candidate.dir)}
+                    title="切换到此项目"
+                  >
                     <strong title={candidate.dir}>{compactHardwarePath(candidate.dir)}</strong>
                     <span>{candidate.kind}</span>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
-            {onOpenWorkspace && (
-              <button className="btn btn--primary" onClick={() => openWorkspace()}>
+            {onPickProjectDir && (
+              <button className="btn btn--primary" onClick={() => onPickProjectDir()}>
                 选择项目目录
               </button>
             )}

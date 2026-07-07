@@ -1606,6 +1606,7 @@ export default function App() {
                 <HardwarePanel
                   onPrompt={handleSend}
                   onOpenWorkspace={(path) => (path ? openWorkspaceFile(path) : setWorkspacePanel(true))}
+                  onPickProjectDir={switchFolder}
                   onBackToChat={() => setMainView("chat")}
                   selectedKnowledgeCount={selectedKnowledgeBaseIds.length}
                   active={mainView === "hardware"}

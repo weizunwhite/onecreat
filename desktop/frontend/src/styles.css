@@ -9623,6 +9623,18 @@ button.session-file-summary:hover {
   color: var(--fg-faint);
   white-space: nowrap;
 }
+/* 可点击的候选工程条:重置 button 默认样式,补 hover/指针提示 */
+.hardware-view__candidate--pick {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.hardware-view__candidate--pick:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
 .hardware-view__empty p {
   margin: 0;
   color: var(--fg-faint);
