@@ -241,7 +241,7 @@ func (a *App) buildTab(rt *tabRuntime) {
 		}
 	}
 
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		a.mu.Lock()
 		if rt.closed { // 标签已在 build 期间被关闭:什么都不写、不发 ready(A6)
@@ -972,7 +972,7 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 			model = e.Name + "/" + e.Model
 		}
 	}
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		_ = os.Chdir(cur) // roll back; the current session stays intact
 		return "", err
@@ -2509,6 +2509,8 @@ func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}
 	}
+	// 采样前先关掉常驻串口监视器:它占着串口,不关 MCP 采样子进程会撞占用失败(与 HardwareUpload 同款)。
+	a.SerialClose()
 	seconds := input.Seconds
 	if seconds <= 0 {
 		seconds = 8
@@ -3070,7 +3072,7 @@ func (a *App) SetModel(name string) error {
 		ctrl.Close()
 	}
 
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink})
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		return err
 	}
@@ -3147,7 +3149,7 @@ func (a *App) rebuildTabByID(tabID string) {
 		carried = ctrl.History()
 		ctrl.Close()
 	}
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink})
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
 	}

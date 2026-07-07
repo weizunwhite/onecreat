@@ -10,6 +10,7 @@ package boot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,40 @@ import (
 // removed provider. Callers can detect it (errors.Is) to re-run setup.
 var ErrUnknownModel = errors.New("unknown model")
 
+// observedHooks wraps the hook Runner so a frontend-supplied observer runs right
+// before each tool executes, without changing hook semantics. PreToolUse fires
+// the observer first, then delegates to the real hook runner (which alone can
+// veto the call); every other method is pure delegation. Observation-only: the
+// observer cannot block a tool. The desktop supplies an observer that releases
+// its resident serial monitor before an MCP flash/monitor tool grabs the port.
+type observedHooks struct {
+	observe func(ctx context.Context, name string, args json.RawMessage)
+	inner   agent.ToolHooks
+}
+
+func (h observedHooks) PreToolUse(ctx context.Context, name string, args json.RawMessage) (bool, string) {
+	h.observe(ctx, name, args)
+	return h.inner.PreToolUse(ctx, name, args)
+}
+
+func (h observedHooks) PostToolUse(ctx context.Context, name string, args json.RawMessage, result string) {
+	h.inner.PostToolUse(ctx, name, args, result)
+}
+
+func (h observedHooks) PostLLMCall(ctx context.Context, reasoning string, turn int) string {
+	return h.inner.PostLLMCall(ctx, reasoning, turn)
+}
+
+func (h observedHooks) HasPostLLMCall() bool { return h.inner.HasPostLLMCall() }
+
+func (h observedHooks) SubagentStop(ctx context.Context, last string) {
+	h.inner.SubagentStop(ctx, last)
+}
+
+func (h observedHooks) PreCompact(ctx context.Context, trigger string) string {
+	return h.inner.PreCompact(ctx, trigger)
+}
+
 // Options carries the per-run knobs a frontend chooses; everything else is read
 // from configuration. Model "" falls back to the configured default_model;
 // MaxSteps 0 uses the config/default. RequireKey forces the executor's API key to
@@ -59,6 +94,12 @@ type Options struct {
 	// during model switch inside a bubbletea session to prevent any output
 	// from corrupting the TUI's terminal raw mode.
 	Stderr io.Writer
+	// PreToolUse, when non-nil, is an observation-only callback that fires right
+	// before each tool executes (after permission passes, on the run-loop
+	// goroutine). The desktop uses it to release its resident serial monitor
+	// before an MCP flash/monitor tool runs, so the tool doesn't hit a busy port.
+	// It must NOT block or veto the call — vetoing is the hook system's job.
+	PreToolUse func(ctx context.Context, name string, args json.RawMessage)
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -337,6 +378,16 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			Text: "this project defines hooks but they are not trusted — run /hooks trust to enable them"})
 	}
 
+	// The executor's ToolHooks: the plain hook Runner, or — when the frontend
+	// supplied a PreToolUse observer (desktop: release the serial monitor before a
+	// flash/monitor MCP tool) — the Runner wrapped so the observer fires first. The
+	// control side keeps the concrete *hook.Runner (it only fires turn-boundary
+	// hooks and lists them, never PreToolUse), so only the agent path is wrapped.
+	var execHooks agent.ToolHooks = hookRunner
+	if opts.PreToolUse != nil {
+		execHooks = observedHooks{observe: opts.PreToolUse, inner: hookRunner}
+	}
+
 	// The `task` tool spawns sub-agents that reuse the parent's provider and
 	// tool registry. Wired here after the built-ins / plugins are loaded so
 	// sub-agents inherit the full tool set (minus `task` itself, to keep
@@ -404,7 +455,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       entry.Price,
 		Gate:          headlessGate,
-		Hooks:         hookRunner,
+		Hooks:         execHooks,
 		Jobs:          jm,
 		ContextWindow: entry.ContextWindow,
 		ArchiveDir:    config.ArchiveDir(),

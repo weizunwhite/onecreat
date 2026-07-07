@@ -5787,7 +5787,7 @@ func builtInRepairRules() []repairRule {
 			Title:            "烧录或串口失败：端口不存在、被占用或驱动缺失",
 			Platforms:        []string{"arduino", "platformio", "esp_idf", "micropython"},
 			DetectedBy:       []string{"No such file or directory", "Could not open port", "Resource busy", "Permission denied", "Failed to connect"},
-			ManualSteps:      []string{"调用 hardware_detect 重新列出端口", "关闭 Arduino IDE/PlatformIO 串口监视器", "macOS 选 /dev/cu.*，Windows 选 COMx", "ESP32 上传失败时提示按住 BOOT 再重试", "成功后采集 monitor 输出"},
+			ManualSteps:      []string{"调用 hardware_detect 重新列出端口", "本应用自带的串口监视器会在烧录/采串口时自动释放;若仍报占用，占用者是外部程序（Arduino IDE / MaixVision / screen / 其它终端），需用户手动关闭", "macOS 选 /dev/cu.*，Windows 选 COMx", "ESP32 上传失败时提示按住 BOOT 再重试", "成功后采集 monitor 输出"},
 			EvidenceRequired: []string{"upload", "monitor"},
 		},
 		{

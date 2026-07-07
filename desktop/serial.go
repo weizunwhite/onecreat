@@ -9,12 +9,75 @@ package main
 // 互不影响:那条是一次性子进程采样,这条是常驻交互连接。
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.bug.st/serial"
 )
+
+// serialReleaseForToolUse 传给 boot.Build 的 PreToolUse 观察回调:AI 通过硬件 MCP 工具
+// 烧录 / 采串口前,如果本应用的常驻「串口监视器」正占着串口,先自动关掉它——MCP 是独立
+// 子进程,不知道桌面进程持着串口,不先释放就会撞 busy 失败(面板「烧录」按钮已有同款逻辑,
+// 这里补的是 AI→内核→MCP 这条路)。外部程序占用维持原失败路径(失败知识卡有指引)。
+// 这是每次工具调用都会进的热路径:shouldReleaseSerial 命中前不碰任何锁,零开销。
+func (a *App) serialReleaseForToolUse(_ context.Context, name string, args json.RawMessage) {
+	if !shouldReleaseSerial(name, args) {
+		return
+	}
+	a.serialMu.Lock()
+	open := a.serialSes != nil
+	if open {
+		a.closeSerialLocked()
+	}
+	a.serialMu.Unlock()
+	if open {
+		// 复用 serial:closed 事件:前端的 onSerialClosed 会把面板状态翻成「未连接」并显示原因,
+		// 让用户知道监视器为什么断了(closeSerialLocked 是干净关闭、读循环不会再自己发这个事件)。
+		runtime.EventsEmit(a.ctx, "serial:closed", "已自动断开,让本次烧录/串口采样独占串口")
+	}
+}
+
+// shouldReleaseSerial 判断某个(可能带 mcp__server__ 前缀的)工具会不会占用本地 USB 串口。
+// 命中的工具在执行前需要先让出串口监视器。判定按工具基名 + 参数:
+//   - arduino_upload / arduino_monitor_sample / mpremote_run:一定占串口;
+//   - platformio_run:targets 含 upload 或 monitor 才占;
+//   - esp_idf_run:action 为 flash / monitor / flash_monitor 才占。
+//
+// OTA(arduino_ota_upload)走 WiFi、firmware_publish 走远程、ssh_deploy_run 走 SSH,都不碰
+// 本地串口,不命中。
+func shouldReleaseSerial(name string, args json.RawMessage) bool {
+	base := name
+	// 剥掉 MCP 适配器加的 mcp__<server>__ 前缀,拿到原始工具名。
+	if i := strings.LastIndex(base, "__"); i >= 0 {
+		base = base[i+2:]
+	}
+	switch base {
+	case "arduino_upload", "arduino_monitor_sample", "mpremote_run":
+		return true
+	case "platformio_run":
+		var p struct {
+			Targets []string `json:"targets"`
+		}
+		_ = json.Unmarshal(args, &p)
+		for _, t := range p.Targets {
+			if t == "upload" || t == "monitor" {
+				return true
+			}
+		}
+		return false
+	case "esp_idf_run":
+		var p struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal(args, &p)
+		return p.Action == "flash" || p.Action == "monitor" || p.Action == "flash_monitor"
+	default:
+		return false
+	}
+}
 
 type serialSession struct {
 	port   serial.Port
