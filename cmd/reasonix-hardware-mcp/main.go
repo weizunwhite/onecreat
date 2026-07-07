@@ -3061,6 +3061,82 @@ func dedupeValidationResults(results []validationResult) []validationResult {
 	return out
 }
 
+// fqbnChip 取 FQBN 的芯片核心段(第三段)。arduino-cli FQBN 形如
+// vendor:arch:board[:menu=opt,...],第三段(index 2)就是芯片型号,如
+// esp32:esp32:esp32s3 → esp32s3、esp32:esp32:esp32s3:PSRAM=opi → esp32s3。
+// 不足三段(如未知板卡原样透传的裸名)时退回整串小写。
+func fqbnChip(fqbn string) string {
+	parts := strings.Split(fqbn, ":")
+	if len(parts) >= 3 {
+		return strings.ToLower(strings.TrimSpace(parts[2]))
+	}
+	return strings.ToLower(strings.TrimSpace(fqbn))
+}
+
+// manifestBoardNear 从 sketchDir 向上查找 hardware_manifest.json(manifest 常在项目根,
+// 而 sketch 可能在子目录),返回其 board 字段。限 4 层、到 HOME 为止,避免无限上溯。
+func manifestBoardNear(sketchDir string) string {
+	dir, err := filepath.Abs(sketchDir)
+	if err != nil {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	const maxLevels = 4
+	for i := 0; i < maxLevels; i++ {
+		// auditManifestFile 只要 JSON 合法且含 board 就会填上 Board(不要求其它必填项齐全)。
+		if m, _ := auditManifestFile(dir); strings.TrimSpace(m.Board) != "" {
+			return strings.TrimSpace(m.Board)
+		}
+		if home != "" && dir == home {
+			break // 不越过用户主目录
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // 到达文件系统根
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// reconcileFQBNWithManifest 用项目 hardware_manifest.json 的 board 字段校正调用方传入的
+// FQBN。背景(真机 dogfood):弱模型读过 manifest(board=esp32s3)却仍用 esp32:esp32:esp32
+// 编译/上传,真机报「This chip is ESP32-S3, not ESP32」才改;跨会话必复发。桌面面板路径已有
+// manifest 优先逻辑,但 AI 直接调 MCP 工具的路径此前没有约束——这里补上。
+// 规则:manifest 有 board 且能映射成已知 FQBN 时,比较芯片核心(FQBN 第三段);
+//   - 核心不一致 → 直接改用 manifest 推导的 FQBN(修正而非报错,弱模型收到报错常继续犯错),
+//     并返回一句修正说明供模型看到;
+//   - 核心一致 → 保留调用方完整 FQBN(可能带 PSRAM/分区表等菜单选项,不能丢);
+//
+// manifest 没有 board / 没有 manifest / board 无法映射 → 原样返回,行为完全不变。
+func reconcileFQBNWithManifest(sketchDir, callerFQBN string) (fqbn, note string) {
+	board := manifestBoardNear(sketchDir)
+	if board == "" {
+		return callerFQBN, ""
+	}
+	derived := arduinoFQBN(board)
+	// arduinoFQBN 对未知板卡原样返回入参;此时拿不到可靠 FQBN,不乱改。
+	if derived == "" || derived == board {
+		return callerFQBN, ""
+	}
+	if fqbnChip(callerFQBN) == fqbnChip(derived) {
+		return callerFQBN, "" // 芯片核心一致,保留调用方 FQBN(含菜单选项)
+	}
+	note = fmt.Sprintf("fqbn 已按 hardware_manifest.json 的 board=%s 修正为 %s(原传入 %s 的芯片核心与项目不符,已按项目 manifest 为准)。", board, derived, callerFQBN)
+	return derived, note
+}
+
+// prependNote 把 manifest 校正说明放到工具输出最前面,成功或失败都让模型看到已发生的修正。
+func prependNote(out, note string) string {
+	if note == "" {
+		return out
+	}
+	if strings.TrimSpace(out) == "" {
+		return note
+	}
+	return note + "\n\n" + out
+}
+
 func runArduinoCompile(args map[string]any) (string, error) {
 	sketch, err := requirePath(args, "sketch_dir")
 	if err != nil {
@@ -3070,6 +3146,7 @@ func runArduinoCompile(args map[string]any) (string, error) {
 	if fqbn == "" {
 		return "", errors.New("fqbn is required")
 	}
+	fqbn, fqbnNote := reconcileFQBNWithManifest(sketch, fqbn)
 	cmdArgs := []string{"compile", "-b", fqbn}
 	if p := strArg(args, "port", ""); p != "" {
 		cmdArgs = append(cmdArgs, "-p", p)
@@ -3086,7 +3163,8 @@ func runArduinoCompile(args map[string]any) (string, error) {
 		cmdArgs = append(cmdArgs, "--libraries", libDir)
 	}
 	cmdArgs = append(cmdArgs, sketch)
-	return runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", defaultTimeout))
+	out, err := runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", defaultTimeout))
+	return prependNote(out, fqbnNote), err
 }
 
 // arduinoCoreURLs 返回第三方 core 需要的 board manager URL(esp32/esp8266/rp2040);官方
@@ -3139,6 +3217,14 @@ func runArduinoCoreInstall(args map[string]any) (string, error) {
 	return b.String(), nil
 }
 
+// flashCloseoutRule 是「烧录成功」后追加给模型的收尾硬规则。真机 dogfood 里模型烧录成功
+// 就宣称「✅ 文字应该能完整显示了」,但串口证据只覆盖到烧录成功、屏显效果从未验证。烧录成功
+// 只证明固件已写入芯片,不证明屏幕/灯光/电机/动作等视觉或物理效果正常——必须请用户实际观察
+// 后才能声称完成。附在真正的烧录成功出口(USB/OTA/PlatformIO upload)。
+const flashCloseoutRule = "⚠️ 收尾硬规则:烧录成功只证明固件已写入芯片,并不代表屏幕/灯光/电机/动作等效果已经正常。" +
+	"屏显、点灯、转动等视觉或物理效果必须先请用户实际观察确认,才能声称『已完成/成功』。" +
+	"收尾话术用『已烧录,请观察 <具体现象> 是否 <预期>』,不要写『应该能显示了/已经好了/完成』。"
+
 func runArduinoUpload(args map[string]any) (string, error) {
 	sketch, err := requirePath(args, "sketch_dir")
 	if err != nil {
@@ -3149,6 +3235,7 @@ func runArduinoUpload(args map[string]any) (string, error) {
 	if fqbn == "" || port == "" {
 		return "", errors.New("fqbn and port are required")
 	}
+	fqbn, fqbnNote := reconcileFQBNWithManifest(sketch, fqbn)
 	cmdArgs := []string{"upload", sketch, "-p", port, "-b", fqbn}
 	if boolArg(args, "verify", false) {
 		cmdArgs = append(cmdArgs, "--verify")
@@ -3156,7 +3243,11 @@ func runArduinoUpload(args map[string]any) (string, error) {
 	if buildPath := strArg(args, "build_path", ""); buildPath != "" {
 		cmdArgs = append(cmdArgs, "--build-path", buildPath)
 	}
-	return runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", defaultTimeout))
+	out, err := runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", defaultTimeout))
+	if err == nil {
+		out = strings.TrimRight(out, "\n") + "\n\n" + flashCloseoutRule
+	}
+	return prependNote(out, fqbnNote), err
 }
 
 // runArduinoOTAUpload 走 arduino-cli 网络口烧录(底层 espota),把固件通过 WiFi 推给
@@ -3171,6 +3262,7 @@ func runArduinoOTAUpload(args map[string]any) (string, error) {
 	if fqbn == "" || address == "" {
 		return "", errors.New("fqbn and address are required")
 	}
+	fqbn, fqbnNote := reconcileFQBNWithManifest(sketch, fqbn)
 	cmdArgs := []string{"upload", sketch, "-p", address, "-b", fqbn}
 	if pwd := strArg(args, "password", ""); pwd != "" {
 		cmdArgs = append(cmdArgs, "--upload-field", "password="+pwd)
@@ -3178,7 +3270,11 @@ func runArduinoOTAUpload(args map[string]any) (string, error) {
 	if buildPath := strArg(args, "build_path", ""); buildPath != "" {
 		cmdArgs = append(cmdArgs, "--build-path", buildPath)
 	}
-	return runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", 180*time.Second))
+	out, err := runCommandText("arduino-cli", cmdArgs, "", timeoutArg(args, "timeout_seconds", 180*time.Second))
+	if err == nil {
+		out = strings.TrimRight(out, "\n") + "\n\n" + flashCloseoutRule
+	}
+	return prependNote(out, fqbnNote), err
 }
 
 // runFirmwarePublish 把固件发布到远端固件服务器(NAS/VPS 上的 nginx),供云端拉取 OTA:
@@ -3194,12 +3290,16 @@ func runFirmwarePublish(args map[string]any) (string, error) {
 		return "", errors.New("project_name, version, ssh_host, remote_dir are required")
 	}
 	binPath := strArg(args, "bin_path", "")
+	// 与 compile/upload/ota 同源:manifest.board 与调用方 fqbn 芯片核心不一致时直接校正,
+	// 否则 OTA 发布会把编译目标烧错芯片(板子拉到固件也跑不起来)。校正说明拼进最终输出。
+	fqbnNote := ""
 	if binPath == "" {
 		sketch := strArg(args, "sketch_dir", "")
 		fqbn := strArg(args, "fqbn", "")
 		if sketch == "" || fqbn == "" {
 			return "", errors.New("provide bin_path, or sketch_dir+fqbn to compile")
 		}
+		fqbn, fqbnNote = reconcileFQBNWithManifest(sketch, fqbn)
 		buildDir, err := os.MkdirTemp("", "fwpub-")
 		if err != nil {
 			return "", err
@@ -3247,7 +3347,8 @@ func runFirmwarePublish(args map[string]any) (string, error) {
 		return "", fmt.Errorf("ssh write version failed: %w", err)
 	}
 	url := strings.TrimRight(baseURL, "/") + "/" + project
-	return fmt.Sprintf("已发布 %s v%s\n  固件: %s/firmware.bin\n  版本: %s/version.txt = %s\n板子(已刷 agent)会在下次轮询时自动拉取升级。", project, version, url, url, version), nil
+	out := fmt.Sprintf("已发布 %s v%s\n  固件: %s/firmware.bin\n  版本: %s/version.txt = %s\n板子(已刷 agent)会在下次轮询时自动拉取升级。", project, version, url, url, version)
+	return prependNote(out, fqbnNote), nil
 }
 
 // findSketchBin 在编译输出目录里找主固件 .ino.bin(排除 bootloader/partitions/merged)。
@@ -3324,6 +3425,7 @@ func runPlatformIO(args map[string]any) (string, error) {
 	}
 	targets := strSliceArg(args, "targets")
 	monitor := false
+	uploaded := false
 	for _, t := range targets {
 		t = strings.TrimSpace(t)
 		if t == "" {
@@ -3331,6 +3433,9 @@ func runPlatformIO(args map[string]any) (string, error) {
 		}
 		if t == "monitor" {
 			monitor = true
+		}
+		if t == "upload" {
+			uploaded = true
 		}
 		cmdArgs = append(cmdArgs, "-t", t)
 	}
@@ -3346,10 +3451,17 @@ func runPlatformIO(args map[string]any) (string, error) {
 	}
 	out, err := runCommandText("pio", cmdArgs, dir, timeoutArg(args, "timeout_seconds", defaultTO))
 	if err != nil && monitor && strings.Contains(err.Error(), "timed out") && commandOutputHasBody(out) {
+		if uploaded {
+			out = strings.TrimRight(out, "\n") + "\n\n" + flashCloseoutRule
+		}
 		return out, nil
 	}
 	if monitor && err == nil && !commandOutputHasBody(out) {
 		return out, errors.New("platformio monitor produced no runtime output; verify port, baud rate, board reset, and firmware Serial output")
+	}
+	// 烧录成功出口:追加收尾硬规则,防止模型把「已烧录」当成「效果已验证」。
+	if err == nil && uploaded {
+		out = strings.TrimRight(out, "\n") + "\n\n" + flashCloseoutRule
 	}
 	return out, err
 }

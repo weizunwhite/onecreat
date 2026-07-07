@@ -135,26 +135,26 @@ func verifyStepEvidence(ctx context.Context, items []stepEvidence) (hostVerified
 		case "verification":
 			command := strings.TrimSpace(e.Command)
 			if command == "" {
-				return 0, 0, fmt.Errorf("evidence %d:verification 证据必须带 command(你本轮真实运行过的命令或调用过的工具名)", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:verification 证据必须带 command(你本轮真实运行过的命令或调用过的工具名)。正确做法:把你本轮跑过的那条命令原样填进 command 字段", i+1)
 			}
 			if !ledger.HasSuccessfulCommand(command) {
-				return 0, 0, fmt.Errorf("evidence %d:verification command %q 在本轮没有匹配到成功的执行记录——command 只能填本轮真实运行成功的 bash 命令或调用过的工具名,不能凭空声称", i+1, command)
+				return 0, 0, fmt.Errorf("evidence %d:verification command %q 在本轮没有匹配到成功的执行记录——command 只能填本轮真实运行成功的 bash 命令或调用过的工具名,不能凭空声称。正确做法:先用 bash 或对应 MCP 工具把这条命令真的跑一遍、拿到成功输出,再把同一条命令原样填进 command", i+1, command)
 			}
 			hostVerified++
 		case "diff":
 			if len(e.Paths) == 0 {
-				return 0, 0, fmt.Errorf("evidence %d:diff 证据必须带 paths(本轮改了哪些文件)", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:diff 证据必须带 paths(本轮改了哪些文件)。正确做法:在 paths 里列出你本轮用 edit_file/write_file 改过的文件路径", i+1)
 			}
 			if !ledger.HasSuccessfulWrite(e.Paths) {
-				return 0, 0, fmt.Errorf("evidence %d:diff 的 paths 在本轮没有成功写入记录——只能引用本轮真实改过的文件", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:diff 的 paths 在本轮没有成功写入记录——只能引用本轮真实改过的文件。正确做法:先真的用 edit_file/write_file 改这些文件,再在 diff 证据里引用;若只是读过没改,改用 kind=files", i+1)
 			}
 			hostVerified++
 		case "files":
 			if len(e.Paths) == 0 {
-				return 0, 0, fmt.Errorf("evidence %d:files 证据必须带 paths(涉及哪些文件)", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:files 证据必须带 paths(涉及哪些文件)。正确做法:在 paths 里填你本轮读过或改过的文件路径", i+1)
 			}
 			if !ledger.HasSuccessfulReadOrWrite(e.Paths) {
-				return 0, 0, fmt.Errorf("evidence %d:files 的 paths 在本轮没有成功读/写记录——只能引用本轮真实读过或改过的文件", i+1)
+				return 0, 0, fmt.Errorf("evidence %d:files 的 paths 在本轮没有成功读/写记录——只能引用本轮真实读过或改过的文件。正确做法:先用 read_file 读、或用 edit_file/write_file 改这些文件,再在证据里引用", i+1)
 			}
 			hostVerified++
 		case "manual":
@@ -174,7 +174,7 @@ func verifyTodoStep(ctx context.Context, step string) (evidence.TodoStepMatch, b
 		return evidence.TodoStepMatch{}, false, nil
 	}
 	if !match.Found {
-		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q 在本轮 todo_write 列表中找不到对应项——step 要与任务列表条目的文字对应", step)
+		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q 在本轮 todo_write 列表中找不到对应项——step 要与任务列表条目的文字对应。正确做法:先看最近一次 todo_write 的列表,把 step 填成其中某条的完整文字或它的序号", step)
 	}
 	switch match.Status {
 	case "in_progress", "completed":
