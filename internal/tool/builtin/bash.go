@@ -84,6 +84,11 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	if p.Command == "" {
 		return "", fmt.Errorf("command 必填——请提供要执行的 shell 命令")
 	}
+	// 事前拦截「用 bash 直接长期独占串口」的命令(screen/cat /dev/cu、arduino-cli monitor 等):
+	// 这类命令会占死端口让后续 MCP 采样/烧录失败,或前台阻塞挂死会话。见 serial_guard.go。
+	if rule := serialPortHogRule(p.Command); rule != "" {
+		return "", fmt.Errorf("%s(命中规则:%s)", serialHogDenyMessage, rule)
+	}
 
 	sh := b.resolved()
 	if !sh.SupportsChaining() && (hasUnquotedSeq(p.Command, "&&") || hasUnquotedSeq(p.Command, "||")) {
