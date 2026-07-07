@@ -179,7 +179,8 @@ func (r readFile) scan(src io.Reader, offset, limit int) (string, error) {
 		return "(empty file)", nil
 	}
 	if len(collected) == 0 {
-		return fmt.Sprintf("(offset %d is past EOF — file has %d lines)", offset, lineNo), nil
+		// 明确告知文件真实行数与有效 offset 范围,纠正模型「以为文件更长」而反复越界的误判。
+		return fmt.Sprintf("(offset %d 超出文件末尾:该文件共 %d 行,有效 offset 为 0–%d)", offset, lineNo, lineNo-1), nil
 	}
 
 	maxShown := offset + len(collected)

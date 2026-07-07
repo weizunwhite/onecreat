@@ -62,8 +62,8 @@ func TestReadFileOffsetPastEOF(t *testing.T) {
 	os.WriteFile(f, []byte("one\ntwo\n"), 0o644)
 
 	out := runTool(t, readFile{}, map[string]any{"path": f, "offset": 100, "limit": 10})
-	if !strings.Contains(out, "past EOF") {
-		t.Errorf("should report past EOF: %s", out)
+	if !strings.Contains(out, "超出文件末尾") || !strings.Contains(out, "2 行") {
+		t.Errorf("should report past EOF with real line count: %s", out)
 	}
 }
 

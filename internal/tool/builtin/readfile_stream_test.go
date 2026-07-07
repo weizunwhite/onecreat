@@ -39,6 +39,29 @@ func TestReadFileStreamsLargeGB18030(t *testing.T) {
 	}
 }
 
+// TestReadFileOffsetPastEOFReportsLineCount checks that an out-of-range offset
+// returns the file's real line count, so the model stops guessing a too-large
+// length and re-reads with a valid offset instead of overwriting via write_file.
+func TestReadFileOffsetPastEOFReportsLineCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "short.txt")
+	var sb strings.Builder
+	for i := 0; i < 185; i++ { // 文件共 185 行
+		sb.WriteString("line\n")
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{"path": path, "offset": 300, "limit": 2})
+	out, err := readFile{}.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "185") || !strings.Contains(out, "300") {
+		t.Fatalf("越界提示应含真实行数(185)与请求 offset(300):%q", out)
+	}
+}
+
 // TestReadFileLargeBoundedMemory guards against re-slurping the whole file: a
 // small read of a large file must allocate far less than the file size.
 func TestReadFileLargeBoundedMemory(t *testing.T) {

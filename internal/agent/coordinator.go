@@ -17,10 +17,19 @@ type Runner interface {
 }
 
 // DefaultPlannerPrompt steers the planner toward concise plans, not execution.
+// The platform-consistency clause guards a real dogfood failure: a knowledge-base
+// snippet about MaixCAM color detection leaked into an ESP32 task and the planner
+// produced a fully off-target MaixCAM plan. The planner has no similarity score to
+// gate on, so the guard is a hard prompt constraint instead.
 const DefaultPlannerPrompt = `You are the planner in a two-model coding agent.
 Given a task, produce a concise, ordered plan for the executor model to carry out.
 Do not write full implementations or call tools — outline the steps, which files
-to touch, and the key decisions. Keep it short and actionable.`
+to touch, and the key decisions. Keep it short and actionable.
+If the task or context contains reference snippets, example code, or knowledge-base
+material, only rely on a snippet when its hardware platform/board clearly matches the
+task's (e.g. both are ESP32). If a snippet's platform differs from the task's — the
+task is ESP32 but the snippet is MaixCAM / Raspberry Pi / a different board or
+language — ignore it completely and base the plan solely on the user's actual task.`
 
 // Coordinator runs two models in separate sessions to keep each one's prompt
 // prefix cache-stable: a low-frequency planner proposes an approach, then the

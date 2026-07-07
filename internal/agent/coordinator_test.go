@@ -38,6 +38,18 @@ func lastUser(req provider.Request) string {
 	return ""
 }
 
+// TestDefaultPlannerPromptGuardsPlatformMismatch pins the hard constraint that
+// keeps a platform-mismatched knowledge-base snippet (e.g. MaixCAM) from steering
+// an ESP32 plan off-target — the planner has no similarity score to gate on, so
+// the guard lives in the prompt.
+func TestDefaultPlannerPromptGuardsPlatformMismatch(t *testing.T) {
+	for _, want := range []string{"platform", "ignore"} {
+		if !strings.Contains(strings.ToLower(DefaultPlannerPrompt), want) {
+			t.Errorf("planner prompt should mention %q to guard platform mismatch", want)
+		}
+	}
+}
+
 // TestCoordinatorHandsPlanToExecutor checks the two-session handoff: the planner
 // sees the raw task in its own session, and the executor receives the plan.
 func TestCoordinatorHandsPlanToExecutor(t *testing.T) {

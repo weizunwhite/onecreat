@@ -59,7 +59,7 @@ func (e editFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 	start, end, note, ferr := findUniqueMatch(content, p.OldString)
 	switch {
 	case errors.Is(ferr, errEditNoMatch):
-		return "", fmt.Errorf("在 %s 中找不到 old_string——先用 read_file 查看文件当前内容,逐字复制要替换的原文(行尾空白/缩进差异已自动容错,仍未命中说明内容确实不同)", p.Path)
+		return "", fmt.Errorf("在 %s 中找不到 old_string——文件当前内容可能与你记忆的不一致,请先用 read_file 重新读取该区域,再逐字复制要替换的原文(行尾空白/缩进差异已自动容错,仍未命中说明内容确实不同);不要改用 write_file 整体覆盖", p.Path)
 	case errors.Is(ferr, errEditNotUnique):
 		return "", fmt.Errorf("old_string 在 %s 中出现多次,无法确定改哪一处——请在 old_string 中多带几行上下文使其唯一", p.Path)
 	case ferr != nil:

@@ -91,6 +91,10 @@ func TestEditFileStillNotFound(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "找不到 old_string") {
 		t.Fatalf("应报找不到,err=%v", err)
 	}
+	// 报错须给出纠偏指引:重新 read_file,而不是退化成 write_file 整体覆盖。
+	if !strings.Contains(err.Error(), "read_file") {
+		t.Errorf("找不到时应提示重新 read_file,err=%v", err)
+	}
 }
 
 // 全空白的 old_string 不允许走 2 级(防止命中任何空白区域)。
