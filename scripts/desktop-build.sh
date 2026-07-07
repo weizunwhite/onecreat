@@ -16,6 +16,12 @@ set -euo pipefail
 PLATFORM="${1:?usage: desktop-build.sh <os/arch> <version>}"
 VERSION="${2:?usage: desktop-build.sh <os/arch> <version>}"
 
+# makensis 在 LANG/LC_ALL 为空的环境下宽字符转换会崩(bad_alloc,macOS 实测
+# 3.11/3.12 均复现);无 locale 的脚本化/CI 环境兜底为 UTF-8,已设置的不覆盖。
+if [ -z "${LC_ALL:-}" ] && [ -z "${LANG:-}" ]; then
+	export LC_ALL="en_US.UTF-8"
+fi
+
 os="${PLATFORM%/*}"
 arch="${PLATFORM#*/}"
 
