@@ -163,6 +163,46 @@ func TestCompleteStepAllowsManualAsUnverified(t *testing.T) {
 	}
 }
 
+// manual 后门回归:本轮刚烧录/部署过,用户不可能已经观察实物并回复,
+// 同轮的 manual "人工确认" 必须被拒绝;下一轮(Ledger 已清空)则放行。
+func TestCompleteStepRejectsManualAfterDeviceActionSameTurn(t *testing.T) {
+	ledger := evidence.NewLedger()
+	ledger.Record(evidence.Receipt{ToolName: "mcp__hardware__arduino_upload", Success: true})
+	ctx := evidence.WithLedger(context.Background(), ledger)
+
+	_, err := completeStep{}.Execute(ctx, json.RawMessage(`{
+		"step":"验证实物现象",
+		"result":"屏幕显示正常",
+		"evidence":[{"kind":"manual","summary":"已确认屏幕正常显示文字"}]}`))
+	if err == nil {
+		t.Fatal("manual evidence in the same turn as a device flash must be rejected")
+	}
+	if !strings.Contains(err.Error(), "还没有机会观察实物") {
+		t.Fatalf("rejection should explain why and guide next step, got %q", err)
+	}
+
+	// 失败的烧录不触发拦截(没有可观察的新状态,manual 可能与本次烧录无关)。
+	ledger2 := evidence.NewLedger()
+	ledger2.Record(evidence.Receipt{ToolName: "mcp__hardware__arduino_upload", Success: false})
+	ctx2 := evidence.WithLedger(context.Background(), ledger2)
+	_, err = completeStep{}.Execute(ctx2, json.RawMessage(`{
+		"step":"x","result":"y",
+		"evidence":[{"kind":"manual","summary":"checked"}]}`))
+	if err != nil {
+		t.Fatalf("manual after FAILED device action should stay allowed: %v", err)
+	}
+
+	// 模拟下一轮:Ledger 清空后 manual 放行(用户已有机会回复)。
+	ledger.Reset()
+	_, err = completeStep{}.Execute(ctx, json.RawMessage(`{
+		"step":"验证实物现象",
+		"result":"用户回复屏幕显示正常",
+		"evidence":[{"kind":"manual","summary":"用户确认屏幕正常显示文字"}]}`))
+	if err != nil {
+		t.Fatalf("manual evidence next turn (after ledger reset) should be allowed: %v", err)
+	}
+}
+
 func TestCompleteStepMatchesTodoReceipt(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{

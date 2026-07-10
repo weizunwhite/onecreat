@@ -158,6 +158,13 @@ func verifyStepEvidence(ctx context.Context, items []stepEvidence) (hostVerified
 			}
 			hostVerified++
 		case "manual":
+			// manual 曾是无校验的万能后门:烧录后模型直接 complete_step(manual,
+			// "已确认屏幕正常")自我签收,抵消掉"烧录诚实收尾"的观察要求。
+			// Ledger 按用户轮清空,本轮刚烧录/部署过就意味着用户还没有机会观察实物
+			// 并回复——此时的"人工确认"必然是编造的,拒绝并指路。
+			if ledger.HasDeviceActionThisTurn() {
+				return 0, 0, fmt.Errorf("evidence %d:manual 证据被拒绝——本轮刚执行过烧录/部署,用户还没有机会观察实物并回复,\"人工确认\"不可能已经发生。正确做法:先把需要观察的现象明确告诉用户(观察什么、预期看到什么),结束本轮等待;用户回复确认后,下一轮再用 manual 证据签收这一步", i+1)
+			}
 			manualUnverified++
 		}
 	}

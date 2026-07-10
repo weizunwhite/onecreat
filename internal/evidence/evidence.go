@@ -157,6 +157,35 @@ func toolCoreName(name string) string {
 	return name
 }
 
+// deviceActionTools 是会改变真机状态的硬件动作工具(烧录/部署/推代码上板),
+// 按剥掉 mcp__<server>__ 前缀后的核心名匹配。
+var deviceActionTools = map[string]bool{
+	"arduino_upload":     true,
+	"arduino_ota_upload": true,
+	"platformio_run":     true,
+	"esp_idf_run":        true,
+	"mpremote_run":       true,
+	"ssh_deploy_run":     true,
+}
+
+// HasDeviceActionThisTurn 报告本轮是否成功执行过改变真机状态的动作(烧录/部署)。
+// 供 complete_step 拒绝 manual 后门:Ledger 按用户轮清空,单轮之内不可能有新的用户
+// 输入,所以"用户已确认本轮烧录后的实物现象"这类 manual 证据在同一轮内必然是编造的——
+// 用户还没有机会观察并回复。
+func (l *Ledger) HasDeviceActionThisTurn() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, r := range l.receipts {
+		if r.Success && deviceActionTools[toolCoreName(r.ToolName)] {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *Ledger) HasSuccessfulWrite(paths []string) bool {
 	return l.hasSuccessfulPaths(paths, func(r Receipt) bool { return r.Write })
 }
