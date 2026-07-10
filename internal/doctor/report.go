@@ -35,6 +35,7 @@ type Report struct {
 	Sandbox    SandboxReport    `json:"sandbox"`
 	Network    NetworkReport    `json:"network"`
 	Permission PermissionReport `json:"permission"`
+	Hardware   HardwareReport   `json:"hardware"`
 	Warnings   []string         `json:"warnings,omitempty"`
 }
 
@@ -157,6 +158,7 @@ func Collect(opts Options) Report {
 			AskRules:   len(cfg.Permissions.Ask),
 			DenyRules:  len(cfg.Permissions.Deny),
 		},
+		Hardware: collectHardware(),
 		Warnings: warnings,
 	}
 	report.Sessions.Dir = redactHome(report.Sessions.Dir)
@@ -272,6 +274,24 @@ func RenderText(r Report) string {
 	fmt.Fprintf(&b, "\npermissions\n")
 	fmt.Fprintf(&b, "  mode         %s\n", valueOr(r.Permission.Mode, "ask"))
 	fmt.Fprintf(&b, "  rules        allow:%d ask:%d deny:%d\n", r.Permission.AllowRules, r.Permission.AskRules, r.Permission.DenyRules)
+
+	fmt.Fprintf(&b, "\nhardware\n")
+	fmt.Fprintf(&b, "  arduino-cli  %s\n", valueOr(r.Hardware.ArduinoCLI, "missing"))
+	if len(r.Hardware.Cores) > 0 {
+		fmt.Fprintf(&b, "  cores        %s\n", strings.Join(r.Hardware.Cores, ", "))
+	} else {
+		fmt.Fprintf(&b, "  cores        none installed\n")
+	}
+	fmt.Fprintf(&b, "  platformio   %v\n", r.Hardware.PlatformIO)
+	fmt.Fprintf(&b, "  mpremote     %v\n", r.Hardware.MPRemote)
+	if len(r.Hardware.SerialPorts) > 0 {
+		fmt.Fprintf(&b, "  serial       %s\n", strings.Join(r.Hardware.SerialPorts, ", "))
+	} else {
+		fmt.Fprintf(&b, "  serial       none detected\n")
+	}
+	if r.Hardware.Note != "" {
+		fmt.Fprintf(&b, "  note         %s\n", r.Hardware.Note)
+	}
 	return b.String()
 }
 

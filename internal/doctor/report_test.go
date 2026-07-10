@@ -114,6 +114,27 @@ func TestRenderTextSurfacesWarningsUpTop(t *testing.T) {
 	}
 }
 
+// doctor 此前对硬件工具链完全无感,硬件自检只藏在桌面端面板里。
+func TestRenderTextIncludesHardwareSection(t *testing.T) {
+	text := RenderText(Report{Hardware: HardwareReport{
+		ArduinoCLI:  "1.2.2 (PATH)",
+		Cores:       []string{"arduino:avr@1.8.6", "esp32:esp32@3.2.0"},
+		PlatformIO:  true,
+		SerialPorts: []string{"/dev/cu.usbserial-110"},
+	}})
+	for _, want := range []string{"\nhardware\n", "arduino-cli  1.2.2 (PATH)", "esp32:esp32@3.2.0", "/dev/cu.usbserial-110"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("hardware section missing %q:\n%s", want, text)
+		}
+	}
+	empty := RenderText(Report{})
+	for _, want := range []string{"arduino-cli  missing", "cores        none installed", "serial       none detected"} {
+		if !strings.Contains(empty, want) {
+			t.Fatalf("empty hardware section missing %q:\n%s", want, empty)
+		}
+	}
+}
+
 func TestRenderTextFlagsInactiveSandbox(t *testing.T) {
 	inactive := RenderText(Report{Sandbox: SandboxReport{Bash: "enforce", Available: false}})
 	if !strings.Contains(inactive, "inactive") {

@@ -20,6 +20,13 @@ func TestSerialPortHogRule(t *testing.T) {
 		"minicom -D /dev/cu.usbserial",
 		"picocom /dev/ttyUSB0 -b 115200",
 		"cu -l /dev/cu.usbserial -s 115200",
+		// 等价命令绕过封堵:tio / miniterm / ampy / rshell / mpremote mount / 内联 pyserial
+		"tio /dev/cu.usbserial-1420",
+		"python3 -m serial.tools.miniterm /dev/cu.usbserial 115200",
+		"ampy --port /dev/cu.usbserial ls",
+		"rshell -p /dev/ttyUSB0",
+		"mpremote mount .",
+		`python3 -c "import serial; s=serial.Serial('/dev/cu.usbserial-1420',115200); print(s.readline())"`,
 	}
 	for _, cmd := range deny {
 		if serialPortHogRule(cmd) == "" {
@@ -42,6 +49,13 @@ func TestSerialPortHogRule(t *testing.T) {
 		"mpremote run main.py",
 		"cat sketch.ino",
 		"head -100 build.log && ls /dev/cu.*",
+		// 新规则的不误伤样本
+		"python3 read_data.py",                     // 跑脚本文件不拦(非内联)
+		"python3 -c \"print('hello')\"",            // 内联但与串口无关
+		"pip install pyserial",                     // 只是装包
+		"grep -r serial src/",                      // 文本里出现 serial
+		"edition=pro make build",                   // "tio" 不能匹配进 edition 之类的词中
+		"functional-tests run",                     // 同上,词边界
 	}
 	for _, cmd := range allow {
 		if rule := serialPortHogRule(cmd); rule != "" {

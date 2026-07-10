@@ -32,10 +32,21 @@ var serialHogRules = []serialHogRule{
 	{"pio-device-monitor", regexp.MustCompile(`(?i)\b(pio|platformio)\s+device\s+monitor\b`)},
 	// ESP-IDF 串口监视器(含 flash monitor 组合)。`idf.py flash`、`idf.py build` 无 monitor,放行。
 	{"idf-monitor", regexp.MustCompile(`(?i)\bidf\.py\b[^\n]*\bmonitor\b`)},
-	// mpremote 交互式 REPL / 建立连接(长期占串口)。`mpremote run` 不命中,交给 MCP mpremote_run。
-	{"mpremote-repl-connect", regexp.MustCompile(`(?i)\bmpremote\b[^\n]*\b(repl|connect)\b`)},
+	// mpremote 交互式 REPL / 建立连接 / 挂载文件系统(都长期占串口)。
+	// `mpremote run` 不命中,交给 MCP mpremote_run。
+	{"mpremote-repl-connect", regexp.MustCompile(`(?i)\bmpremote\b[^\n]*\b(repl|connect|mount)\b`)},
 	// 传统 cu 呼出串口线路:`cu -l /dev/cu.xxx`。
 	{"cu-line", regexp.MustCompile(`(?i)\bcu\s+-l\b`)},
+	// tio 现代串口终端:参数就是设备路径,整个命令就是开串口,无条件拦。
+	{"tio", regexp.MustCompile(`(?i)\btio\s+`)},
+	// pyserial 自带的交互式终端:python -m serial.tools.miniterm /dev/...。
+	{"pyserial-miniterm", regexp.MustCompile(`(?i)\bserial\.tools\.miniterm\b`)},
+	// ampy / rshell:MicroPython 文件管理器,连接期间独占串口。
+	{"ampy-rshell", regexp.MustCompile(`(?i)\b(ampy|rshell)\b[^\n|;&]*(-p\s|--port|/dev/(cu|tty)|COM\d)`)},
+	// 模型自写 pyserial 脚本绕过:python -c / 内联代码里 import serial + 设备路径。
+	// 只拦「同一命令里既 import serial 又出现串口设备」的内联执行;正常跑 .py 文件不误伤
+	// (脚本文件占口属于用户代码范畴,静态拦不住也不该拦)。
+	{"inline-pyserial", regexp.MustCompile(`(?i)\bpython[0-9.]*\s+-c\b[^\n]*\bserial\b[^\n]*(/dev/(cu|tty)|COM\d)`)},
 }
 
 // serialPortHogRule 返回命中的规则名;命令不属于「长期独占串口」类则返回空串。
