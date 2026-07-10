@@ -540,6 +540,7 @@ export interface HardwareRunInput {
   board?: string;
   port?: string;
   seconds?: number;
+  baud?: number; // 看串口的波特率;不传 = 默认 115200
   address?: string; // OTA WiFi 烧录:板子地址(IP 或 mDNS 名)
   otaPassword?: string; // OTA WiFi 烧录:ArduinoOTA 口令
 }

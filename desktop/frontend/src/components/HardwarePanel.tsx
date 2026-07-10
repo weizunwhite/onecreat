@@ -414,6 +414,9 @@ export function HardwarePanel({
   const [board, setBoard] = useState("esp32_arduino");
   const [framework, setFramework] = useState("Arduino / PlatformIO");
   const [port, setPort] = useState("");
+  // 「看串口」采样波特率,与常驻串口监视器同一组档位;曾在后端写死 115200,
+  // 9600 的板子点「看串口」永远采不到(监视器却能看到),体验矛盾。
+  const [baud, setBaud] = useState(115200);
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
   const [portRefreshing, setPortRefreshing] = useState(false);
@@ -658,6 +661,7 @@ export function HardwarePanel({
         board: runBoard,
         port,
         seconds: kind === "monitor" ? 8 : undefined,
+        baud: kind === "monitor" ? baud : undefined,
       };
       setRunning((r) => ({ ...r, [kind]: true }));
       try {
@@ -680,7 +684,7 @@ export function HardwarePanel({
         setRunning((r) => ({ ...r, [kind]: false }));
       }
     },
-    [board, detect?.projectDir, detectedPlatform, port, selectedBoard, onPrompt, onBackToChat],
+    [board, detect?.projectDir, detectedPlatform, port, baud, selectedBoard, onPrompt, onBackToChat],
   );
 
   // 失败时学生点「让 AI 排查」就把已蒸馏的根因+修法+输出摘要直接塞给 chat。
@@ -920,6 +924,16 @@ export function HardwarePanel({
             >
               <RefreshCw size={13} className={portRefreshing ? "hardware-spin" : undefined} />
             </button>
+            <label className="hardware-view__field">
+              <span>波特率</span>
+              <select value={baud} onChange={(event) => setBaud(Number(event.target.value))} title="「看串口」的采样波特率,要与代码里 Serial.begin() 一致">
+                {[9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600].map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <label className="hardware-view__field">
             <span>框架</span>

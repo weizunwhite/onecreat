@@ -2258,6 +2258,7 @@ type HardwareRunInput struct {
 	Board       string `json:"board,omitempty"`
 	Port        string `json:"port,omitempty"`
 	Seconds     int    `json:"seconds,omitempty"`
+	Baud        int    `json:"baud,omitempty"`        // 看串口的波特率;0 = 默认 115200
 	Address     string `json:"address,omitempty"`     // OTA WiFi 烧录:板子地址(IP 或 mDNS 名)
 	OTAPassword string `json:"otaPassword,omitempty"` // OTA WiFi 烧录:ArduinoOTA 口令
 }
@@ -2518,6 +2519,12 @@ func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
 	if seconds > 30 {
 		seconds = 30 // 别让前端按钮一按等半分钟
 	}
+	// 波特率跟随面板选择(曾写死 115200:9600 的板子点「看串口」永远采不到,
+	// 但常驻串口监视器又能看到——两条链路矛盾,学生难自查)。
+	baud := input.Baud
+	if baud <= 0 {
+		baud = 115200
+	}
 	switch input.Platform {
 	case "arduino":
 		if input.Port == "" {
@@ -2526,7 +2533,7 @@ func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
 		args := map[string]any{
 			"port":            input.Port,
 			"seconds":         seconds,
-			"baud":            115200,
+			"baud":            baud,
 			"timeout_seconds": seconds + 5,
 		}
 		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
@@ -2541,7 +2548,7 @@ func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
 		args := map[string]any{
 			"port":            input.Port,
 			"seconds":         seconds,
-			"baud":            115200,
+			"baud":            baud,
 			"timeout_seconds": seconds + 5,
 		}
 		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
@@ -2553,6 +2560,9 @@ func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
 		}
 		if input.Port != "" {
 			args["port"] = input.Port
+		}
+		if input.Baud > 0 {
+			args["baud"] = input.Baud
 		}
 		return runHardwareSimple(command, "esp_idf_run", args, time.Duration(seconds+10)*time.Second, "ESP-IDF 串口")
 	default:
