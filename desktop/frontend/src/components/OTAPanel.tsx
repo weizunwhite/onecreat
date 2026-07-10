@@ -37,11 +37,15 @@ export function OTAPanel({
   board,
   mcpReady,
   onOpenWorkspace,
+  onPickProjectDir,
 }: {
   projectDir: string;
   board: string;
   mcpReady: boolean;
   onOpenWorkspace?: (path?: string) => void;
+  // 切换整个工作区到新生成的项目目录(脚手架建在 ~/onecreat-projects/ 下,不在当前
+  // 工作区内;只用 onOpenWorkspace 打开文件面板的话,顶部编译/烧录仍指向旧目录)。
+  onPickProjectDir?: (path?: string) => void;
 }) {
   // 新建 OTA 项目(脚手架)
   const [mode, setMode] = useState<Mode>("lan");
@@ -198,9 +202,13 @@ export function OTAPanel({
           <div className={`ota__msg ota__msg--${scaffoldMsg.ok ? "ok" : "fail"}`}>
             {scaffoldMsg.ok ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
             <span>{scaffoldMsg.text}</span>
-            {scaffoldMsg.ok && scaffoldMsg.path && onOpenWorkspace && (
-              <button className="ota__link" onClick={() => onOpenWorkspace(scaffoldMsg.path)}>
-                打开
+            {scaffoldMsg.ok && scaffoldMsg.path && (onPickProjectDir || onOpenWorkspace) && (
+              <button
+                className="ota__link"
+                onClick={() => (onPickProjectDir ?? onOpenWorkspace)?.(scaffoldMsg.path)}
+                title={onPickProjectDir ? "把工作区切换到新项目,编译/烧录按钮立即可用" : "在文件面板中打开"}
+              >
+                {onPickProjectDir ? "切换到此项目" : "打开"}
               </button>
             )}
           </div>

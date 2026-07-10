@@ -767,7 +767,7 @@ export function HardwarePanel({
     setErr(null);
     try {
       if (!hardwareMCP?.available) {
-        throw new Error("未找到 hardware MCP 二进制，无法执行硬件工作流。");
+        throw new Error("硬件助手未就绪，无法执行硬件操作。请重启应用；若仍出现，重新安装 OneCreat。");
       }
       if (!connected) {
         await app.AddHardwareMCPServer();
@@ -814,7 +814,7 @@ export function HardwarePanel({
     setErr(null);
     try {
       if (!hardwareMCP?.available) {
-        throw new Error("未找到 hardware MCP 二进制，无法执行硬件工作流。");
+        throw new Error("硬件助手未就绪，无法执行硬件操作。请重启应用；若仍出现，重新安装 OneCreat。");
       }
       if (!connected) {
         await app.AddHardwareMCPServer();
@@ -853,7 +853,7 @@ export function HardwarePanel({
       setErr(null);
       try {
         if (!hardwareMCP?.available) {
-          throw new Error("未找到 hardware MCP 二进制，无法执行硬件工作流。");
+          throw new Error("硬件助手未就绪，无法执行硬件操作。请重启应用；若仍出现，重新安装 OneCreat。");
         }
         if (!connected) {
           await app.AddHardwareMCPServer();
@@ -1359,6 +1359,7 @@ export function HardwarePanel({
           board={resolvedBoard}
           mcpReady={!!hardwareMCP?.available}
           onOpenWorkspace={onOpenWorkspace}
+          onPickProjectDir={onPickProjectDir}
         />
 
         {/* 本机检测详情(默认折叠,需要时打开) */}

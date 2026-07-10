@@ -2818,33 +2818,35 @@ func callHardwareMCPTool(command, name string, args map[string]any, timeout time
 	}
 	_ = stdin.Close()
 	err = cmd.Wait()
+	// 这些错误会原样显示在硬件面板的红色提示条上,读者是老师/学生——
+	// 中文说清楚"怎么了、下一步做什么",开发者细节放在句尾括号里。
 	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("hardware MCP timed out after %s", timeout)
+		return "", fmt.Errorf("硬件操作超时(%s 内未完成)。编译和首次下载工具可能因网络慢而超时——检查网络后点重试;若是烧录超时,拔插一次 USB 线再试", timeout)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("hardware MCP failed: %s", msg)
+		return "", fmt.Errorf("硬件助手执行出错,请重试一次;若反复出现,把括号里的信息发给老师/技术支持(%s)", msg)
 	}
 	line := strings.TrimSpace(firstOutputLine(stdout.String()))
 	if line == "" {
-		return "", fmt.Errorf("hardware MCP returned no output")
+		return "", fmt.Errorf("硬件助手没有返回结果,请重试一次;若反复出现请重启应用")
 	}
 	var resp hardwareMCPRPCResponse
 	if err := json.Unmarshal([]byte(line), &resp); err != nil {
-		return "", fmt.Errorf("hardware MCP returned invalid JSON-RPC: %w", err)
+		return "", fmt.Errorf("硬件助手返回了无法解析的内容,请重试一次;若反复出现请重启应用(JSON-RPC 解析失败: %v)", err)
 	}
 	if resp.Error != nil {
-		return "", fmt.Errorf("hardware MCP RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+		return "", fmt.Errorf("硬件助手内部错误,请重试一次(RPC %d: %s)", resp.Error.Code, resp.Error.Message)
 	}
 	if resp.Result.IsError {
 		return "", fmt.Errorf("%s", firstTextContent(resp.Result.Content))
 	}
 	text := firstTextContent(resp.Result.Content)
 	if text == "" {
-		return "", fmt.Errorf("hardware MCP returned no text content")
+		return "", fmt.Errorf("硬件助手返回了空结果,请重试一次;若反复出现请重启应用")
 	}
 	return text, nil
 }
@@ -3281,7 +3283,7 @@ func resolveHardwareMCP() (command, source string, err error) {
 			}
 		}
 	}
-	return "", "", fmt.Errorf("hardware MCP binary not found; run `make build` or set REASONIX_HARDWARE_MCP")
+	return "", "", fmt.Errorf("硬件助手未就绪:找不到 reasonix-hardware-mcp 程序。请重启应用;若仍出现,重新安装 OneCreat(开发环境则运行 make build,或设置 REASONIX_HARDWARE_MCP 指向该程序)")
 }
 
 func executable(path string) bool {
