@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -75,7 +76,12 @@ func ensureManagedToolsOnPath() {
 
 // arduinoCLIDownloadURL 返回当前 OS/ARCH 对应的 arduino-cli 官方发布包 URL。
 // isZip=true 表示 Windows 的 .zip,否则是 .tar.gz。
+// 环境变量 REASONIX_ARDUINO_CLI_URL 可强制覆盖(自建镜像/内网源时用,例如把官方
+// 发布包放到自己的固件服务器上;按 .zip 后缀判断压缩格式)。
 func arduinoCLIDownloadURL() (url string, isZip bool, err error) {
+	if v := strings.TrimSpace(os.Getenv("REASONIX_ARDUINO_CLI_URL")); v != "" {
+		return v, strings.HasSuffix(strings.ToLower(v), ".zip"), nil
+	}
 	const base = "https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_"
 	switch runtime.GOOS {
 	case "darwin":
@@ -137,20 +143,55 @@ func installArduinoCLI(timeout time.Duration) (string, error) {
 	return target, nil
 }
 
-func httpGetBytes(url string, timeout time.Duration) ([]byte, error) {
+// newDownloadClient 返回带「快速失败」超时的下载客户端:连接/TLS握手/等首包各自限时,
+// 避免国内网络连 GitHub 那种「TCP 通了但零流量」的连接干等到总超时(表现为下载卡死不动)。
+// timeout 是整体上限(大文件下载用),连不上/没响应会在几十秒内明确报错而不是傻等。
+func newDownloadClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = 600 * time.Second
 	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get(url)
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment, // 尊重用户的 HTTP(S)_PROXY 环境变量
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 20 * time.Second,
+		},
+	}
+}
+
+// httpGetBytes 带重试的下载:教室网络对官方源常见「偶发超时/连接被重置」,
+// 自动退避重试 2 次;4xx 是确定性错误(URL 写错/资源不存在),不重试。
+func httpGetBytes(url string, timeout time.Duration) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 3 * time.Second)
+		}
+		data, retryable, err := httpGetBytesOnce(url, timeout)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if !retryable {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+func httpGetBytesOnce(url string, timeout time.Duration) (data []byte, retryable bool, err error) {
+	resp, err := newDownloadClient(timeout).Get(url)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, resp.StatusCode < 400 || resp.StatusCode >= 500, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	data, err = io.ReadAll(resp.Body)
+	return data, true, err
 }
 
 // extractTarGzFile 从 tar.gz 字节里找出 base 名为 wantBase 的文件,原子写到 target。

@@ -74,6 +74,42 @@ func TestNewBoardFamiliesResolveAndMapToolchains(t *testing.T) {
 	}
 }
 
+// 安全回归:显式指名的板卡在指定 platform 下匹配不到时,必须跨平台按名字查找,
+// 绝不能回退成平台默认板——"platform=arduino board=esp32" 曾静默回退成 UNO,
+// 返回 5V 逻辑电平,模型据此写接线方案会烧毁 3.3V 的 ESP32。
+func TestFindBoardProfileNeverFallsBackToWrongVoltage(t *testing.T) {
+	// esp32 挂在 platformio 分类下,但 Arduino 框架同样能编它:跨平台命中,电压必须是 3.3V。
+	profile, ok := findBoardProfile("esp32", "arduino")
+	if !ok {
+		t.Fatal("findBoardProfile(esp32, arduino) should cross-platform match esp32_arduino")
+	}
+	if profile.ID != "esp32_arduino" {
+		t.Fatalf("findBoardProfile(esp32, arduino) = %q, want esp32_arduino", profile.ID)
+	}
+	if profile.LogicVoltage != "3.3V" {
+		t.Fatalf("esp32 profile logic voltage = %q, want 3.3V", profile.LogicVoltage)
+	}
+
+	// S3/C3 同理。
+	for _, board := range []string{"esp32s3", "esp32c3"} {
+		p, ok := findBoardProfile(board, "arduino")
+		if !ok || p.LogicVoltage != "3.3V" {
+			t.Errorf("findBoardProfile(%q, arduino) = (%q ok=%v), want 3.3V profile", board, p.LogicVoltage, ok)
+		}
+	}
+
+	// 显式指名但注册表里查无此板:必须 ok=false,不能回退默认板。
+	if p, ok := findBoardProfile("totally_unknown_board", "arduino"); ok {
+		t.Fatalf("unknown board should not resolve, got %q", p.ID)
+	}
+
+	// 不指名板卡时,平台默认板回退仍然有效(合法用法)。
+	p, ok := findBoardProfile("", "arduino")
+	if !ok || p.Board != "uno" {
+		t.Fatalf("findBoardProfile(\"\", arduino) = (%q ok=%v), want uno default", p.Board, ok)
+	}
+}
+
 func TestRepairCatalogListsAutoAndManualRules(t *testing.T) {
 	out, err := runRepairCatalog(map[string]any{"platform": "platformio"})
 	if err != nil {
@@ -872,8 +908,29 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 		}
 	}
 
-	// #2-3:upload 证据要求"真发生过一次烧录执行"——模拟 arduino_upload 真跑过。
-	recordHostExecution("Writing at 0x00010000... (100 %)\nHash of data verified.\n", "upload")
+	// 失败的烧录执行不能支撑 passed 的 upload 证据——曾有通路:烧录失败后模型记一条
+	// status=passed 就被判为有真实支撑。
+	recordHostExecution("A fatal error occurred: Failed to connect to ESP32\n", false, "upload")
+	_, err = runEvidenceRecord(map[string]any{
+		"project_dir": projectDir,
+		"stage":       "upload",
+		"status":      "passed",
+		"summary":     "claimed upload passed but the only real upload failed",
+		"command":     "arduino-cli upload -p /dev/cu.fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = runEvidenceStatus(map[string]any{"project_dir": projectDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"status": "hardware_pending"`) {
+		t.Fatalf("passed upload evidence backed only by a FAILED real upload must not verify:\n%s", out)
+	}
+
+	// #2-3:upload 证据要求"真发生过一次成功的烧录执行"——模拟 arduino_upload 真跑成功。
+	recordHostExecution("Writing at 0x00010000... (100 %)\nHash of data verified.\n", true, "upload")
 	_, err = runEvidenceRecord(map[string]any{
 		"project_dir": projectDir,
 		"stage":       "upload",
@@ -943,7 +1000,7 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 	}
 
 	// 真实 monitor 执行 + 如实粘贴其输出 → runtime_log 验证通过 → hardware_verified。
-	recordHostExecution("ready\nled:on\nled:off\n", "monitor", "serial")
+	recordHostExecution("ready\nled:on\nled:off\n", true, "monitor", "serial")
 	_, err = runEvidenceRecord(map[string]any{
 		"project_dir": projectDir,
 		"stage":       "monitor",
@@ -972,7 +1029,7 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"status": "stale"`, `"currentRecordCount": 0`, `"staleRecordCount": 6`, "project fingerprint changed"} {
+	for _, want := range []string{`"status": "stale"`, `"currentRecordCount": 0`, `"staleRecordCount": 7`, "project fingerprint changed"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stale status missing %q:\n%s", want, out)
 		}

@@ -536,9 +536,9 @@ func callTool(params json.RawMessage) (any, *rpcError) {
 			continue
 		}
 		text, err := t.run(p.Arguments)
-		// 登记真实工具执行的输出到执行日志(无论成功/失败,真实输出都可作为后续证据的锚点),
-		// 供 hardware_evidence_record 核实模型填的 output 是否对应真实执行(#2-3)。
-		recordToolExecution(p.Name, p.Arguments, text)
+		// 登记真实工具执行的输出到执行日志(无论成功/失败都登记,失败输出可锚定诚实的
+		// failed 记录),供 hardware_evidence_record 核实模型填的 output 是否对应真实执行(#2-3)。
+		recordToolExecution(p.Name, p.Arguments, text, err == nil)
 		if err != nil {
 			return textResult(errorTextWithOutput(text, err), true), nil
 		}
@@ -1366,7 +1366,7 @@ func runEvidenceRecord(args map[string]any) (string, error) {
 	}
 	// 真机执行类阶段:用本进程的真实执行日志核实证据是否有真实执行支撑(#2-3)。
 	if hardwareExecutionStage(stage) {
-		record.HostObserved = computeHostObserved(stage, strArg(args, "output", ""))
+		record.HostObserved = computeHostObserved(stage, strArg(args, "output", ""), status)
 	}
 
 	testsDir := filepath.Join(abs, "tests")
@@ -2092,8 +2092,9 @@ func evidenceGroupPassed(records []evidenceRecord, stages []string) bool {
 // 才算 hostObserved。模型凭空捏造的串口/SSH 输出对不上任何真实执行,不再能推到
 // hardware_verified。这是"灵活性归模型,保证归系统"的技术兑现。
 type hostExecution struct {
-	stages map[string]bool
-	output string
+	stages    map[string]bool
+	output    string
+	succeeded bool // 该次执行 err==nil;失败的烧录/运行不能作为 passed 证据的真实支撑
 }
 
 var (
@@ -2102,7 +2103,7 @@ var (
 )
 
 // recordHostExecution 登记一次真实工具执行的输出与它覆盖的证据阶段(保留最近 60 次)。
-func recordHostExecution(output string, stages ...string) {
+func recordHostExecution(output string, succeeded bool, stages ...string) {
 	out := strings.TrimSpace(output)
 	if out == "" || len(stages) == 0 {
 		return
@@ -2112,7 +2113,7 @@ func recordHostExecution(output string, stages ...string) {
 		sm[s] = true
 	}
 	hostExecMu.Lock()
-	hostExecs = append(hostExecs, hostExecution{stages: sm, output: out})
+	hostExecs = append(hostExecs, hostExecution{stages: sm, output: out, succeeded: succeeded})
 	if len(hostExecs) > 60 {
 		hostExecs = hostExecs[len(hostExecs)-60:]
 	}
@@ -2121,7 +2122,9 @@ func recordHostExecution(output string, stages ...string) {
 
 // recordToolExecution 在 dispatch 调用某动作工具后,按工具(+ action 参数)映射出它覆盖
 // 的证据阶段,把真实输出登记进执行日志。统一一处挂钩,不必改每个动作函数。
-func recordToolExecution(name string, args map[string]any, output string) {
+// succeeded=false 的执行仍登记(失败的真实输出可支撑 status=failed 的诚实记录),
+// 但不能作为 status=passed 证据的真实支撑——否则一次失败的烧录也能顶穿证据链。
+func recordToolExecution(name string, args map[string]any, output string, succeeded bool) {
 	var stages []string
 	switch name {
 	case "arduino_compile":
@@ -2143,7 +2146,7 @@ func recordToolExecution(name string, args map[string]any, output string) {
 	default:
 		return
 	}
-	recordHostExecution(output, stages...)
+	recordHostExecution(output, succeeded, stages...)
 }
 
 // distinctiveLines 取 output 里足够独特(>=4 个非空白字符)的行,用于跨执行内容比对。
@@ -2162,7 +2165,8 @@ func distinctiveLines(output string) []string {
 
 // hostObservedFor 判断模型记录的 output 是否对应某次覆盖该 stage 的真实执行:二者需共享
 // 至少一行可辨识文本。模型若如实粘贴真实工具输出即命中;凭空捏造则对不上。
-func hostObservedFor(stage, output string) bool {
+// successOnly=true 时只认成功的执行——passed 证据不能拿失败运行的报错文本当支撑。
+func hostObservedFor(stage, output string, successOnly bool) bool {
 	lines := distinctiveLines(output)
 	if len(lines) == 0 {
 		return false
@@ -2171,6 +2175,9 @@ func hostObservedFor(stage, output string) bool {
 	defer hostExecMu.Unlock()
 	for _, e := range hostExecs {
 		if !e.stages[stage] {
+			continue
+		}
+		if successOnly && !e.succeeded {
 			continue
 		}
 		for _, ln := range lines {
@@ -2184,13 +2191,19 @@ func hostObservedFor(stage, output string) bool {
 
 // hostExecutionHappened 判断本进程是否真的跑过一次覆盖该 stage 的动作工具(不看输出内容,
 // 只看"真发生过")。用于 upload/flash 这类"重点是真烧录过、而非输出逐行可比"的阶段。
-func hostExecutionHappened(stage string) bool {
+// successOnly=true 时只认成功的执行——曾有通路:烧录失败后模型记一条 status=passed 的
+// upload 证据,仅因"跑过一次 arduino_upload"就被判为有真实支撑,整条证据链被顶穿。
+func hostExecutionHappened(stage string, successOnly bool) bool {
 	hostExecMu.Lock()
 	defer hostExecMu.Unlock()
 	for _, e := range hostExecs {
-		if e.stages[stage] {
-			return true
+		if !e.stages[stage] {
+			continue
 		}
+		if successOnly && !e.succeeded {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -2207,12 +2220,14 @@ func hardwareExecutionStage(stage string) bool {
 
 // computeHostObserved 按阶段决定证据是否"有真实执行支撑":运行/串口类要求输出对得上真实
 // 执行(防伪造日志);烧录类只要求真跑过一次烧录(输出常无可比内容)。
-func computeHostObserved(stage, output string) bool {
+// status=passed 的证据只认成功的执行;status=failed 的诚实记录可锚定在失败执行上。
+func computeHostObserved(stage, output, status string) bool {
+	successOnly := status == "passed"
 	switch stage {
 	case "upload", "flash":
-		return hostExecutionHappened(stage)
+		return hostExecutionHappened(stage, successOnly)
 	case "monitor", "serial", "mpremote", "ssh", "deploy":
-		return hostObservedFor(stage, output)
+		return hostObservedFor(stage, output, successOnly)
 	default:
 		return false
 	}
@@ -3167,19 +3182,81 @@ func runArduinoCompile(args map[string]any) (string, error) {
 	return prependNote(out, fqbnNote), err
 }
 
-// arduinoCoreURLs 返回第三方 core 需要的 board manager URL(esp32/esp8266/rp2040);官方
-// arduino:avr 不需要,返回空。
-func arduinoCoreURLs(core string) string {
+// arduinoCoreURLCandidates 返回第三方 core 的 board manager URL 候选,按优先级排列;
+// 官方 arduino:avr 不需要,返回空。
+//
+// esp32 的排序依据 2026-07-09 国内(阿里云北京)实测:espressif.github.io 被墙完全不可达,
+// 而 jsDelivr 国内可达且能取到 gh-pages 上的中国版索引(_cn.json);_cn.json 里 1091 个包
+// 全部指向 dl.espressif.cn(国内 CDN,实测 2MB/s)。所以国内网络走候选 1/2 即可全程下载;
+// 国际网络候选 1 同样可用,3/4 是官方原始地址兜底。
+// 环境变量 REASONIX_ESP32_INDEX_URL 可强制覆盖(自建镜像/内网源时用)。
+func arduinoCoreURLCandidates(core string) []string {
 	switch {
 	case strings.HasPrefix(core, "esp32"):
-		return "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
+		if v := strings.TrimSpace(os.Getenv("REASONIX_ESP32_INDEX_URL")); v != "" {
+			return []string{v}
+		}
+		return []string{
+			"https://cdn.jsdelivr.net/gh/espressif/arduino-esp32@gh-pages/package_esp32_index_cn.json",
+			"https://fastly.jsdelivr.net/gh/espressif/arduino-esp32@gh-pages/package_esp32_index_cn.json",
+			"https://espressif.github.io/arduino-esp32/package_esp32_index_cn.json",
+			"https://espressif.github.io/arduino-esp32/package_esp32_index.json",
+		}
 	case strings.HasPrefix(core, "esp8266"):
-		return "https://arduino.esp8266.com/stable/package_esp8266com_index.json"
+		if v := strings.TrimSpace(os.Getenv("REASONIX_ESP8266_INDEX_URL")); v != "" {
+			return []string{v}
+		}
+		return []string{"https://arduino.esp8266.com/stable/package_esp8266com_index.json"}
 	case strings.HasPrefix(core, "rp2040"):
-		return "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
+		// rp2040 索引和包都在 GitHub Releases 上,国内基本不可达且无公开镜像
+		// (jsDelivr 不代理 release 资产,实测 gh-pages 上也没有该索引)。
+		// 提供环境变量覆盖口,供自建镜像;默认仍走官方,失败时报错会指引设置。
+		if v := strings.TrimSpace(os.Getenv("REASONIX_RP2040_INDEX_URL")); v != "" {
+			return []string{v}
+		}
+		return []string{"https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"}
 	default:
+		return nil
+	}
+}
+
+// coreIndexOverrideEnv 返回某 core 对应的索引镜像覆盖环境变量名(报错指引用)。
+func coreIndexOverrideEnv(core string) string {
+	switch {
+	case strings.HasPrefix(core, "esp32"):
+		return "REASONIX_ESP32_INDEX_URL"
+	case strings.HasPrefix(core, "esp8266"):
+		return "REASONIX_ESP8266_INDEX_URL"
+	case strings.HasPrefix(core, "rp2040"):
+		return "REASONIX_RP2040_INDEX_URL"
+	default:
+		return "REASONIX_ESP32_INDEX_URL"
+	}
+}
+
+// pickReachableURL 逐个探测候选 URL(短超时 GET,拿到 2xx 即认为可达),返回第一个可达的;
+// 全都不可达时返回首选项,让后续 arduino-cli 自己报出具体网络错误。
+func pickReachableURL(urls []string) string {
+	if len(urls) == 0 {
 		return ""
 	}
+	if len(urls) == 1 {
+		return urls[0]
+	}
+	client := newDownloadClient(25 * time.Second)
+	for _, u := range urls {
+		resp, err := client.Get(u)
+		if err != nil {
+			continue
+		}
+		// 只确认状态码,不读大响应体
+		_, _ = io.CopyN(io.Discard, resp.Body, 512)
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return u
+		}
+	}
+	return urls[0]
 }
 
 // runArduinoCoreInstall 安装一个 arduino-cli 开发板 core(先 update-index 再 install),
@@ -3190,17 +3267,25 @@ func runArduinoCoreInstall(args map[string]any) (string, error) {
 		return "", errors.New("core 必填(如 arduino:avr / esp32:esp32 / esp8266:esp8266 / rp2040:rp2040)")
 	}
 	timeout := timeoutArg(args, "timeout_seconds", 600*time.Second)
-	urls := arduinoCoreURLs(core)
+	urls := pickReachableURL(arduinoCoreURLCandidates(core))
 	var b strings.Builder
+	if urls != "" {
+		b.WriteString("board manager 索引源: " + urls + "\n")
+	}
 
 	idxArgs := []string{"core", "update-index"}
 	if urls != "" {
 		idxArgs = append(idxArgs, "--additional-urls", urls)
 	}
 	idxOut, err := runCommandText("arduino-cli", idxArgs, "", timeout)
+	if err != nil {
+		// 教室网络偶发抖动:update-index 是小文件请求,失败后短暂退避重试一次再放弃。
+		time.Sleep(3 * time.Second)
+		idxOut, err = runCommandText("arduino-cli", idxArgs, "", timeout)
+	}
 	b.WriteString(idxOut)
 	if err != nil {
-		return b.String(), fmt.Errorf("core update-index 失败: %w", err)
+		return b.String(), fmt.Errorf("core update-index 失败: %w。常见原因是当前网络访问不了下载源(尤其 GitHub 系域名)——可换网络/开代理后重试;有自建镜像时可设环境变量 %s 指向镜像索引", err, coreIndexOverrideEnv(core))
 	}
 
 	instArgs := []string{"core", "install", core}
@@ -5731,6 +5816,19 @@ func findBoardProfile(board, platform string) (boardProfile, bool) {
 		if boardProfileMatches(profile, boardKey) {
 			return profile, true
 		}
+	}
+	if boardKey != "" {
+		// 板卡名比 platform 归类更可信:esp32 系列挂在 platformio 分类下,但
+		// Arduino 框架同样能编它。显式指名时先按名字跨平台查一次,
+		// 查不到就返回 false——绝不能回退到平台默认板:
+		// "platform=arduino board=esp32" 曾静默回退成 UNO(5V),
+		// 模型据此写出 5V 接线方案会烧毁 3.3V 的 ESP32。
+		for _, profile := range builtInBoardProfiles() {
+			if boardProfileMatches(profile, boardKey) {
+				return profile, true
+			}
+		}
+		return boardProfile{}, false
 	}
 	if platform != "" && platform != "auto" {
 		for _, profile := range profiles {

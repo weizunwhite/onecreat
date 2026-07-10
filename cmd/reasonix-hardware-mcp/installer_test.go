@@ -5,6 +5,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +42,7 @@ func TestInstallArduinoCLIRealDownload(t *testing.T) {
 }
 
 func TestArduinoCLIDownloadURL(t *testing.T) {
+	t.Setenv("REASONIX_ARDUINO_CLI_URL", "")
 	url, isZip, err := arduinoCLIDownloadURL()
 	if err != nil {
 		t.Fatalf("当前平台 %s/%s 应支持: %v", runtime.GOOS, runtime.GOARCH, err)
@@ -55,6 +58,57 @@ func TestArduinoCLIDownloadURL(t *testing.T) {
 	}
 	if !isZip && !strings.HasSuffix(url, ".tar.gz") {
 		t.Errorf("非 Windows 应是 .tar.gz: %s", url)
+	}
+}
+
+func TestArduinoCLIDownloadURLEnvOverride(t *testing.T) {
+	t.Setenv("REASONIX_ARDUINO_CLI_URL", "http://192.168.6.131:9000/arduino-cli.tar.gz")
+	url, isZip, err := arduinoCLIDownloadURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "http://192.168.6.131:9000/arduino-cli.tar.gz" || isZip {
+		t.Errorf("应用覆盖 URL 且按后缀判定 tar.gz, got url=%s isZip=%v", url, isZip)
+	}
+	t.Setenv("REASONIX_ARDUINO_CLI_URL", "http://mirror.local/arduino-cli.ZIP")
+	if _, isZip, _ := arduinoCLIDownloadURL(); !isZip {
+		t.Error(".zip 后缀(不分大小写)应判为 zip")
+	}
+}
+
+// 下载重试:偶发 5xx/网络抖动应自动重试成功;404 是确定性错误,不应重试。
+func TestHTTPGetBytesRetriesTransientFailure(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer srv.Close()
+	data, err := httpGetBytes(srv.URL, 30*time.Second)
+	if err != nil {
+		t.Fatalf("首次 503 后重试应成功: %v", err)
+	}
+	if string(data) != "payload" || attempts != 2 {
+		t.Fatalf("data=%q attempts=%d", data, attempts)
+	}
+}
+
+func TestHTTPGetBytesDoesNotRetry404(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	if _, err := httpGetBytes(srv.URL, 30*time.Second); err == nil {
+		t.Fatal("404 应报错")
+	}
+	if attempts != 1 {
+		t.Fatalf("404 不应重试, attempts=%d", attempts)
 	}
 }
 
