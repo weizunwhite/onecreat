@@ -510,19 +510,19 @@ var compileErrorPatterns = []errorPattern{
 	{
 		keywords: []string{"Servo.h", "No such file"},
 		platform: "arduino", // arduino-cli + ESP32 fqbn
-		fix:      "ESP32 不能用 AVR 的 Servo 库。把 `#include <Servo.h>` 改成 `#include <ESP32Servo.h>`;若未装库,先运行:`arduino-cli lib install ESP32Servo`",
+		fix:      "ESP32 不能用 AVR 的 Servo 库。把 `#include <Servo.h>` 改成 `#include <ESP32Servo.h>`;若未装库,先调用 arduino_lib_install libs=[\"ESP32Servo\"]",
 	},
 	{
 		keywords: []string{"ESP32Servo.h", "No such file"},
-		fix:      "缺 ESP32Servo 库。运行:`arduino-cli lib install ESP32Servo`(Arduino CLI),或在 platformio.ini 的 lib_deps 加 `madhephaestus/ESP32Servo@^1.1.2`。",
+		fix:      "缺 ESP32Servo 库。调用 arduino_lib_install libs=[\"ESP32Servo\"](Arduino CLI),或在 platformio.ini 的 lib_deps 加 `madhephaestus/ESP32Servo@^1.1.2`。",
 	},
 	{
 		keywords: []string{"Adafruit_SSD1306.h", "No such file"},
-		fix:      "缺 SSD1306 库。运行:`arduino-cli lib install \"Adafruit SSD1306\" \"Adafruit GFX Library\" \"Adafruit Unified Sensor\"`",
+		fix:      "缺 SSD1306 库。调用 arduino_lib_install libs=[\"Adafruit SSD1306\", \"Adafruit GFX Library\", \"Adafruit Unified Sensor\"]",
 	},
 	{
 		keywords: []string{"DHT.h", "No such file"},
-		fix:      "缺 DHT 库。运行:`arduino-cli lib install \"DHT sensor library\" \"Adafruit Unified Sensor\"`",
+		fix:      "缺 DHT 库。调用 arduino_lib_install libs=[\"DHT sensor library\", \"Adafruit Unified Sensor\"]",
 	},
 	{
 		keywords: []string{"WiFi.h", "No such file"},
@@ -531,7 +531,7 @@ var compileErrorPatterns = []errorPattern{
 	},
 	{
 		keywords: []string{"No such file or directory"},
-		fix:      "缺库或缺头文件。看 fatal error 那行里的文件名,Arduino 用 `arduino-cli lib search <关键词>` 找库,PlatformIO 加进 lib_deps。",
+		fix:      "缺库或缺头文件。看 fatal error 那行里的文件名:Arduino 项目先 `arduino-cli lib search <关键词>` 找准确库名,再调用 arduino_lib_install libs=[<库名>];PlatformIO 加进 lib_deps。",
 	},
 	{
 		keywords: []string{"was not declared in this scope"},

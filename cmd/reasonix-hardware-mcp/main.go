@@ -337,6 +337,16 @@ var tools = []toolDef{
 		run: runArduinoCoreInstall,
 	},
 	{
+		name:        "arduino_lib_install",
+		description: "Install one or more Arduino libraries (runs lib update-index + lib install). 用于修复『编译报 xxx.h: No such file or directory』的缺库失败——这是真实项目最高频的编译墙。库名以 arduino-cli lib search 的准确名字为准(常含空格,如 \"DHT sensor library\");很多库有配套依赖要一起装(如 DHT/SSD1306 需要 \"Adafruit Unified Sensor\"/\"Adafruit GFX Library\")。联网下载,失败自动重试一次。",
+		readOnly:    false,
+		schema: objectSchema(map[string]any{
+			"libs":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": `库名列表,如 ["DHT sensor library", "Adafruit Unified Sensor"]。`},
+			"timeout_seconds": map[string]any{"type": "number", "description": "Command timeout. Defaults to 600."},
+		}, []string{"libs"}),
+		run: runArduinoLibInstall,
+	},
+	{
 		name:        "hardware_install_toolchain",
 		description: "一键安装核心硬件工具链(Phase 1)。若 arduino-cli 未安装，自动从官方下载单文件二进制到用户目录（免管理员、免 Python、Windows/macOS 通用），再安装板卡 core（默认 arduino:avr + esp32:esp32，覆盖 Arduino 全系与 ESP32 全系）。装完即可编译/烧录。给学生/老师打包后点一下就能从零备齐环境。可用 cores 参数自定义要装的 core；ESP-IDF / PlatformIO / USB 驱动不在本工具范围（见各自手动指引）。",
 		readOnly:    false,
@@ -3302,6 +3312,53 @@ func runArduinoCoreInstall(args map[string]any) (string, error) {
 	return b.String(), nil
 }
 
+// runArduinoLibInstall 安装一个或多个 Arduino 第三方库(先 lib update-index 再 lib install),
+// 修复"编译缺库"这条最高频断链——真实项目几乎必用 DHT/SSD1306/Servo 等第三方库,
+// 首次编译大概率撞 `xxx.h: No such file or directory`。此前只有手动指引,教室网络下
+// 学生大面积卡死在手敲 arduino-cli lib install 上;现在与 arduino_core_install 同级:
+// 工具化 + update-index 抖动重试 + 指令化报错。
+func runArduinoLibInstall(args map[string]any) (string, error) {
+	libs := []string{}
+	for _, l := range strSliceArg(args, "libs") {
+		if l = strings.TrimSpace(l); l != "" {
+			libs = append(libs, l)
+		}
+	}
+	if single := strings.TrimSpace(strArg(args, "lib", "")); single != "" {
+		libs = append(libs, single)
+	}
+	if len(libs) == 0 {
+		return "", errors.New(`libs 必填:库名列表,如 ["DHT sensor library", "Adafruit Unified Sensor"](库名常含空格,以 arduino-cli lib search 的准确名字为准)`)
+	}
+	timeout := timeoutArg(args, "timeout_seconds", 600*time.Second)
+	var b strings.Builder
+
+	idxOut, err := runCommandText("arduino-cli", []string{"lib", "update-index"}, "", timeout)
+	if err != nil {
+		// 教室网络偶发抖动:退避重试一次再放弃(与 core update-index 同策略)。
+		time.Sleep(3 * time.Second)
+		idxOut, err = runCommandText("arduino-cli", []string{"lib", "update-index"}, "", timeout)
+	}
+	b.WriteString(idxOut)
+	if err != nil {
+		return b.String(), fmt.Errorf("lib update-index 失败: %w。常见原因是当前网络访问不了 downloads.arduino.cc——换网络或设置 HTTPS_PROXY 代理后重试", err)
+	}
+
+	instArgs := append([]string{"lib", "install"}, libs...)
+	instOut, err := runCommandText("arduino-cli", instArgs, "", timeout)
+	if err != nil {
+		time.Sleep(3 * time.Second)
+		instOut, err = runCommandText("arduino-cli", instArgs, "", timeout)
+	}
+	b.WriteString("\n")
+	b.WriteString(instOut)
+	if err != nil {
+		return b.String(), fmt.Errorf("lib install 失败: %w。若报找不到库,库名可能不准确(很多库名含空格,如 \"DHT sensor library\")——先运行 arduino-cli lib search <关键词> 拿准确名字再重试;若是网络错误,换网络/设代理后重试", err)
+	}
+	b.WriteString("\n\n✅ 库安装完成,现在重新调用 arduino_compile(参数不变)即可。")
+	return b.String(), nil
+}
+
 // flashCloseoutRule 是「烧录成功」后追加给模型的收尾硬规则。真机 dogfood 里模型烧录成功
 // 就宣称「✅ 文字应该能完整显示了」,但串口证据只覆盖到烧录成功、屏显效果从未验证。烧录成功
 // 只证明固件已写入芯片,不证明屏幕/灯光/电机/动作等视觉或物理效果正常——必须请用户实际观察
@@ -5088,12 +5145,18 @@ func recommendations(r detectReport) []string {
 		rec = append(rec, "检测到 "+nb.Name+"（网络连接 "+nb.Host+"，SSH 可达）——该板卡不走串口，「串口无设备」属正常；"+nb.Notes+"。")
 	}
 	if len(r.SerialPorts) == 0 && len(r.NetworkBoards) == 0 {
-		rec = append(rec, "未发现常见 USB 串口；请检查数据线、驱动、开发板供电，或手动指定端口。")
+		rec = append(rec, noSerialPortsAdvice(runtime.GOOS))
 	}
 	if len(r.Boards) > 0 {
 		first := r.Boards[0]
 		if first.FQBN != "" {
 			rec = append(rec, "检测到 Arduino 兼容开发板，可用端口 "+first.Port+" 和 FQBN "+first.FQBN+" 进行编译/上传。")
+		} else {
+			// 通用 USB 转串口芯片(CH340/CP210x,国产克隆板标配)没有板卡身份,
+			// arduino-cli 的 matching_boards 必为空——此前这里一条建议都不给,
+			// 学生对着 Unknown 板不知道下一步。按 VID 猜芯片并给 FQBN 指引。
+			rec = append(rec, "检测到 USB 串口 "+first.Port+" 但无法自动识别板型"+usbSerialChipHint(first.Properties)+
+				"——常见于 CH340/CP210x 克隆板，属正常。请按板子实际型号手动指定 FQBN：UNO=arduino:avr:uno、Nano=arduino:avr:nano、ESP32=esp32:esp32:esp32、ESP32-S3=esp32:esp32:esp32s3；不确定型号就问用户板子上印的字。")
 		}
 	} else if len(r.Devices) > 0 {
 		rec = append(rec, "检测到 PlatformIO 串口设备；请根据板卡型号确认 board/environment 后再上传。")
@@ -5108,6 +5171,34 @@ func recommendations(r detectReport) []string {
 		rec = append(rec, "检测到 Arduino sketch，但 arduino-cli 不在 PATH——没有它无法编译/烧录。安装：`brew install arduino-cli`（macOS），随后 `arduino-cli core install arduino:avr`（Nano/UNO）或 `arduino-cli core install esp32:esp32`（ESP32）；装好后重新运行 hardware_detect 确认。")
 	}
 	return rec
+}
+
+// noSerialPortsAdvice 生成"零串口"时的排查建议。Windows 上最高频根因是缺
+// CH340/CP210x USB 转串口驱动(国内学生机 + 国产克隆板的标配组合):没装驱动时
+// 板子根本不枚举成 COM 口,设备管理器里是感叹号——必须针对性指引装驱动,
+// 而不是一句"检查驱动"带过。
+func noSerialPortsAdvice(goos string) string {
+	msg := "未发现常见 USB 串口；请检查数据线（必须是数据线，纯充电线插上没反应）、开发板供电，或手动指定端口。"
+	if goos == "windows" {
+		msg += "Windows 上最常见的根因是缺 USB 转串口驱动：国产开发板多用 CH340 芯片，需安装 WCH 官方 CH341SER 驱动（在 www.wch.cn 搜索 CH341SER 下载）；部分板用 CP210x（Silicon Labs 官网下载 CP210x VCP 驱动）。判断方法：打开设备管理器，插拔板子看是否出现带感叹号的未知设备。装完驱动重新插板并重跑 hardware_detect。"
+	}
+	return msg
+}
+
+// usbSerialChipHint 从 arduino-cli 报告的端口属性(vid=0x1A86 等)推断 USB 转串口芯片。
+func usbSerialChipHint(properties string) string {
+	p := strings.ToLower(properties)
+	switch {
+	case strings.Contains(p, "1a86"):
+		return "（USB 芯片是 CH340/CH9102，国产板标配）"
+	case strings.Contains(p, "10c4"):
+		return "（USB 芯片是 CP210x）"
+	case strings.Contains(p, "0403"):
+		return "（USB 芯片是 FTDI）"
+	case strings.Contains(p, "303a"):
+		return "（乐鑫原生 USB，基本可确定是 ESP32-S2/S3/C3 系）"
+	}
+	return ""
 }
 
 func espIDFMCPHint(projectDir, serverName string, useEIM bool) map[string]string {
@@ -5985,11 +6076,24 @@ func builtInRepairRules() []repairRule {
 			EvidenceRequired: []string{"compile"},
 		},
 		{
+			Code:           "missing_arduino_library",
+			Title:          "编译失败：缺少 Arduino 第三方库（DHT/SSD1306/Servo 等，真实项目最高频编译墙）",
+			Platforms:      []string{"arduino"},
+			DetectedBy:     []string{"No such file or directory", "library not found"},
+			AutoRepairTool: "arduino_lib_install",
+			ManualSteps: []string{
+				"这不是代码问题：看 fatal error 那行的头文件名，确定缺的是哪个库（库名常含空格，如 \"DHT sensor library\"，不确定时先 arduino-cli lib search <关键词>）。",
+				"直接调用 mcp__hardware__arduino_lib_install libs=[<库名>...]，它会自动 lib update-index 并安装（联网下载，失败自动重试）。很多库有配套依赖要一起装：DHT → 加 \"Adafruit Unified Sensor\"；SSD1306 → 加 \"Adafruit GFX Library\" 和 \"Adafruit Unified Sensor\"。",
+				"装好后重新调用 arduino_compile（参数不变），编译应能通过。",
+			},
+			EvidenceRequired: []string{"compile"},
+		},
+		{
 			Code:             "missing_library_dependency",
-			Title:            "编译失败：缺少 Arduino/PlatformIO/Python 依赖库",
-			Platforms:        []string{"arduino", "platformio", "micropython", "unihiker_python", "maixcam_python", "raspberry_pi_python"},
+			Title:            "编译失败：缺少 PlatformIO/Python 依赖库",
+			Platforms:        []string{"platformio", "micropython", "unihiker_python", "maixcam_python", "raspberry_pi_python"},
 			DetectedBy:       []string{"No such file or directory", "library not found", "ModuleNotFoundError", "ImportError"},
-			ManualSteps:      []string{"先确认代码实际使用的库名", "PlatformIO 项目优先写入 lib_deps，而不是让用户手动装库", "Arduino CLI 项目给出 arduino-cli lib install 命令", "Python 项目更新 requirements.txt", "重新编译或做语法检查"},
+			ManualSteps:      []string{"先确认代码实际使用的库名", "PlatformIO 项目优先写入 lib_deps，而不是让用户手动装库", "Python 项目更新 requirements.txt", "重新编译或做语法检查"},
 			EvidenceRequired: []string{"compile", "syntax"},
 		},
 		{

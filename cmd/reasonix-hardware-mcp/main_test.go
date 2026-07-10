@@ -136,6 +136,61 @@ func TestRepairCatalogHasCoreNotInstalledRule(t *testing.T) {
 	}
 }
 
+// 缺库自动修复回归:arduino 平台的修复目录必须包含"缺第三方库"规则并指向
+// arduino_lib_install 自动修复工具(真实项目最高频编译墙,此前只有手动指引);
+// 工具本身必须已注册且空参数被拒绝。
+func TestRepairCatalogHasMissingLibraryRule(t *testing.T) {
+	out, err := runRepairCatalog(map[string]any{"platform": "arduino"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"missing_arduino_library", "arduino_lib_install", "Adafruit Unified Sensor"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("arduino repair catalog missing %q:\n%s", want, out)
+		}
+	}
+
+	registered := false
+	for _, tl := range tools {
+		if tl.name == "arduino_lib_install" {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		t.Fatal("arduino_lib_install 工具未注册")
+	}
+
+	if _, err := runArduinoLibInstall(map[string]any{}); err == nil || !strings.Contains(err.Error(), "libs 必填") {
+		t.Fatalf("空 libs 应报必填错误, got %v", err)
+	}
+}
+
+// CH340 驱动指引回归:Windows 零串口必须给出针对性驱动安装指引(而非一句"检查驱动");
+// 检测到 CH340 串口但认不出板型时必须给 FQBN 指引(此前一条建议都不给)。
+func TestRecommendationsForDriverAndUnknownBoard(t *testing.T) {
+	if got := noSerialPortsAdvice("windows"); !strings.Contains(got, "CH341SER") || !strings.Contains(got, "设备管理器") {
+		t.Errorf("Windows 零串口应给 CH340 驱动指引, got %q", got)
+	}
+	if got := noSerialPortsAdvice("darwin"); strings.Contains(got, "CH341SER") {
+		t.Errorf("macOS 不应给 Windows 驱动指引, got %q", got)
+	}
+
+	rec := recommendations(detectReport{
+		SerialPorts: []string{"/dev/cu.usbserial-110"},
+		Boards:      []boardReport{{Port: "/dev/cu.usbserial-110", BoardName: "Unknown", Properties: "pid=0x7523, vid=0x1A86"}},
+	})
+	joined := strings.Join(rec, "\n")
+	for _, want := range []string{"无法自动识别板型", "CH340", "esp32:esp32:esp32", "arduino:avr:uno"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Unknown 板建议缺 %q:\n%s", want, joined)
+		}
+	}
+	if got := usbSerialChipHint("vid=0x303A"); !strings.Contains(got, "ESP32-S2/S3/C3") {
+		t.Errorf("303a 应识别为乐鑫原生 USB, got %q", got)
+	}
+}
+
 // #3a 回归:Windows COM 口解析能从 PowerShell GetPortNames / reg query 输出里抽出端口。
 func TestParseWindowsCOMPorts(t *testing.T) {
 	psOut := "$ powershell ...\nCOM3\r\nCOM10\r\nCOM3\r\n"
