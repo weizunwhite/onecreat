@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,10 +44,11 @@ func TestReconcileFQBNWithManifest(t *testing.T) {
 			wantNote:      false,
 		},
 		{
-			name:     "没有 manifest 时原样直通",
+			// 护栏失效必须有感知:FQBN 原样直通,但提示模型 manifest 缺失、无法校验芯片。
+			name:     "没有 manifest 时直通但带失效提示",
 			caller:   "esp32:esp32:esp32",
 			wantFQBN: "esp32:esp32:esp32",
-			wantNote: false,
+			wantNote: true,
 		},
 		{
 			name:          "sketch 在子目录时向上找 manifest",
@@ -90,6 +92,69 @@ func TestReconcileFQBNWithManifest(t *testing.T) {
 				t.Fatalf("note = %q, wantNote = %v", gotNote, tc.wantNote)
 			}
 		})
+	}
+}
+
+// 平台一致性护栏推广:此前 FQBN 校正只挂 arduino-cli 出口,PlatformIO env 与
+// ESP-IDF set-target 对 manifest.board 完全没设防。
+func TestReconcilePIOEnvNote(t *testing.T) {
+	root := t.TempDir()
+	writeBoardManifest(t, root, "esp32s3")
+	if note := reconcilePIOEnvNote(root, "esp32dev"); !strings.Contains(note, "不符") || !strings.Contains(note, "esp32s3") {
+		t.Errorf("S3 项目 + esp32dev env 应给不符警告, got %q", note)
+	}
+	if note := reconcilePIOEnvNote(root, "esp32-s3-devkitc-1"); note != "" {
+		t.Errorf("芯片家族一致不应告警, got %q", note)
+	}
+	if note := reconcilePIOEnvNote(root, "my_custom_env"); note != "" {
+		t.Errorf("识别不出 env 芯片家族时不应误伤, got %q", note)
+	}
+	if note := reconcilePIOEnvNote(t.TempDir(), "esp32dev"); note != "" {
+		t.Errorf("无 manifest 时 pio 路径不加噪音, got %q", note)
+	}
+	if note := reconcilePIOEnvNote(root, ""); note != "" {
+		t.Errorf("未指定 env 时无从比对, got %q", note)
+	}
+}
+
+func TestReconcileIDFTargetWithManifest(t *testing.T) {
+	root := t.TempDir()
+	writeBoardManifest(t, root, "esp32s3")
+	target, note := reconcileIDFTargetWithManifest(root, "esp32")
+	if target != "esp32s3" || note == "" {
+		t.Errorf("S3 项目 set-target esp32 应被修正为 esp32s3, got target=%q note=%q", target, note)
+	}
+	target, note = reconcileIDFTargetWithManifest(root, "esp32s3")
+	if target != "esp32s3" || note != "" {
+		t.Errorf("已一致不应加噪音, got target=%q note=%q", target, note)
+	}
+	// 没有 IDF 映射的板(行空板)不乱改。
+	root2 := t.TempDir()
+	writeBoardManifest(t, root2, "unihiker")
+	if target, note := reconcileIDFTargetWithManifest(root2, "esp32"); target != "esp32" || note != "" {
+		t.Errorf("无 IDF 映射的板不应改 target, got target=%q note=%q", target, note)
+	}
+	// 无 manifest 原样直通。
+	if target, note := reconcileIDFTargetWithManifest(t.TempDir(), "esp32"); target != "esp32" || note != "" {
+		t.Errorf("无 manifest 应直通, got target=%q note=%q", target, note)
+	}
+}
+
+func TestChipFamily(t *testing.T) {
+	cases := map[string]string{
+		"esp32s3":            "esp32s3",
+		"esp32-s3-devkitc-1": "esp32s3",
+		"esp32dev":           "esp32",
+		"nodemcuv2":          "esp8266",
+		"pico":               "rp2040",
+		"bluepill_f103c8":    "stm32",
+		"uno":                "avr",
+		"my_custom_env":      "",
+	}
+	for in, want := range cases {
+		if got := chipFamily(in); got != want {
+			t.Errorf("chipFamily(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

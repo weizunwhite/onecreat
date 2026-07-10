@@ -166,6 +166,28 @@ func TestRepairCatalogHasMissingLibraryRule(t *testing.T) {
 	}
 }
 
+// LED_PIN 回归:脚手架的板载 LED 必须按板卡取(ESP32=GPIO2,AVR=D13)。
+// 曾硬编码 13,ESP32 第一课的"烧录成功"视觉反馈永远不亮。
+func TestScaffoldLEDPinFollowsBoard(t *testing.T) {
+	files := scaffoldArduino("blink_demo", "esp32")
+	ino := files["blink_demo/blink_demo.ino"]
+	if !strings.Contains(ino, "LED_PIN = 2;") {
+		t.Errorf("arduino+esp32 脚手架 LED 应为 GPIO2:\n%s", ino)
+	}
+	files = scaffoldArduino("blink_demo", "nano")
+	if !strings.Contains(files["blink_demo/blink_demo.ino"], "LED_PIN = 13;") {
+		t.Error("nano 脚手架 LED 应保持 D13")
+	}
+	pio := scaffoldPlatformIO("blink_demo", "uno")
+	if !strings.Contains(pio["include/pins.h"], "PIN_LED = 13;") {
+		t.Errorf("platformio+uno 脚手架 LED 应为 D13:\n%s", pio["include/pins.h"])
+	}
+	pio = scaffoldPlatformIO("blink_demo", "esp32s3")
+	if !strings.Contains(pio["include/pins.h"], "PIN_LED = 2;") {
+		t.Error("platformio+esp32s3 脚手架 LED 应为 GPIO2(带 RGB 灯珠提示)")
+	}
+}
+
 // CH340 驱动指引回归:Windows 零串口必须给出针对性驱动安装指引(而非一句"检查驱动");
 // 检测到 CH340 串口但认不出板型时必须给 FQBN 指引(此前一条建议都不给)。
 func TestRecommendationsForDriverAndUnknownBoard(t *testing.T) {

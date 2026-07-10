@@ -3133,11 +3133,13 @@ func manifestBoardNear(sketchDir string) string {
 //     并返回一句修正说明供模型看到;
 //   - 核心一致 → 保留调用方完整 FQBN(可能带 PSRAM/分区表等菜单选项,不能丢);
 //
-// manifest 没有 board / 没有 manifest / board 无法映射 → 原样返回,行为完全不变。
+// manifest 没有 board / 没有 manifest / board 无法映射 → FQBN 原样直通,但带一句
+// 提示:护栏因缺 manifest 而失效必须让模型有感知(弱模型常跳过 scaffold 直接写
+// .ino,此前这里完全沉默,芯片写错无人拦)。
 func reconcileFQBNWithManifest(sketchDir, callerFQBN string) (fqbn, note string) {
 	board := manifestBoardNear(sketchDir)
 	if board == "" {
-		return callerFQBN, ""
+		return callerFQBN, "ℹ️ 未找到 hardware_manifest.json(或其 board 字段为空),本次无法校验 fqbn 与真实板卡是否一致——请与用户确认板卡型号;建议调用 hardware_project_context 补齐 manifest,后续编译/烧录才有芯片校验护栏。"
 	}
 	derived := arduinoFQBN(board)
 	// arduinoFQBN 对未知板卡原样返回入参;此时拿不到可靠 FQBN,不乱改。
@@ -3149,6 +3151,72 @@ func reconcileFQBNWithManifest(sketchDir, callerFQBN string) (fqbn, note string)
 	}
 	note = fmt.Sprintf("fqbn 已按 hardware_manifest.json 的 board=%s 修正为 %s(原传入 %s 的芯片核心与项目不符,已按项目 manifest 为准)。", board, derived, callerFQBN)
 	return derived, note
+}
+
+// chipFamily 从板卡名/PlatformIO env 名里粗粒度推断芯片家族,用于跨平台一致性比对。
+// 分支顺序重要:esp32s3/c3/c6/s2 必须先于 esp32 判断。识别不出返回 ""(不比对,不误伤)。
+func chipFamily(s string) string {
+	n := boards.Normalize(s)
+	switch {
+	case strings.Contains(n, "esp32s3"):
+		return "esp32s3"
+	case strings.Contains(n, "esp32s2"):
+		return "esp32s2"
+	case strings.Contains(n, "esp32c3"):
+		return "esp32c3"
+	case strings.Contains(n, "esp32c6"):
+		return "esp32c6"
+	case strings.Contains(n, "esp8266"), strings.Contains(n, "nodemcu"), strings.Contains(n, "d1mini"):
+		return "esp8266"
+	case strings.Contains(n, "esp32"):
+		return "esp32"
+	case strings.Contains(n, "rp2040"), strings.Contains(n, "pico"):
+		return "rp2040"
+	case strings.Contains(n, "stm32"), strings.Contains(n, "bluepill"):
+		return "stm32"
+	case strings.Contains(n, "uno"), strings.Contains(n, "nano"), strings.Contains(n, "mega"):
+		return "avr"
+	default:
+		return ""
+	}
+}
+
+// reconcilePIOEnvNote 是 reconcileFQBNWithManifest 的 PlatformIO 版。env 名是用户在
+// platformio.ini 里自定义的,不能像 FQBN 那样直接改写(改成注册表的规范名可能在该
+// ini 里根本不存在)——所以只比对芯片家族,不符时给醒目警告让模型自查。
+// 此前 PlatformIO 路径对 manifest.board 完全没设防,选错 env 烧错芯片无人拦。
+func reconcilePIOEnvNote(projectDir, env string) string {
+	if strings.TrimSpace(env) == "" {
+		return "" // 未指定 env 时 pio 按 ini 的默认 env 构建,无从比对
+	}
+	board := manifestBoardNear(projectDir)
+	if board == "" {
+		return "" // platformio.ini 本身自描述板卡,缺 manifest 不额外加噪音
+	}
+	want, got := chipFamily(board), chipFamily(env)
+	if want == "" || got == "" || want == got {
+		return ""
+	}
+	return fmt.Sprintf("⚠️ environment=%s 的芯片家族(%s)与 hardware_manifest.json 的 board=%s(%s)不符——大概率选错了 env。请核对 platformio.ini 里的 [env:] 定义与真实板卡,选错芯片会编译不过或烧录失败。", env, got, board, want)
+}
+
+// reconcileIDFTargetWithManifest 是 reconcileFQBNWithManifest 的 ESP-IDF 版:
+// idf.py 的 target 是芯片规范名,可以像 FQBN 一样安全地按 manifest 修正。
+// 此前 set-target 对 manifest.board 完全没设防,S3 项目 set-target esp32 无人拦。
+func reconcileIDFTargetWithManifest(projectDir, callerTarget string) (target, note string) {
+	board := manifestBoardNear(projectDir)
+	if board == "" {
+		return callerTarget, ""
+	}
+	profile, ok := findBoardProfile(board, "")
+	if !ok || strings.TrimSpace(profile.ESPIDFTarget) == "" {
+		return callerTarget, "" // 板卡不在注册表或没有 IDF 映射,不乱改
+	}
+	if boards.Normalize(profile.ESPIDFTarget) == boards.Normalize(callerTarget) {
+		return callerTarget, ""
+	}
+	note = fmt.Sprintf("target 已按 hardware_manifest.json 的 board=%s 修正为 %s(原传入 %s 的芯片与项目不符,已按项目 manifest 为准)。", board, profile.ESPIDFTarget, callerTarget)
+	return profile.ESPIDFTarget, note
 }
 
 // prependNote 把 manifest 校正说明放到工具输出最前面,成功或失败都让模型看到已发生的修正。
@@ -3367,6 +3435,14 @@ const flashCloseoutRule = "⚠️ 收尾硬规则:烧录成功只证明固件已
 	"屏显、点灯、转动等视觉或物理效果必须先请用户实际观察确认,才能声称『已完成/成功』。" +
 	"收尾话术用『已烧录,请观察 <具体现象> 是否 <预期>』,不要写『应该能显示了/已经好了/完成』。"
 
+// deployCloseoutRule 是 flashCloseoutRule 的 Python-on-device 版本,附在 mpremote_run /
+// ssh_deploy_run 的成功出口。行空板/MaixCAM/树莓派正是教学主力板,此前这两条路径没有
+// 收尾约束:脚本"跑起来没报错"和"屏幕/摄像头/GPIO 效果正常"是两回事,模型部署成功
+// 就宣称"屏幕会显示 XXX"的病和烧录路径完全一样。
+const deployCloseoutRule = "⚠️ 收尾硬规则:脚本已在设备上运行且无报错,并不代表屏幕/摄像头/灯光/电机等实物效果已经正常。" +
+	"视觉或物理效果必须先请用户实际观察确认,才能声称『已完成/成功』。" +
+	"收尾话术用『程序已在设备运行,请观察 <具体现象> 是否 <预期>』,不要写『应该能显示了/已经好了/完成』。"
+
 func runArduinoUpload(args map[string]any) (string, error) {
 	sketch, err := requirePath(args, "sketch_dir")
 	if err != nil {
@@ -3562,7 +3638,9 @@ func runPlatformIO(args map[string]any) (string, error) {
 		return "", err
 	}
 	cmdArgs := []string{"run", "-d", dir}
-	if env := strArg(args, "environment", ""); env != "" {
+	env := strArg(args, "environment", "")
+	envNote := reconcilePIOEnvNote(dir, env)
+	if env != "" {
 		cmdArgs = append(cmdArgs, "-e", env)
 	}
 	targets := strSliceArg(args, "targets")
@@ -3596,16 +3674,16 @@ func runPlatformIO(args map[string]any) (string, error) {
 		if uploaded {
 			out = strings.TrimRight(out, "\n") + "\n\n" + flashCloseoutRule
 		}
-		return out, nil
+		return prependNote(out, envNote), nil
 	}
 	if monitor && err == nil && !commandOutputHasBody(out) {
-		return out, errors.New("platformio monitor produced no runtime output; verify port, baud rate, board reset, and firmware Serial output")
+		return prependNote(out, envNote), errors.New("platformio monitor produced no runtime output; verify port, baud rate, board reset, and firmware Serial output")
 	}
 	// 烧录成功出口:追加收尾硬规则,防止模型把「已烧录」当成「效果已验证」。
 	if err == nil && uploaded {
 		out = strings.TrimRight(out, "\n") + "\n\n" + flashCloseoutRule
 	}
-	return out, err
+	return prependNote(out, envNote), err
 }
 
 func runESPIDF(args map[string]any) (string, error) {
@@ -3616,12 +3694,14 @@ func runESPIDF(args map[string]any) (string, error) {
 	action := strArg(args, "action", "")
 	cmdArgs := []string{"-C", dir}
 	monitor := false
+	idfNote := ""
 	switch action {
 	case "set_target":
 		target := strArg(args, "target", "")
 		if target == "" {
 			return "", errors.New("target is required for set_target")
 		}
+		target, idfNote = reconcileIDFTargetWithManifest(dir, target)
 		cmdArgs = append(cmdArgs, "set-target", target)
 	case "build":
 		cmdArgs = append(cmdArgs, "build")
@@ -3651,12 +3731,12 @@ func runESPIDF(args map[string]any) (string, error) {
 	}
 	out, err := runESPIDFCommandText(cmdArgs, dir, timeoutArg(args, "timeout_seconds", defaultTO))
 	if err != nil && monitor && strings.Contains(err.Error(), "timed out") && commandOutputHasBody(out) {
-		return out, nil
+		return prependNote(out, idfNote), nil
 	}
 	if monitor && err == nil && !commandOutputHasBody(out) {
-		return out, errors.New("ESP-IDF monitor produced no runtime output; verify port, baud rate, board reset, and ESP_LOG/printf output")
+		return prependNote(out, idfNote), errors.New("ESP-IDF monitor produced no runtime output; verify port, baud rate, board reset, and ESP_LOG/printf output")
 	}
-	return out, err
+	return prependNote(out, idfNote), err
 }
 
 func runESPIDFMCPConfig(args map[string]any) (string, error) {
@@ -3701,6 +3781,9 @@ func runMPRemote(args map[string]any) (string, error) {
 	requireOutput := boolArg(args, "require_output", !boolArg(args, "no_follow", false))
 	if err == nil && requireOutput && !commandOutputHasBody(out) {
 		return out, errors.New("mpremote produced no runtime output; add print() diagnostics, verify the script is running, or set require_output=false for background-only runs")
+	}
+	if err == nil {
+		out = strings.TrimRight(out, "\n") + "\n\n" + deployCloseoutRule
 	}
 	return out, err
 }
@@ -3752,7 +3835,7 @@ func runSSHDeploy(args map[string]any) (string, error) {
 	}
 	remoteCmd := strArg(args, "command", "")
 	if remoteCmd == "" {
-		return out, nil
+		return strings.TrimRight(out, "\n") + "\n\n" + deployCloseoutRule, nil
 	}
 	sshArgs := append([]string{}, commonArgs...)
 	if sshPort > 0 {
@@ -3766,6 +3849,9 @@ func runSSHDeploy(args map[string]any) (string, error) {
 	combined := out + "\n--- remote command ---\n" + sshOut
 	if err == nil && boolArg(args, "require_output", true) && !commandOutputHasBody(sshOut) {
 		return combined, errors.New("ssh remote command produced no runtime output; add print/log output, verify the process is running, or set require_output=false for deploy-only commands")
+	}
+	if err == nil {
+		combined = strings.TrimRight(combined, "\n") + "\n\n" + deployCloseoutRule
 	}
 	return combined, err
 }
@@ -5229,14 +5315,30 @@ func espIDFMCPHint(projectDir, serverName string, useEIM bool) map[string]string
 
 // --- scaffold templates ---
 
+// onboardLEDPin 按板卡返回板载 LED 引脚与注释。曾长期硬编码 13:ESP32 板载 LED 在
+// GPIO2,13 号永远不闪——脚手架给学生的第一个"烧录成功了吗"视觉反馈直接失效,
+// 学生会误判烧录失败反复折腾。
+func onboardLEDPin(board string) (pin int, note string) {
+	fam := chipFamily(board)
+	switch {
+	case fam == "esp8266":
+		return 2, "板载 LED 引脚(NodeMCU 在 GPIO2,低电平点亮:不亮就把 HIGH/LOW 反过来)"
+	case strings.HasPrefix(fam, "esp32"):
+		return 2, "板载 LED 引脚(经典 ESP32 板在 GPIO2;S3/C3 等多为 RGB 灯珠,不亮就外接 LED 串 220Ω 电阻到这里)"
+	default:
+		return 13, "板载 LED 引脚(UNO/Nano/Mega 在 D13)"
+	}
+}
+
 func scaffoldArduino(name, board string) map[string]string {
 	sketchDir := name
+	ledPin, ledNote := onboardLEDPin(board)
 	return map[string]string{
 		"README.md": hardwareReadme(name, "Arduino", board, verificationCommand("arduino", board, name)),
 		filepath.ToSlash(filepath.Join(sketchDir, sketchDir+".ino")): `// ` + name + ` - Arduino 教学示例
 // 目标：先验证串口输出，再逐步连接传感器和执行器。
 
-const int LED_PIN = 13;                 // 板载 LED 引脚
+const int LED_PIN = ` + strconv.Itoa(ledPin) + `;                 // ` + ledNote + `
 const unsigned long LOOP_INTERVAL = 500; // 主循环间隔，单位：毫秒
 
 unsigned long last_loop_time = 0;        // 记录上一次执行任务的时间
@@ -5268,6 +5370,7 @@ void loop() {
 func scaffoldPlatformIO(name, board string) map[string]string {
 	env := platformIOEnv(board)
 	boardID := platformIOBoardID(board)
+	ledPin, ledNote := onboardLEDPin(board)
 	return map[string]string{
 		"README.md":      hardwareReadme(name, "PlatformIO", boardID, verificationCommand("platformio", board, name)),
 		"platformio.ini": platformIOINI(name, boardID, env),
@@ -5275,7 +5378,7 @@ func scaffoldPlatformIO(name, board string) map[string]string {
 #define PINS_H
 
 // 引脚配置集中放在这里，方便学生答辩时说明每根线的作用。
-const int PIN_LED = 2;       // ESP32 常见板载 LED 引脚，实际项目可按接线修改
+const int PIN_LED = ` + strconv.Itoa(ledPin) + `;       // ` + ledNote + `
 const int PIN_UART_RX = 16;  // 外设串口 RX
 const int PIN_UART_TX = 17;  // 外设串口 TX
 
