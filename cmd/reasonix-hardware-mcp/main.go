@@ -3610,7 +3610,7 @@ func runArduinoMonitor(args map[string]any) (string, error) {
 	if err != nil {
 		if strings.Contains(err.Error(), "timed out") {
 			if commandOutputHasBody(out) {
-				return out, nil
+				return appendCrashHint(out), nil
 			}
 			// 跑满窗口仍无输出:才是真的硬件侧问题,给排查指引而不是干瘪的 timeout。
 			return out, errors.New(serialNoOutputGuidance)
@@ -3620,7 +3620,7 @@ func runArduinoMonitor(args map[string]any) (string, error) {
 	if !commandOutputHasBody(out) {
 		return out, errors.New(serialNoOutputGuidance)
 	}
-	return out, nil
+	return appendCrashHint(out), nil
 }
 
 // serialNoOutputGuidance 是「采不到串口输出」时给模型的明确指引。实测(贪吃蛇会话)
@@ -3670,6 +3670,9 @@ func runPlatformIO(args map[string]any) (string, error) {
 		defaultTO = 12 * time.Second
 	}
 	out, err := runCommandText("pio", cmdArgs, dir, timeoutArg(args, "timeout_seconds", defaultTO))
+	if monitor {
+		out = appendCrashHint(out)
+	}
 	if err != nil && monitor && strings.Contains(err.Error(), "timed out") && commandOutputHasBody(out) {
 		if uploaded {
 			out = strings.TrimRight(out, "\n") + "\n\n" + flashCloseoutRule
@@ -3730,6 +3733,9 @@ func runESPIDF(args map[string]any) (string, error) {
 		defaultTO = 12 * time.Second
 	}
 	out, err := runESPIDFCommandText(cmdArgs, dir, timeoutArg(args, "timeout_seconds", defaultTO))
+	if monitor {
+		out = appendCrashHint(out)
+	}
 	if err != nil && monitor && strings.Contains(err.Error(), "timed out") && commandOutputHasBody(out) {
 		return prependNote(out, idfNote), nil
 	}
@@ -6198,6 +6204,21 @@ func builtInRepairRules() []repairRule {
 			DetectedBy:       []string{"No such file or directory", "library not found", "ModuleNotFoundError", "ImportError"},
 			ManualSteps:      []string{"先确认代码实际使用的库名", "PlatformIO 项目优先写入 lib_deps，而不是让用户手动装库", "Python 项目更新 requirements.txt", "重新编译或做语法检查"},
 			EvidenceRequired: []string{"compile", "syntax"},
+		},
+		{
+			Code:       "esp32_runtime_crash",
+			Title:      "编译烧录都成功,但设备一跑就崩溃/复位(Guru Meditation / 看门狗 / 栈溢出 / 掉电)",
+			Platforms:  []string{"arduino", "platformio", "esp_idf"},
+			DetectedBy: []string{"Guru Meditation Error", "Backtrace:", "Stack canary watchpoint", "Task watchdog got triggered", "Brownout detector was triggered", "rst:0x"},
+			ManualSteps: []string{
+				"先用 arduino_monitor_sample 采一段串口:采样输出会自动附上崩溃类型的教学化诊断(空指针/栈溢出/看门狗/供电不足),按诊断方向修。",
+				"LoadProhibited/StoreProhibited = 空指针或数组越界,查最近改动里指针/对象的初始化;EXCVADDR=0x00000000 是空指针铁证。",
+				"Task watchdog = loop 或任务长时间阻塞,在等待循环里加 delay(1);Stack canary = 栈溢出,大局部数组改 static 或加大任务栈。",
+				"Brownout = 供电不足,不是代码问题:换粗 USB 线或独立供电,WiFi 启动/电机/舵机的瞬时电流 USB 口常带不动。",
+				"需要定位到源码行时,用 addr2line 解码 Backtrace 地址:xtensa-esp32-elf-addr2line -pfiaC -e <编译产物.elf> <地址...>。",
+				"修复后重新烧录并再采一次串口,确认不再复位才算通过;不要带着崩溃继续加功能。",
+			},
+			EvidenceRequired: []string{"monitor"},
 		},
 		{
 			Code:             "serial_port_unavailable",

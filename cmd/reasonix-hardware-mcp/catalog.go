@@ -563,6 +563,76 @@ var compileErrorPatterns = []errorPattern{
 	},
 }
 
+// --- 串口崩溃蒸馏 ---
+//
+// ESP32 项目最典型的"编译能过、一跑就复位":Guru Meditation / 看门狗 / 栈溢出 /
+// 掉电复位。学生完全看不懂 backtrace,弱模型拿到 0x400d1234 这种无符号地址也只能
+// 盲猜。这里把崩溃特征翻译成教学可懂的根因+立刻可做的排查方向,附在串口采样输出后。
+// (完整 addr2line 符号还原需要定位 .elf 与工具链,留作后续;这层零依赖先把
+// "崩溃类型→常见根因"的闭环打通。)
+
+type crashPattern struct {
+	keywords []string // 输出里必须全部出现
+	hint     string
+}
+
+var esp32CrashPatterns = []crashPattern{
+	{[]string{"Guru Meditation Error", "LoadProhibited"},
+		"崩溃类型:非法内存读取(LoadProhibited)——最常见是空指针/未初始化指针,如对象没 new/begin 就用、数组越界、传感器库没 init 就读。检查 EXCVADDR 是不是 0x00000000(空指针铁证);排查最近改动里所有指针/对象的初始化顺序。"},
+	{[]string{"Guru Meditation Error", "StoreProhibited"},
+		"崩溃类型:非法内存写入(StoreProhibited)——空指针/野指针写、数组越界写。排查方向同 LoadProhibited,重点看写操作(strcpy/memcpy/数组赋值)。"},
+	{[]string{"Guru Meditation Error", "IntegerDivideByZero"},
+		"崩溃类型:整数除以零。找代码里的除法/取模,检查分母可能为 0 的路径(如传感器读数为 0、map() 参数相等)。"},
+	{[]string{"Guru Meditation Error", "IllegalInstruction"},
+		"崩溃类型:非法指令——常见于固件损坏(烧录被打断)、函数指针错误或内存被踩。先完整重新编译+烧录一次;仍崩再查函数指针/回调。"},
+	{[]string{"Stack canary watchpoint triggered"},
+		"崩溃类型:栈溢出——某个任务的栈被写穿。常见原因:函数里开了大局部数组(如 char buf[4096])、递归过深、String 拼接失控。把大缓冲改成全局/static,或加大任务栈(xTaskCreate 的 stackDepth)。"},
+	{[]string{"Task watchdog got triggered"},
+		"崩溃类型:任务看门狗超时——loop()/某任务长时间阻塞不让出 CPU。常见原因:while 死循环等待(如 WiFi/串口)没有 delay/yield、长时间同步操作。在等待循环里加 delay(1) 或 vTaskDelay。"},
+	{[]string{"Brownout detector was triggered"},
+		"崩溃类型:掉电复位(Brownout)——供电不足,不是代码问题!常见于 USB 口带不动 WiFi 启动/电机/舵机的瞬时电流。换粗 USB 线/独立 5V 供电/给外设单独供电,不要改代码。"},
+	{[]string{"rst:0x8", "TG1WDT"},
+		"崩溃类型:硬件看门狗复位——程序卡死到连任务看门狗都没机会报。通常是中断里做了耗时操作或底层驱动死锁;检查 ISR 里是否有 Serial.print/delay 这类禁止操作。"},
+}
+
+// distillCrashOutput 识别串口输出里的 ESP32 崩溃特征,返回教学化诊断(无崩溃返回空)。
+func distillCrashOutput(output string) string {
+	if output == "" {
+		return ""
+	}
+	var hints []string
+	for _, p := range esp32CrashPatterns {
+		matched := true
+		for _, kw := range p.keywords {
+			if !strings.Contains(output, kw) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			hints = append(hints, p.hint)
+		}
+	}
+	if len(hints) == 0 {
+		// 有 Backtrace 但不认识的崩溃类型:至少告诉模型这是崩溃、该怎么解码。
+		if strings.Contains(output, "Backtrace:") && (strings.Contains(output, "Guru Meditation") || strings.Contains(output, "abort()")) {
+			hints = append(hints, "检测到崩溃 Backtrace。地址可用 addr2line 还原成源码行:xtensa-esp32-elf-addr2line -pfiaC -e <编译产物.elf> <backtrace 里的地址...>(.elf 在 arduino-cli 编译缓存或 build/ 目录)。")
+		} else {
+			return ""
+		}
+	}
+	return "🔴 串口输出中检测到设备崩溃/复位:\n- " + strings.Join(hints, "\n- ") +
+		"\n先按上面的方向修复,重新烧录后再采一次串口确认不再复位;不要在崩溃根因未除时继续加功能。"
+}
+
+// appendCrashHint 在串口采样输出后附加崩溃诊断(无崩溃时原样返回)。
+func appendCrashHint(out string) string {
+	if hint := distillCrashOutput(out); hint != "" {
+		return strings.TrimRight(out, "\n") + "\n\n" + hint
+	}
+	return out
+}
+
 // firstErrorLine 从级联输出里抽第一条「真错误」:优先 fatal error / error: 行。
 func firstErrorLine(output string) string {
 	if output == "" {

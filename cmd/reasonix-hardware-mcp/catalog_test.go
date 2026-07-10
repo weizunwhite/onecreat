@@ -252,6 +252,47 @@ func TestDistillLibraryMissing(t *testing.T) {
 	}
 }
 
+// 串口崩溃蒸馏:ESP32 "编译能过、一跑就复位" 的典型崩溃必须给出教学化根因。
+func TestDistillCrashOutput(t *testing.T) {
+	// 真实 Guru Meditation 崩溃日志的典型形态
+	guru := `Guru Meditation Error: Core  1 panic'ed (LoadProhibited). Exception was unhandled.
+Core  1 register dump:
+PC      : 0x400d129a  PS      : 0x00060330  A0      : 0x800d2f10  A1      : 0x3ffb21b0
+EXCVADDR: 0x00000000
+Backtrace: 0x400d129a:0x3ffb21b0 0x400d2f0d:0x3ffb21d0
+Rebooting...`
+	hint := distillCrashOutput(guru)
+	for _, want := range []string{"空指针", "EXCVADDR", "检测到设备崩溃"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("LoadProhibited 诊断缺 %q:\n%s", want, hint)
+		}
+	}
+
+	cases := []struct{ name, output, mustContain string }{
+		{"栈溢出", "***ERROR*** A stack overflow in task loopTask has been detected.\nStack canary watchpoint triggered (loopTask)", "栈溢出"},
+		{"看门狗", "E (10314) task_wdt: Task watchdog got triggered. The following tasks did not reset the watchdog in time:", "delay"},
+		{"掉电", "Brownout detector was triggered\n\nets Jul 29 2019 12:21:46", "供电不足"},
+		{"未知崩溃有backtrace", "Guru Meditation Error: Core 0 panic'ed (Unhandled debug exception)\nBacktrace: 0x400d1234:0x3ffb0000", "addr2line"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if hint := distillCrashOutput(tc.output); !strings.Contains(hint, tc.mustContain) {
+				t.Errorf("诊断缺 %q:\n%s", tc.mustContain, hint)
+			}
+		})
+	}
+
+	// 正常输出绝不能误报崩溃。
+	for _, ok := range []string{"", "ready\nled:on\nled:off\n", "temp=25.3\nhum=60\nrst button pressed by user\n"} {
+		if hint := distillCrashOutput(ok); hint != "" {
+			t.Errorf("正常输出误报崩溃: %q -> %q", ok, hint)
+		}
+	}
+	if out := appendCrashHint("ready\nled:on\n"); out != "ready\nled:on\n" {
+		t.Errorf("无崩溃时 appendCrashHint 应原样返回, got %q", out)
+	}
+}
+
 func TestDistillCompilePassNoFix(t *testing.T) {
 	// 编译通过(无 error)不应误报修法
 	output := "Sketch uses 123456 bytes (12%) of program storage space."
