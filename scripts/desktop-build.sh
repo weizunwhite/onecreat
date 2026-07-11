@@ -5,7 +5,8 @@
 #
 # Output lands in <repo>/dist/ with stable, platform-keyed names that
 # desktop/cmd/sign's `manifest` subcommand maps back to update.PlatformKey:
-#   macOS:   onecreat-darwin-<arch>.zip                  (ditto archive of the .app)
+#   macOS:   onecreat-darwin-<arch>.zip                  (ditto archive of the .app,自动更新用)
+#            onecreat-darwin-<arch>-<version>.dmg        (拖拽安装的分发盘,给用户下载)
 #   Windows: onecreat-windows-<arch>-installer.exe       (NSIS per-user installer)
 #   Linux:   onecreat-linux-<arch>.tar.gz                (bare binary)
 #
@@ -86,7 +87,13 @@ darwin)
 	find "$app" -name '._*' -delete
 	codesign --force --deep -s - "$app"
 	COPYFILE_DISABLE=1 ditto -c -k --norsrc --noextattr --keepParent "$app" "$ROOT/dist/${APPNAME}-darwin-${arch}.zip"
-	rm -rf "$staging"
+	# 同时出 DMG(拖拽安装盘):zip 供自动更新链路,DMG 给用户手动下载安装。
+	dmg_stage=$(mktemp -d)
+	cp -R "$app" "$dmg_stage/${APPNAME}.app"
+	ln -s /Applications "$dmg_stage/Applications"
+	hdiutil create -volname "OneCreat ${VERSION}" -srcfolder "$dmg_stage" -ov -format UDZO \
+		"$ROOT/dist/${APPNAME}-darwin-${arch}-${VERSION}.dmg"
+	rm -rf "$dmg_stage" "$staging"
 	;;
 windows)
 	# `wails build -nsis` writes the installer under build/bin; its exact name
