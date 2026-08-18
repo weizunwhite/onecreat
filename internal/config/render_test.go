@@ -68,6 +68,17 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 		"c++": {Command: "clangd", LanguageID: "cpp", Extensions: []string{".cpp", ".hpp"}},
 	}}
 	orig.Tools.Search = SearchConfig{Engine: "rg", RgPath: "/usr/local/bin/rg"}
+	// dsh 引擎选择 + [dsh] 段必须 round-trip(否则保存后引擎配置丢失)。
+	orig.Engine = "dsh"
+	orig.DSH = DSHConfig{
+		BinPath:           "node",
+		Args:              []string{"lib/bin.js", "cordis.yml"},
+		Version:           "0.1.0-rc.7",
+		StartupTimeoutSec: 30,
+		GatewayBaseURL:    "https://t.weizunxy.com/api/onecreat/v1",
+		GatewayTokenEnv:   "ONECREAT_GATEWAY_TOKEN",
+		ModelPlaceholder:  "onecreat",
+	}
 	orig.Plugins = []PluginEntry{
 		{Name: "example", Command: "reasonix-plugin-example", Tier: "eager"}, // D1:tier 必须持久化
 		{Name: "stripe", Type: "http", URL: "https://mcp.stripe.com", Headers: map[string]string{"Authorization": "Bearer x"}, AutoStart: boolPtr(false)},
@@ -137,6 +148,18 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.Network.ProxyMode != "custom" || got.Network.Proxy.Type != "socks5" || got.Network.Proxy.Port != 7890 {
 		t.Errorf("network proxy not preserved: %+v", got.Network)
+	}
+	if got.Engine != "dsh" {
+		t.Errorf("engine = %q, want dsh", got.Engine)
+	}
+	if got.DSH.BinPath != "node" || got.DSH.Version != "0.1.0-rc.7" || got.DSH.StartupTimeoutSec != 30 {
+		t.Errorf("dsh scalar fields not preserved: %+v", got.DSH)
+	}
+	if len(got.DSH.Args) != 2 || got.DSH.Args[0] != "lib/bin.js" || got.DSH.Args[1] != "cordis.yml" {
+		t.Errorf("dsh.args not preserved: %v", got.DSH.Args)
+	}
+	if got.DSH.GatewayBaseURL != "https://t.weizunxy.com/api/onecreat/v1" || got.DSH.ModelPlaceholder != "onecreat" {
+		t.Errorf("dsh gateway/model fields not preserved: %+v", got.DSH)
 	}
 	if len(got.Skills.Paths) != 2 || got.Skills.Paths[0] != "~/my-skills" {
 		t.Errorf("skills.paths = %v", got.Skills.Paths)

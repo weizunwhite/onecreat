@@ -36,6 +36,13 @@ func RenderTOML(c *Config) string {
 	} else {
 		b.WriteString("# language      = \"zh\"   # ui/model language; empty = auto-detect from $LANG / $REASONIX_LANG\n")
 	}
+	// engine 必须是根级裸键,渲染在任何 [section] 之前(否则会被归到上一个表)。
+	b.WriteString("# 底层 agent 引擎:\"native\"(现有 Go 内核,默认)| \"dsh\"(DeepSeek Harness sidecar)。\n")
+	if c.Engine != "" && c.Engine != "native" {
+		fmt.Fprintf(&b, "engine = %q\n", c.Engine)
+	} else {
+		b.WriteString("# engine = \"dsh\"\n")
+	}
 	b.WriteString("\n")
 
 	b.WriteString("[ui]\n")
@@ -299,7 +306,57 @@ func RenderTOML(c *Config) string {
 		}
 	}
 
+	renderDSH(&b, c)
+
 	return b.String()
+}
+
+// renderDSH 渲染 [dsh] sidecar 配置(表段,置于文件末尾)。所有非空字段都渲染出来,
+// 保证 round-trip 不丢(对齐 D1 教训)。秘密从环境取,这里只放"环境变量名"。
+func renderDSH(b *strings.Builder, c *Config) {
+	d := c.DSH
+	b.WriteString("\n[dsh]\n")
+	b.WriteString("# dsh sidecar(仅 engine=\"dsh\" 时生效)。秘密从环境取,这里只放\"环境变量名\"。\n")
+	if d.BinPath != "" {
+		fmt.Fprintf(b, "bin_path = %q\n", d.BinPath)
+	} else {
+		b.WriteString("# bin_path = \"node\"\n")
+	}
+	if len(d.Args) > 0 {
+		b.WriteString("args = [")
+		for i, a := range d.Args {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%q", a)
+		}
+		b.WriteString("]\n")
+	} else {
+		b.WriteString("# args = [\"lib/bin.js\", \"cordis.yml\"]\n")
+	}
+	if d.Version != "" {
+		fmt.Fprintf(b, "version = %q\n", d.Version)
+	} else {
+		b.WriteString("# version = \"0.1.0-rc.7\"   # 锁死 dsh 精确版本(developer preview)\n")
+	}
+	if d.StartupTimeoutSec != 0 {
+		fmt.Fprintf(b, "startup_timeout_sec = %d\n", d.StartupTimeoutSec)
+	}
+	if d.GatewayBaseURL != "" {
+		fmt.Fprintf(b, "gateway_base_url = %q\n", d.GatewayBaseURL)
+	} else {
+		b.WriteString("# gateway_base_url = \"https://t.weizunxy.com/api/onecreat/v1\"\n")
+	}
+	if d.GatewayTokenEnv != "" {
+		fmt.Fprintf(b, "gateway_token_env = %q\n", d.GatewayTokenEnv)
+	} else {
+		b.WriteString("# gateway_token_env = \"ONECREAT_GATEWAY_TOKEN\"\n")
+	}
+	if d.ModelPlaceholder != "" {
+		fmt.Fprintf(b, "model_placeholder = %q   # 档位占位符,绝不填真实模型名\n", d.ModelPlaceholder)
+	} else {
+		b.WriteString("# model_placeholder = \"onecreat\"   # 档位占位符,绝不填真实模型名\n")
+	}
 }
 
 // renderCodegraph 写出 [codegraph] 段(enabled/auto_install/path)。这些字段过去不被
