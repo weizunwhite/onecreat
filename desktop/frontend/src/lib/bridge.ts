@@ -1,9 +1,14 @@
-// bridge is the single seam between the React app and the Go kernel. In the Wails
-// shell it calls the bound App methods (window.go.main.App.*) and subscribes to
-// the runtime event stream (window.runtime.EventsOn). In a plain browser (`pnpm
-// dev` outside the shell) those globals are absent, so it falls back to a mock
-// that streams a canned turn through the same contract — letting the whole UI be
-// developed and laid out without rebuilding the Go side.
+// bridge is the single seam between the React app and the Go kernel. It resolves
+// to one of three transports, in this order:
+//
+//  1. Wails 桌面版 — window.go.main.App.* 绑定 + window.runtime.EventsOn 事件流;
+//  2. Web 模式 — 本地 HTTP 服务(onecreat-web)注入 window.__ONECREAT_WEB__ 后,
+//     每个方法走 POST /rpc/<方法名>,事件走一条 /events 的 SSE(见 desktop/rpc.go、
+//     desktop/eventstream.go);
+//  3. 都不在 — `pnpm dev` 的裸浏览器,回落到 mock,同一份契约喂一段假对话,
+//     让整套 UI 不重建 Go 侧也能开发调试。
+//
+// 三条路共用 AppBindings 这一个接口,所以组件代码完全不知道自己跑在哪种壳里。
 
 import type {
   AccountLoginResult,
@@ -58,6 +63,7 @@ import type {
   WireEvent,
   WorkspaceView,
 } from "./types";
+import { openFolderPicker } from "./folderPicker";
 
 // AppBindings mirrors desktop/app.go's exported method set. Keep in sync by hand
 // (or regenerate with `wails generate module` and import wailsjs instead).
@@ -231,6 +237,9 @@ declare global {
   interface Window {
     runtime?: WailsRuntime;
     go?: { main?: { App?: AppBindings } };
+    // Web 模式由服务端注入到 index.html(见 desktop/webserver.go 的 webIndexMarker),
+    // 一定先于本 bundle 执行,所以模块顶层就能读到。
+    __ONECREAT_WEB__?: boolean;
   }
 }
 
@@ -251,12 +260,152 @@ function getMock(): AppBindings {
   return mockSingleton;
 }
 
+// --- Web 模式传输(本地 HTTP 服务 + 浏览器当 UI)------------------------------
+
+// isWebMode 认的是服务端注入 index.html 的标记(desktop/webserver.go 的
+// webIndexMarker)。Wails 里没有它,`pnpm dev` 的裸浏览器里也没有。
+function isWebMode(): boolean {
+  return typeof window !== "undefined" && window.__ONECREAT_WEB__ === true;
+}
+
+// wailsRuntime 只有在真跑在 Wails 壳里时才返回 runtime(realApp() 判定绑定已注入)。
+function wailsRuntime(): WailsRuntime | undefined {
+  if (!realApp() || typeof window === "undefined") return undefined;
+  return window.runtime;
+}
+
+const WEB_TOKEN_KEY = "onecreat:web-token";
+
+// 一次性访问 token:onecreat-web 每次启动随机生成,通过 ?token=… 带进页面。这里
+// 把它挪进 sessionStorage 再从地址栏抹掉——不进浏览器历史、复制链接不会带出去、
+// 关掉标签页即失效。
+function readWebToken(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const url = new URL(window.location.href);
+    const fromUrl = url.searchParams.get("token");
+    if (fromUrl) {
+      window.sessionStorage.setItem(WEB_TOKEN_KEY, fromUrl);
+      url.searchParams.delete("token");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+      return fromUrl;
+    }
+    return window.sessionStorage.getItem(WEB_TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+const webToken = isWebMode() ? readWebToken() : "";
+
+// 断链只提示一次:一次页面刷新会并发几十个 RPC,否则会弹几十个框。
+let disconnectNotified = false;
+function notifyDisconnected(message: string): void {
+  if (disconnectNotified || typeof window === "undefined") return;
+  disconnectNotified = true;
+  window.alert(message);
+}
+
+// webCall 是一次 RPC:POST /rpc/<方法名>,body 是位置参数数组(与 Wails 绑定的
+// 调用语义一致)。后端把 (T, error) 折叠成 {"result"} 或 4xx/5xx+{"error"},
+// 这里再把错误翻回 rejected promise —— 组件里既有的 .catch() 照常生效。
+async function webCall(method: string, args: unknown[]): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(`/rpc/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${webToken}` },
+      body: JSON.stringify(args),
+    });
+  } catch (e) {
+    throw new Error(`${method}: 连不上本地服务(onecreat-web 还开着吗?) ${String(e)}`);
+  }
+  if (res.status === 401) {
+    notifyDisconnected("访问令牌已失效或缺失。请回到启动 onecreat-web 的终端,重新打开它打印的那条带 token 的链接。");
+    throw new Error(`${method}: 访问令牌无效`);
+  }
+  const data = (await res.json().catch(() => ({}))) as { result?: unknown; error?: string };
+  if (!res.ok) throw new Error(data.error || `${method} 失败(HTTP ${res.status})`);
+  return data.result;
+}
+
+let httpSingleton: AppBindings | null = null;
+function getHttpApp(): AppBindings {
+  if (!httpSingleton) httpSingleton = makeHttpApp();
+  return httpSingleton;
+}
+
+// makeHttpApp 用 Proxy 把任意方法名映射成一次 RPC,不逐个手写 —— 新增 Go 方法时
+// Web 模式零改动(AppBindings 接口仍要手工同步,那是类型层面的事)。
+function makeHttpApp(): AppBindings {
+  return new Proxy({} as AppBindings, {
+    get(_t, prop) {
+      if (typeof prop !== "string") return undefined;
+      // await 一个对象时 JS 会探测 .then;这里必须如实说"没有",否则 Promise
+      // 解析会把整个 app 对象当成 thenable 挂住。
+      if (prop === "then") return undefined;
+      // 原生目录对话框在浏览器里不存在,但 app 内置的 FolderPicker(走 BrowseDir)
+      // 完全能替代,所以这一个方法改走它,「添加技能文件夹」在 Web 下照常可用。
+      // 文件选择(PickReferenceFile / KnowledgeImportFiles)没有等价物:后端要的是
+      // 磁盘绝对路径,浏览器 File API 给不了,只能由后端返回明确错误。
+      if (prop === "PickSkillFolder") return () => openFolderPicker();
+      return (...args: unknown[]) => webCall(prop, args);
+    },
+  }) as AppBindings;
+}
+
+// Web 模式下全部事件走同一条 SSE 长连接,按帧里的 channel 字段分发给订阅者。
+const webChannels = new Map<string, Set<(payload: unknown) => void>>();
+let webEventSource: EventSource | null = null;
+
+function ensureWebEventSource(): void {
+  if (webEventSource || typeof window === "undefined" || typeof EventSource === "undefined") return;
+  // EventSource 不能带自定义 header,token 只能走查询参数(服务端两种都收)。
+  const es = new EventSource(`/events?token=${encodeURIComponent(webToken)}`);
+  webEventSource = es;
+  es.onmessage = (ev) => {
+    let frame: { channel?: string; payload?: unknown };
+    try {
+      frame = JSON.parse(ev.data) as { channel?: string; payload?: unknown };
+    } catch {
+      return; // 坏帧丢掉,不影响后续
+    }
+    if (!frame.channel) return;
+    webChannels.get(frame.channel)?.forEach((cb) => cb(frame.payload));
+  };
+  es.onerror = () => {
+    // 网络抖动 EventSource 会自己重连;非 2xx(token 失效)或服务退出则直接 CLOSED。
+    if (es.readyState === EventSource.CLOSED) {
+      webEventSource = null;
+      notifyDisconnected("与本地服务的事件连接已断开(onecreat-web 已退出,或访问令牌失效)。请回到终端重新启动并打开它打印的链接。");
+    }
+  };
+}
+
+function webSubscribe(channel: string, cb: (payload: unknown) => void): () => void {
+  ensureWebEventSource();
+  let set = webChannels.get(channel);
+  if (!set) {
+    set = new Set();
+    webChannels.set(channel, set);
+  }
+  set.add(cb);
+  return () => {
+    const cur = webChannels.get(channel);
+    if (!cur) return;
+    cur.delete(cb);
+    if (cur.size === 0) webChannels.delete(channel);
+  };
+}
+
+
 // onEvent subscribes to one tab's typed event stream (agent:event:<tabId>);
 // returns an unsubscribe. 每个标签独立通道,所以后台标签的事件互不串扰。
 export function onEvent(tabId: string, cb: (e: WireEvent) => void): () => void {
-  if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn(`${EVENT_CHANNEL}:${tabId}`, (payload) => cb(payload as WireEvent));
-  }
+  const channel = `${EVENT_CHANNEL}:${tabId}`;
+  const rt = wailsRuntime();
+  if (rt) return rt.EventsOn(channel, (payload) => cb(payload as WireEvent));
+  if (isWebMode()) return webSubscribe(channel, (payload) => cb(payload as WireEvent));
   return mockSubscribe(cb);
 }
 
@@ -264,9 +413,9 @@ export function onEvent(tabId: string, cb: (e: WireEvent) => void): () => void {
 // channel from the agent stream); returns an unsubscribe. Must match the event
 // name emitted in desktop/updater_app.go.
 export function onUpdaterProgress(cb: (p: UpdateProgress) => void): () => void {
-  if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("updater:progress", (p) => cb(p as UpdateProgress));
-  }
+  const rt = wailsRuntime();
+  if (rt) return rt.EventsOn("updater:progress", (p) => cb(p as UpdateProgress));
+  if (isWebMode()) return webSubscribe("updater:progress", (p) => cb(p as UpdateProgress));
   updaterListeners.add(cb);
   return () => {
     updaterListeners.delete(cb);
@@ -276,9 +425,11 @@ export function onUpdaterProgress(cb: (p: UpdateProgress) => void): () => void {
 // onReady subscribes to one tab's agent:ready:<tabId> event, fired when that
 // tab's boot.Build completes. The frontend re-fetches Meta/Context/History then.
 export function onReady(tabId: string, cb: () => void): () => void {
-  if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn(`agent:ready:${tabId}`, () => cb());
-  }
+  const rt = wailsRuntime();
+  if (rt) return rt.EventsOn(`agent:ready:${tabId}`, () => cb());
+  // Web 模式下 ready 可能在浏览器连上 SSE 之前就发过了;useController 挂完订阅后
+  // 还会主动拉一次 Meta/History,所以漏掉这一发不会卡在 loading。
+  if (isWebMode()) return webSubscribe(`agent:ready:${tabId}`, () => cb());
   // In dev mock, fire immediately since there's no real boot sequence.
   cb();
   return () => {};
@@ -312,26 +463,27 @@ let mockSession: AccountSession = {
 };
 
 export function onSerialData(cb: (chunk: string) => void): () => void {
-  if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("serial:data", (d) => cb(String(d)));
-  }
+  const rt = wailsRuntime();
+  if (rt) return rt.EventsOn("serial:data", (d) => cb(String(d)));
+  if (isWebMode()) return webSubscribe("serial:data", (d) => cb(String(d)));
   serialListeners.add(cb);
   return () => serialListeners.delete(cb);
 }
 
 export function onSerialClosed(cb: (reason: string) => void): () => void {
-  if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("serial:closed", (r) => cb(String(r)));
-  }
+  const rt = wailsRuntime();
+  if (rt) return rt.EventsOn("serial:closed", (r) => cb(String(r)));
+  if (isWebMode()) return webSubscribe("serial:closed", (r) => cb(String(r)));
   serialClosedListeners.add(cb);
   return () => serialClosedListeners.delete(cb);
 }
 
 // app proxies each call to the live binding (or the dev mock only when truly
 // outside the shell), so a late-injected window.go is picked up transparently.
+// 解析顺序:Wails 绑定 → Web 模式 HTTP RPC → 浏览器 mock。
 export const app: AppBindings = new Proxy({} as AppBindings, {
   get(_t, prop) {
-    const target = realApp() ?? getMock();
+    const target = realApp() ?? (isWebMode() ? getHttpApp() : getMock());
     const v = (target as unknown as Record<string, unknown>)[String(prop)];
     return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
   },
