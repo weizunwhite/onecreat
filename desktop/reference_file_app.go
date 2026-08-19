@@ -13,26 +13,24 @@ import (
 	goruntime "runtime"
 	"strings"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // ReferenceFileResult is what Composer's "上传参考资料" button gets back from
 // ImportReferenceFile. It's a flat structure the frontend folds into a pasted
 // block, so the file's text becomes part of the next user message.
 type ReferenceFileResult struct {
-	Name       string `json:"name"`        // basename or URL
-	Path       string `json:"path"`        // absolute path or original URL
-	Text       string `json:"text"`        // extracted plain text
-	CharCount  int    `json:"charCount"`   // characters in Text
-	Truncated  bool   `json:"truncated"`   // text was cut to fit budget
-	Source     string `json:"source"`      // "file" | "url"
-	FormatHint string `json:"formatHint"`  // "txt"/"md"/"pdf"/"docx"/"html"/...
+	Name       string `json:"name"`       // basename or URL
+	Path       string `json:"path"`       // absolute path or original URL
+	Text       string `json:"text"`       // extracted plain text
+	CharCount  int    `json:"charCount"`  // characters in Text
+	Truncated  bool   `json:"truncated"`  // text was cut to fit budget
+	Source     string `json:"source"`     // "file" | "url"
+	FormatHint string `json:"formatHint"` // "txt"/"md"/"pdf"/"docx"/"html"/...
 }
 
 const (
-	refFileMaxBytes = 8 << 20  // 8MB cap on source files
-	refFileMaxText  = 60_000   // ~15k tokens — fits in DeepSeek context budget
+	refFileMaxBytes = 8 << 20 // 8MB cap on source files
+	refFileMaxText  = 60_000  // ~15k tokens — fits in DeepSeek context budget
 )
 
 // PickReferenceFile pops the OS file picker so the student can choose a Word /
@@ -43,10 +41,10 @@ func (a *App) PickReferenceFile() (string, error) {
 		return "", errors.New("file picker not ready")
 	}
 	cwd, _ := os.Getwd()
-	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+	return a.sh().OpenFileDialog(DialogOptions{
 		Title:            "选择参考资料",
 		DefaultDirectory: cwd,
-		Filters: []runtime.FileFilter{
+		Filters: []FileFilter{
 			{DisplayName: "支持的资料 (PDF, Word, HTML, Markdown, 代码, 文本)", Pattern: "*.pdf;*.doc;*.docx;*.rtf;*.html;*.htm;*.md;*.markdown;*.txt;*.csv;*.json;*.yaml;*.yml;*.toml;*.py;*.js;*.ts;*.tsx;*.jsx;*.go;*.c;*.h;*.cpp;*.hpp;*.ino;*.pde;*.sh"},
 			{DisplayName: "所有文件", Pattern: "*.*"},
 		},

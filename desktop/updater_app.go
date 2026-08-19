@@ -6,8 +6,6 @@ import (
 	"os"
 	"runtime"
 
-	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"reasonix/desktop/internal/update"
 )
 
@@ -50,9 +48,7 @@ func (a *App) OpenDownloadPage() {
 			}
 		}
 	}
-	if a.ctx != nil {
-		wruntime.BrowserOpenURL(a.ctx, page)
-	}
+	a.sh().BrowserOpenURL(page)
 }
 
 // ApplyUpdate downloads, verifies, installs the latest build, then relaunches. On
@@ -148,7 +144,7 @@ func (a *App) emitProgress(phase string, received, total int64, errMsg string) {
 	if a.ctx == nil {
 		return
 	}
-	wruntime.EventsEmit(a.ctx, "updater:progress", updateProgress{
+	a.sh().Emit("updater:progress", updateProgress{
 		Phase: phase, Received: received, Total: total, Err: errMsg,
 	})
 }

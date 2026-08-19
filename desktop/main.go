@@ -1,3 +1,5 @@
+//go:build !web
+
 // Command reasonix-desktop is the Wails shell around the onecreat kernel: a native
 // window hosting a webview frontend, with the Go-side control.Controller bound
 // directly to the UI (no HTTP hop — bindings in, runtime events out). It lives in

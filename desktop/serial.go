@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.bug.st/serial"
 )
 
@@ -36,7 +35,7 @@ func (a *App) serialReleaseForToolUse(_ context.Context, name string, args json.
 	if open {
 		// 复用 serial:closed 事件:前端的 onSerialClosed 会把面板状态翻成「未连接」并显示原因,
 		// 让用户知道监视器为什么断了(closeSerialLocked 是干净关闭、读循环不会再自己发这个事件)。
-		runtime.EventsEmit(a.ctx, "serial:closed", "已自动断开,让本次烧录/串口采样独占串口")
+		a.sh().Emit("serial:closed", "已自动断开,让本次烧录/串口采样独占串口")
 	}
 }
 
@@ -150,14 +149,14 @@ func (a *App) serialReadLoop(ses *serialSession) {
 		}
 		n, err := ses.port.Read(buf)
 		if n > 0 {
-			runtime.EventsEmit(a.ctx, "serial:data", string(buf[:n]))
+			a.sh().Emit("serial:data", string(buf[:n]))
 		}
 		if err != nil {
 			// 区分「用户主动关」和「真出错(拔线/端口消失)」:前者不报错。
 			select {
 			case <-ses.closed:
 			default:
-				runtime.EventsEmit(a.ctx, "serial:closed", err.Error())
+				a.sh().Emit("serial:closed", err.Error())
 			}
 			a.serialMu.Lock()
 			if a.serialSes == ses {
