@@ -19,6 +19,9 @@
   name: ../plugins/gateway/index.js
   config:
     # 真实 base URL 只从环境读,绝不写进本文件(网关红线)。
+    # ⚠️ 这两个名字与 plugins/gateway/index.js 的 DEFAULT_*_ENV、Go 侧
+    # internal/engine/dsh 的 envDSHBaseURL/envDSHAPIKey 是同一套 —— 凭证轮换
+    # (onecreat/credentials.set)写的就是它们,改这里必须同步改那两处。
     baseURLEnv: ONECREAT_DSH_BASE_URL
     apiKeyEnv: ONECREAT_DSH_API_KEY
 

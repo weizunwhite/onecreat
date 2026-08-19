@@ -71,20 +71,24 @@ func buildDSHEngine(deps dshEngineDeps) (*dsh.Engine, error) {
 	if apiKeyEnv == "" {
 		apiKeyEnv = "ONECREAT_GATEWAY_TOKEN"
 	}
-	var apiKey string
+	// 凭证传"取值函数"而不是快照:平台 token 约 50 分钟被后台刷新一次(desktop 刷新后
+	// 只更新父进程 env、有意不重建标签),而 dsh 子进程的环境是 spawn 时的死快照。
+	// 引擎每轮用它重取当前值,变了就经 onecreat/credentials.set 补发(见 dsh.syncCredentials)。
+	var apiKeyFunc func() string
 	var secrets []string
 	if gateway {
 		if baseURL == "" {
 			baseURL = strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL"))
 		}
-		apiKey = strings.TrimSpace(os.Getenv(apiKeyEnv))
+		apiKeyFunc = func() string { return strings.TrimSpace(os.Getenv(apiKeyEnv)) }
 		secrets = dshBrandSecrets(baseURL)
 	} else {
 		// 直连:用配置里主 provider 的 base URL 与 key(与 native 同一凭证来源,
 		// 都由 internal/config 的 loadDotEnv 从 .env / ~/.env 装进环境)。
 		if entry, ok := cfg.ResolveModel(cfg.DefaultModel); ok {
 			baseURL = entry.BaseURL
-			apiKey = entry.APIKey()
+			// entry 是 ResolveModel 返回的副本,闭包捕获它是安全的;APIKey() 每次读 env。
+			apiKeyFunc = func() string { return strings.TrimSpace(entry.APIKey()) }
 		}
 	}
 	// 调试开关:把 sidecar 的 stderr 直接透到本进程 stderr(默认只留尾缓冲,
@@ -101,7 +105,7 @@ func buildDSHEngine(deps dshEngineDeps) (*dsh.Engine, error) {
 		SystemPrompt:   deps.SystemPrompt,
 		Gateway:        gateway,
 		BaseURL:        baseURL,
-		APIKey:         apiKey,
+		APIKeyFunc:     apiKeyFunc,
 		SecretsToScrub: secrets,
 		HardwareMCP:    resolveHardwareMCPBin(),
 		SessionRoot:    filepath.Join(config.SessionDir(), "dsh"),

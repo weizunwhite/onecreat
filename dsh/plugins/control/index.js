@@ -17,6 +17,7 @@
  *   - `onecreat/session.load`     从持久化恢复会话(resume)并回传消息投影
  *   - `onecreat/session.history`  取某会话的消息投影(供前端 History)
  *   - `onecreat/inject`           每轮运行时状态注入(板卡事实/人设/记忆)
+ *   - `onecreat/credentials.set`  轮换连接凭证(平台 token 约 50 分钟过期)
  *   - 审批桥:`onecreat/approval.request`(通知)↔ `onecreat/approval.resolve`(通知)
  *   - 工具桥:`onecreat/tool.invoke`(通知)↔ `onecreat/tool.result`(通知),
  *     把 Go 侧内置工具(complete_step —— 证据引擎的诚实性闸门)暴露给模型
@@ -37,6 +38,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import * as McpClient from '@deepseek-ai/dsh-mcp-client'
+import { DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL_ENV } from '../gateway/index.js'
 // 只为把 Context/Events 的类型增补并进本模块的类型图(approval/planMode 服务与事件)。
 /** @typedef {import('@deepseek-ai/dsh-user-approval').ApprovalOutcome} ApprovalOutcome */
 /** @typedef {import('@deepseek-ai/dsh-plan-mode')} PlanModeModule */
@@ -316,6 +318,17 @@ export function apply(ctx, config) {
         if (planMode === undefined) throw new Error('planMode.set: 未组合 dsh-plan-mode')
         const outcome = planMode.set(agent, params.active === true)
         return { outcome: String(outcome) }
+      }
+      case 'onecreat/credentials.set': {
+        // 凭证轮换。子进程的环境是 spawn 时的快照,而平台登录 token 约 50 分钟就会
+        // 被 Go 侧后台刷新一次 —— 不补这条,dsh 模式一小时后必然 401。
+        // gateway 插件每次请求都重读 process.env,所以写进去下一次请求即生效。
+        // 凭证只在内存/环境里,绝不落盘、绝不打印(值本身是机密)。
+        const apiKey = typeof params.apiKey === 'string' ? params.apiKey : ''
+        const baseURL = typeof params.baseURL === 'string' ? params.baseURL : ''
+        if (apiKey !== '') process.env[DEFAULT_API_KEY_ENV] = apiKey
+        if (baseURL !== '') process.env[DEFAULT_BASE_URL_ENV] = baseURL
+        return { ok: true }
       }
       case 'onecreat/inject': {
         const agent = agentOf(String(params.sessionId ?? ''))

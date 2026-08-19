@@ -28,6 +28,9 @@ const (
 	MethodInject         = "onecreat/inject"
 	MethodSessionLoad    = "onecreat/session.load"
 	MethodSessionHistory = "onecreat/session.history"
+	// MethodCredentialsSet 轮换子进程里的连接凭证(平台 token 约 50 分钟过期,
+	// 而子进程环境是 spawn 时的快照)。只更新非空字段,值绝不落盘、不打印。
+	MethodCredentialsSet = "onecreat/credentials.set"
 )
 
 // GatewayProviderRoute 是 OneCreat 自命名的 provider 路由名。真实厂商路由名
@@ -121,6 +124,13 @@ type PlanModeParams struct {
 type InjectParams struct {
 	SessionID string `json:"sessionId"`
 	Text      string `json:"text"`
+}
+
+// CredentialsParams 是 onecreat/credentials.set 的参数:只带需要更新的字段,
+// 空字段表示"不动"。
+type CredentialsParams struct {
+	APIKey  string `json:"apiKey,omitempty"`
+	BaseURL string `json:"baseURL,omitempty"`
 }
 
 // WireMessage 是会话消息投影里的一条(只有角色与文本,不含任何 provider/model 信息)。

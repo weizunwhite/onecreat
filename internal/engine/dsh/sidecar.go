@@ -33,6 +33,14 @@ const defaultStartupTimeout = 60 * time.Second
 // internal/boot/boot.go 的 applyOnecreatGateway 读它),别新造名字。
 const gatewayTierEnv = "ONECREAT_TIER"
 
+// dsh 子进程里承载连接事实的两个环境变量名。必须与 dsh/plugins/gateway 的
+// DEFAULT_BASE_URL_ENV / DEFAULT_API_KEY_ENV 以及 profile 里的配置一致 ——
+// 凭证轮换(onecreat/credentials.set)写的也是这两个。
+const (
+	envDSHBaseURL = "ONECREAT_DSH_BASE_URL"
+	envDSHAPIKey  = "ONECREAT_DSH_API_KEY"
+)
+
 // Approver 是"问用户要不要放行这次工具调用"的回调。返回 (allow, 本会话记住, err),
 // 与 control.Controller.RequestApproval 同签名 —— dsh 引擎因此复用 native 的整套
 // 审批 UI、会话内授权记忆、YOLO/bypass 语义,前端零改动。
@@ -70,6 +78,11 @@ type Options struct {
 	// BaseURL / APIKey 是 provider 连接事实,只经环境注入子进程,绝不落盘。
 	BaseURL string
 	APIKey  string
+	// APIKeyFunc 非 nil 时,取凭证一律走它而不是 APIKey 快照。网关模式下平台
+	// token 约 50 分钟就会被后台刷新一次(desktop 只更新父进程 env、不重建标签),
+	// 而子进程的环境是 spawn 时拷贝的死快照 —— 只认快照,dsh 模式一小时后必然 401。
+	// 传函数进来,引擎才能每轮重新取"此刻"的凭证并按需下发(见 syncCredentials)。
+	APIKeyFunc func() string
 	// SecretsToScrub 是要兜底擦除的品牌/模型/URL 串。
 	SecretsToScrub []string
 	// HardwareMCP 是 OneCreat 硬件 MCP 二进制路径(空 = 不挂)。
@@ -122,6 +135,10 @@ type Engine struct {
 	calls map[string]ToolCallInfo
 	// ephemeralID 是"还没有会话文件"时用的一次性 dsh 会话 id(每个引擎实例一个)。
 	ephemeralID string
+	// lastBaseURL / lastAPIKey 是"已经下发给子进程的"连接事实(spawn 时的环境快照,
+	// 之后由 syncCredentials 维护)。与当前值不同才补发,相同不重发。
+	lastBaseURL string
+	lastAPIKey  string
 }
 
 // turnState 跟踪一轮的生命周期:dsh 先报 running,收敛后报 idle。
@@ -295,6 +312,58 @@ func (e *Engine) wireModel() string {
 	return "deepseek-v4-flash"
 }
 
+// currentAPIKey 取"此刻"的凭证(网关模式下会被后台刷新覆盖)。
+func (e *Engine) currentAPIKey() string {
+	if e.opts.APIKeyFunc != nil {
+		return strings.TrimSpace(e.opts.APIKeyFunc())
+	}
+	return strings.TrimSpace(e.opts.APIKey)
+}
+
+// currentBaseURL 取"此刻"的 base URL。
+func (e *Engine) currentBaseURL() string { return strings.TrimSpace(e.opts.BaseURL) }
+
+// snapshotCredentials 记下已经下发给子进程的连接事实(spawn 时由 childEnv 调用)。
+func (e *Engine) snapshotCredentials(baseURL, apiKey string) {
+	e.mu.Lock()
+	e.lastBaseURL, e.lastAPIKey = baseURL, apiKey
+	e.mu.Unlock()
+}
+
+// syncCredentials 在发 prompt 之前把"此刻"的凭证补发给 sidecar。
+//
+// 为什么必须每轮做:子进程环境是 spawn 时的快照,而平台 token 约 50 分钟刷新一次
+// (desktop/accounts_app.go 刷新后只调 applyGatewayEnvFromSession 更新父进程 env,
+// 有意不重建标签)。native provider 每次请求都 os.Getenv 所以没事;dsh 不补这一步,
+// 一小时后必然 401(表现为 "! AUTH: invalid token")。
+// 凭证只走内存与子进程环境,不落盘、不进 profile、不进日志。
+func (e *Engine) syncCredentials(ctx context.Context) {
+	apiKey := e.currentAPIKey()
+	baseURL := e.currentBaseURL()
+	e.mu.Lock()
+	rpc := e.rpc
+	var params CredentialsParams
+	if apiKey != "" && apiKey != e.lastAPIKey {
+		params.APIKey = apiKey
+	}
+	if baseURL != "" && baseURL != e.lastBaseURL {
+		params.BaseURL = baseURL
+	}
+	e.mu.Unlock()
+	if rpc == nil || (params.APIKey == "" && params.BaseURL == "") {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := rpc.Call(cctx, MethodCredentialsSet, params, nil); err != nil {
+		// 不阻塞这一轮:旧凭证也许还没过期;真过期了 turn/end 会照实报 AUTH 错。
+		e.emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+			Text: "dsh 引擎:凭证同步失败(令牌轮换可能未生效):" + err.Error()})
+		return
+	}
+	e.snapshotCredentials(baseURL, apiKey)
+}
+
 // childEnv 组装子进程环境:凭证与 base URL 只走环境(不落盘、不进 profile)。
 func (e *Engine) childEnv(runtimeDir string) []string {
 	env := os.Environ()
@@ -303,8 +372,11 @@ func (e *Engine) childEnv(runtimeDir string) []string {
 			env = append(env, k+"="+v)
 		}
 	}
-	set("ONECREAT_DSH_BASE_URL", e.opts.BaseURL)
-	set("ONECREAT_DSH_API_KEY", e.opts.APIKey)
+	baseURL := e.currentBaseURL()
+	apiKey := e.currentAPIKey()
+	set(envDSHBaseURL, baseURL)
+	set(envDSHAPIKey, apiKey)
+	e.snapshotCredentials(baseURL, apiKey)
 	set("DSH_CWD", e.opts.CWD)
 	set("DSH_SYSTEM_PROMPT", e.opts.SystemPrompt)
 	root := e.opts.SessionRoot
@@ -329,6 +401,7 @@ func (e *Engine) Run(ctx context.Context, input string) error {
 
 	sid := e.SessionID()
 	e.loadIfNeeded(ctx, sid)
+	e.syncCredentials(ctx)
 
 	st := &turnState{done: make(chan struct{})}
 	e.mu.Lock()

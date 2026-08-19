@@ -21,20 +21,29 @@ import { DeepSeekAdapter, resolveAdapterOptions } from '@deepseek-ai/dsh-llm-dee
 /** OneCreat 对外唯一的 provider 路由名。真实厂商名绝不出现在这里。 */
 export const PROVIDER = 'onecreat-gateway'
 
+/**
+ * 连接事实的默认环境变量名。control 插件轮换凭证(onecreat/credentials.set)时写的
+ * 就是它们,Go 侧 internal/engine/dsh 的 envDSHBaseURL / envDSHAPIKey 也是这两个 ——
+ * 三处必须一致,所以在这里给出唯一定义。
+ */
+export const DEFAULT_BASE_URL_ENV = 'ONECREAT_DSH_BASE_URL'
+/** 见 DEFAULT_BASE_URL_ENV。 */
+export const DEFAULT_API_KEY_ENV = 'ONECREAT_DSH_API_KEY'
+
 export const name = 'onecreat-gateway'
 export const inject = ['llm']
 
 /**
- * 组装连接事实。baseURL/apiKey 只从环境变量取,取不到就让请求期报错
- * (而不是启动期崩),这样"没配凭证"不会让整个 sidecar 起不来。
+ * 解析连接事实用的环境变量名。baseURL/apiKey 的**值**一律在请求期才读,取不到就让
+ * 请求期报错(而不是启动期崩),这样"没配凭证"不会让整个 sidecar 起不来,也让
+ * Go 侧能在会话中途轮换 token / base URL 而不重启 sidecar。
  * @param {{baseURLEnv?: string, apiKeyEnv?: string}} config - profile 里的插件配置。
- * @returns {{baseURL: string, apiKeyEnv: string}} 解析后的环境变量名与 base URL。
+ * @returns {{baseURLEnv: string, apiKeyEnv: string}} 解析后的环境变量名。
  */
 function readEnvFacts(config) {
-  const baseURLEnv = config.baseURLEnv ?? 'ONECREAT_DSH_BASE_URL'
-  const apiKeyEnv = config.apiKeyEnv ?? 'ONECREAT_DSH_API_KEY'
-  const baseURL = process.env[baseURLEnv] ?? ''
-  return { baseURL, apiKeyEnv }
+  const baseURLEnv = config.baseURLEnv ?? DEFAULT_BASE_URL_ENV
+  const apiKeyEnv = config.apiKeyEnv ?? DEFAULT_API_KEY_ENV
+  return { baseURLEnv, apiKeyEnv }
 }
 
 /**
@@ -45,9 +54,9 @@ function readEnvFacts(config) {
  */
 export function apply(ctx, config) {
   const facts = readEnvFacts(config ?? {})
-  // 每次请求都重新读环境(允许 Go 侧在会话中途轮换 token 而不重启 sidecar)。
+  // 每次请求都重新读环境(允许 Go 侧在会话中途轮换 token / base URL 而不重启 sidecar)。
   const options = () => resolveAdapterOptions({
-    ...(facts.baseURL === '' ? {} : { baseURL: facts.baseURL }),
+    ...((process.env[facts.baseURLEnv] ?? '') === '' ? {} : { baseURL: process.env[facts.baseURLEnv] }),
     // 关闭 model catalog 广播:任何 UI/事件都拿不到模型目录。
     models: [],
     thinking: 'enabled',
