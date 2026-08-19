@@ -26,6 +26,12 @@ func (a *App) Version() string { return version }
 // the frontend's UpdateBanner stays hidden. To re-enable later: restore the
 // fetchManifest/evaluate path below and repoint the endpoints to onecreat's channel.
 func (a *App) CheckUpdate() (*UpdateInfo, error) {
+	// Web 模式(主分发形态)有自己的更新渠道(阿里云 nginx 上的 latest.json),由
+	// webUpdateOverride 接管:只提示不自更新、失败静默。桌面版 override 返回 false,
+	// 于是仍走下面这段禁用逻辑,行为不变(不 phone home 到上游 reasonix)。
+	if info, ok := a.webUpdateOverride(); ok {
+		return info, nil
+	}
 	return &UpdateInfo{
 		Current:       version,
 		Latest:        version,
@@ -38,6 +44,11 @@ func (a *App) CheckUpdate() (*UpdateInfo, error) {
 // path and a fallback link elsewhere.
 func (a *App) OpenDownloadPage() {
 	page := defaultDownloadPage
+	// Web 模式有自己的下载页(webDownloadPage);桌面版 webDownloadURL() 返回空串 → 用默认页。
+	if w := webDownloadURL(); w != "" {
+		a.sh().BrowserOpenURL(w)
+		return
+	}
 	// 自更新在本 fork 已禁用(见 CheckUpdate),manifest 端点为空,fetchManifest 必然失败。
 	// 仅当 manifest 端点真的配置了(将来重新接入 onecreat 自己的更新通道时)才去取它的
 	// DownloadPage 覆盖,否则直接开默认发布页 —— 省掉每次点击两次必败的请求(L7)。
