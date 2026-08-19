@@ -272,6 +272,15 @@ $ ./bin/reasonix run "用一句话回答:1+1=?"     # 不带 --engine,走 native
 
 ## 7. 没做到 / 替你决定 / 待你拍板
 
+> **2026-08-19 补记(本报告之后的修复,别再照下表当现状)**:
+> 1. 「Windows / Linux 发行包里的 dsh sidecar」**已解决** —— `release-web.yml` 拆成
+>    `sidecar` 矩阵(各平台自装 `runtime/` 传 artifact)+ `release` 两阶段,`web-build.sh` 新增
+>    `DSH_RUNTIME_DIR` 直接套用预装 runtime。仅 linux/arm64 仍无(矩阵里没有 arm64 Linux runner)。
+>    即下面「待你拍板」的第 4 条已经做掉。
+> 2. 修掉两个网关路径的真 bug:wire model 之前恒为占位符、**没把用户选的档位传给网关**
+>    (现改读 `ONECREAT_TIER`);登录 token 刷新**传不进子进程**(现补 `onecreat/credentials.set`,
+>    每轮 prompt 前按需补发),否则约 50 分钟后 dsh 模式必然 `! AUTH: invalid token`。
+
 ### 没做到(诚实清单)
 
 | 项 | 原因 |

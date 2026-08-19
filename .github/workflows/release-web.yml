@@ -19,7 +19,61 @@ permissions:
   contents: write # 建 release、传产物
 
 jobs:
+  # ---- 阶段一:各平台各自装配 dsh sidecar 运行时 ----
+  # 为什么必须分平台:dsh 的依赖闭包里有原生模块(node-pty / koffi /
+  # dsh-subprocess-local 的 spawn helper),只能在目标平台上装 —— 单个 ubuntu runner
+  # 交叉编译得出 Go 二进制,却装不出 Windows/macOS 的 node_modules。所以这里按平台
+  # 各产一份 runtime/ 当 artifact,阶段二再解进对应的发行目录。
+  #
+  # linux/arm64 没在矩阵里:GitHub 托管的 arm64 Linux runner 不是所有仓库都能用,
+  # 保守起见先不依赖它 —— 那个包仍旧不带 dsh sidecar(engine=native 照常可用),
+  # 阶段二会把这件事打进日志。要补的话加一台 arm64 runner(或自托管)进本矩阵即可。
+  sidecar:
+    name: dsh sidecar (${{ matrix.os }}/${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, os: darwin, arch: arm64 }
+          - { runner: macos-13, os: darwin, arch: amd64 }
+          - { runner: windows-latest, os: windows, arch: amd64 }
+          - { runner: ubuntu-22.04, os: linux, arch: amd64 }
+    defaults:
+      run:
+        shell: bash # Windows runner 默认是 pwsh,脚本是 bash 的
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Bundle dsh runtime
+        run: |
+          ./scripts/dsh-bundle.sh stage-sidecar "${{ matrix.os }}" "${{ matrix.arch }}"
+          # dsh-bundle.sh 在"目标平台 != 本机平台"时会安静地删掉 runtime/ 并退出 0。
+          # 这里的矩阵本该次次都是本机平台,所以装不出来就是真出错了,必须炸掉。
+          test -d stage-sidecar/runtime/dsh/node_modules || {
+            echo "dsh 依赖闭包没装出来(平台识别或 pnpm install 出了问题)" >&2
+            exit 1
+          }
+          COPYFILE_DISABLE=1 tar -czf "dsh-runtime-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C stage-sidecar runtime
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-runtime-${{ matrix.os }}-${{ matrix.arch }}
+          path: dsh-runtime-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          retention-days: 3
+
+  # ---- 阶段二:交叉编译 Go + 前端,套上各平台的 runtime,打包发布 ----
   release:
+    needs: sidecar
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -47,10 +101,35 @@ jobs:
       - name: Cache hit guard
         run: ./scripts/cache-guard.sh
 
+      - name: Download dsh sidecar runtimes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dsh-runtime-*
+          path: sidecar-artifacts
+
+      # 摊成 web-build.sh 认的布局:<root>/<os>-<arch>/runtime/
+      - name: Unpack dsh sidecar runtimes
+        run: |
+          mkdir -p dsh-runtime-root
+          for f in sidecar-artifacts/*/dsh-runtime-*.tar.gz; do
+            [ -e "$f" ] || continue
+            key="$(basename "$f" .tar.gz)"
+            key="${key#dsh-runtime-}"   # darwin-arm64 / windows-amd64 / ...
+            mkdir -p "dsh-runtime-root/$key"
+            tar -xzf "$f" -C "dsh-runtime-root/$key"
+            echo "  $key -> $(du -sh "dsh-runtime-root/$key/runtime" | cut -f1)"
+          done
+          # 没有预装 runtime 的平台(当前是 linux/arm64)会回退 dsh-bundle.sh,
+          # 而它对跨平台目标是跳过的 —— 那个包不带 dsh sidecar,这里明说一遍。
+          for t in darwin-arm64 darwin-amd64 windows-amd64 linux-amd64 linux-arm64; do
+            [ -d "dsh-runtime-root/$t/runtime" ] || echo "⚠️  $t 无 dsh sidecar,该发行包只支持 engine=native"
+          done
+
       - name: Build all platforms and package
         env:
           # latest.json 里的下载链接基址(阿里云 nginx /var/www/onecreat,大陆直连;GitHub Releases 是镜像)
           RELEASE_BASE_URL: http://47.95.176.214/onecreat
+          DSH_RUNTIME_DIR: ${{ github.workspace }}/dsh-runtime-root
         run: ./scripts/web-build.sh all "$VERSION"
 
       # 上传到阿里云下载站:专用用户 onecreat-release 只对 /var/www/onecreat 有写权限。

@@ -147,6 +147,26 @@ Web 模式与桌面版共用同一套 Controller,所以切到 dsh 引擎时**前
 
 细节见 [`docs/dsh调研/05_Phase1-2_实施报告.md`](dsh调研/05_Phase1-2_实施报告.md) §5。
 
+### 发行包里的 dsh 运行时(哪些平台有)
+
+`engine="dsh"` 需要发行包里带 `runtime/`(内置 Node + dsh 组合包)。dsh 的依赖闭包含原生模块
+(node-pty / koffi / spawn helper),**只能在目标平台上装**,一台交叉编译机装不出别的平台的
+`node_modules`。所以 `release-web.yml` 分两阶段:
+
+1. `sidecar` job 的矩阵(macos-14 / macos-13 / windows-latest / ubuntu-22.04)各自跑
+   `scripts/dsh-bundle.sh` 只产出 `runtime/`,打成 `dsh-runtime-<os>-<arch>.tar.gz` 传成 artifact;
+2. `release` job(ubuntu)下载全部 artifact 摊成 `<root>/<os>-<arch>/runtime/`,用
+   `DSH_RUNTIME_DIR` 喂给 `scripts/web-build.sh` —— 它命中就直接拷,不再调 `dsh-bundle.sh`。
+
+| 平台 | 发行包带 dsh sidecar |
+|---|---|
+| darwin/arm64、darwin/amd64、windows/amd64、linux/amd64 | ✅ |
+| linux/arm64 | ❌ 只能 `engine=native`(矩阵里暂无 arm64 Linux runner,补一台即可) |
+
+本机单平台打包想复现同一条路径:先 `scripts/dsh-bundle.sh <tmp>/<os>-<arch> <os> <arch>` 产出
+runtime,再 `DSH_RUNTIME_DIR=<tmp> scripts/web-build.sh <os>/<arch> <version>`。
+不设 `DSH_RUNTIME_DIR` 时行为与以前完全一致(本机平台现装,跨平台跳过)。
+
 ## Web 下不可用 / 降级的功能
 
 | 功能 | Wails 桌面版 | Web 模式 | 说明 |

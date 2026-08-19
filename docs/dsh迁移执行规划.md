@@ -65,7 +65,7 @@ React 前端(不动) ── Wails bridge(不动) ── desktop/app.go(不动)
 | 1.2 | 实现 Controller 最小子集:`Submit/Send/Cancel/Running/Approve/PendingApprovals/SetPlanMode/History/NewSession/Resume/SessionPath` | `internal/control` 加接口抽取或第二实现 |
 | 1.3 | 事件映射:dsh 事件流 → `event.Event`(text delta / tool start-end / approval / usage / error) | `internal/event`,`desktop/wire.go`,`internal/serve/wire.go` 保持一致 |
 | 1.4 | 配置:`engine = "native" | "dsh"`(默认 native),`[dsh]` 段(二进制路径/版本/端口),render.go 渲染 + round-trip 测试扩展 | `internal/config`,`render.go`,`boot.Build` |
-| 1.5 | 打包:仿 Tauri 版 sidecar 做法——内置 Node 运行时 + **锁死 dsh 精确版本**;`scripts/desktop-build.sh` 增加 sidecar 装配;macOS 先通,Windows 后置 | `scripts/desktop-build.sh`,`desktop/` |
+| 1.5 | 打包:仿 Tauri 版 sidecar 做法——内置 Node 运行时 + **锁死 dsh 精确版本**;`scripts/desktop-build.sh` 增加 sidecar 装配;macOS 先通,Windows 后置(**Windows/Linux 已于 2026-08-19 由 `release-web.yml` 的 `sidecar` 矩阵补上**) | `scripts/desktop-build.sh`,`desktop/` |
 | 1.6 | 会话文件归属:明确 dsh 自己的 session store 与我们的 session 文件谁是真源,避免双写(生态里已经出过 dual-writer 损坏) | 设计决策 |
 
 **闸门 G1** ✅ **已过(2026-08-19,烧录/串口那一步除外)**:`engine="dsh"` 下 `reasonix run` 与 Web 模式
@@ -110,6 +110,8 @@ rewind 成功,fork/摘要/对话回退明确"暂不支持" / 2.7 serve·acp·cli
 | provider 只有 DeepSeek,网关兼容性未知 | Phase 0.2 前置验证,不通直接停 |
 | 模型名泄漏(错误体/日志/UI) | Go 驱动层兜底过滤 + 前端不渲染;是 SaaS 硬红线 |
 | 桌面端体积/启动:Go 单二进制 → 捆 Node | 参考 Tauri 版 5MB 方案(按需自举下载运行时);Windows 后置 |
+| 跨平台 sidecar 装不出来(原生模块) | **已解(2026-08-19)**:`release-web.yml` 拆 `sidecar` 矩阵 + `release` 两阶段,各平台自装 `runtime/` 传 artifact,再由 `web-build.sh` 的 `DSH_RUNTIME_DIR` 套进发行包。linux/arm64 暂无 runner,仍只支持 native |
+| 网关档位 / token 刷新在 dsh 下失效 | **已修(2026-08-19)**:wire model 改读 `ONECREAT_TIER`(否则切档不生效);新增 `onecreat/credentials.set`,每轮 prompt 前按需补发刷新后的 token(否则约 50 分钟后必 401) |
 | session 双写损坏 | 1.6 单一真源决策 |
 | 时间投入(兼职开发) | 总计约 2.5–3 个月;每闸门可停,前两阶段沉没成本最小 |
 

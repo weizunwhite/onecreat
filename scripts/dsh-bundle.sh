@@ -11,6 +11,10 @@
 #   os   = darwin | linux | windows
 #   arch = arm64 | amd64(会转成 Node 的 x64)
 #
+# 本脚本只往 <dest>/runtime 里写东西,不碰 <dest> 下的其它内容 —— 所以 CI 可以拿一个
+# 空目录当 dest,单独产出一份 runtime/ 打成 artifact,再喂给别的机器上的 web-build.sh
+# (见 .github/workflows/release-web.yml 的 sidecar job 与 web-build.sh 的 DSH_RUNTIME_DIR)。
+#
 # 环境变量:
 #   NODE_VERSION      默认 v22.23.2(dsh 要求 ^22.19.0 || >=24;这里取 22 LTS 线)
 #   BUILD_CACHE       Node 压缩包缓存目录,默认 <repo>/build-cache
@@ -68,7 +72,15 @@ fi
 rm -rf "$RUNTIME/node"
 tmp="$(mktemp -d)"
 if [ "$OS" = windows ]; then
-	unzip -q "$CACHE/$NODE_PKG" -d "$tmp"
+	# Windows runner 的 Git Bash 未必带 unzip,7z 是 GitHub 镜像里一定有的兜底。
+	if command -v unzip >/dev/null 2>&1; then
+		unzip -q "$CACHE/$NODE_PKG" -d "$tmp"
+	elif command -v 7z >/dev/null 2>&1; then
+		7z x -o"$tmp" "$CACHE/$NODE_PKG" >/dev/null
+	else
+		echo "dsh-bundle: 解 Node 压缩包需要 unzip 或 7z,两个都没有" >&2
+		exit 1
+	fi
 	src="$(find "$tmp" -maxdepth 1 -type d -name 'node-*' | head -1)"
 	mkdir -p "$RUNTIME/node"
 	cp "$src/node.exe" "$RUNTIME/node/node.exe"
@@ -87,8 +99,13 @@ mkdir -p "$RUNTIME/dsh"
 cp "$ROOT/dsh/package.json" "$ROOT/dsh/pnpm-lock.yaml" "$RUNTIME/dsh/"
 cp -R "$ROOT/dsh/profiles" "$ROOT/dsh/plugins" "$RUNTIME/dsh/"
 
-HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-[ "$HOST_OS" = "darwin" ] || HOST_OS="linux"
+# ⚠️ Windows runner 的 Git Bash 报的是 MINGW64_NT-10.0-…,不识别就会被当成 linux,
+# 于是"在 Windows 上装 Windows 包"反而走进跨平台分支被跳过。
+case "$(uname -s | tr '[:upper:]' '[:lower:]')" in
+darwin*) HOST_OS=darwin ;;
+mingw* | msys* | cygwin* | windows*) HOST_OS=windows ;;
+*) HOST_OS=linux ;;
+esac
 HOST_ARCH="$(uname -m)"
 case "$HOST_ARCH" in
 arm64 | aarch64) HOST_ARCH=arm64 ;;

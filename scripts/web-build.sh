@@ -24,6 +24,11 @@
 #   SKIP_FRONTEND=1   跳过 pnpm install/build(前端 dist 已是最新时省时间)
 #   SKIP_DSH=1        跳过 dsh sidecar 装配(不打 runtime/,包体小 ~4 倍)
 #   TARGETS="..."     覆盖 all 的平台列表
+#   DSH_RUNTIME_DIR   预装好的 dsh runtime 根目录,布局 <root>/<os>-<arch>/runtime/。
+#                     命中就直接拷,不再调 dsh-bundle.sh —— 因为 dsh 的原生模块只能在
+#                     目标平台上装,交叉编译机器装不出 Windows/Linux 的闭包。CI 里由
+#                     release-web.yml 的 sidecar 矩阵在各自平台产出后传过来;没命中的
+#                     平台仍回退 dsh-bundle.sh(本机平台能装,跨平台会被它跳过)。
 set -euo pipefail
 
 PLATFORM="${1:?usage: web-build.sh <os/arch|all> <version>}"
@@ -121,7 +126,17 @@ for t in $targets; do
 	# 只有目标平台 == 本机平台时才装(原生模块的限制,脚本里有说明);
 	# SKIP_DSH=1 可整体跳过(默认 engine 仍是 native,跳过不影响主功能)。
 	if [ "${SKIP_DSH:-0}" != 1 ]; then
-		"$ROOT/scripts/dsh-bundle.sh" "$dir" "$os" "$arch" || true
+		prebuilt=""
+		[ -n "${DSH_RUNTIME_DIR:-}" ] && prebuilt="${DSH_RUNTIME_DIR%/}/${os}-${arch}/runtime"
+		if [ -n "$prebuilt" ] && [ -d "$prebuilt" ]; then
+			echo "==> dsh sidecar: 用预装 runtime $prebuilt"
+			rm -rf "$dir/runtime"
+			cp -R "$prebuilt" "$dir/runtime"
+			# cp 的属主/权限在某些文件系统上会掉;node 必须可执行。
+			[ -f "$dir/runtime/node/bin/node" ] && chmod +x "$dir/runtime/node/bin/node"
+		else
+			"$ROOT/scripts/dsh-bundle.sh" "$dir" "$os" "$arch" || true
+		fi
 	fi
 
 	write_readme "$dir" "$os"
