@@ -234,6 +234,12 @@ func (a *App) KnowledgeImportFiles(baseID string) (KnowledgeImportResult, error)
 	return a.knowledgeImportPaths(baseID, paths)
 }
 
+// KnowledgeImportPaths 按绝对路径导入知识库文件(不弹原生对话框)。Web 模式下前端先把
+// 浏览器选的文件 POST /upload 落到临时目录,拿到路径后调这里;桌面版仍走 KnowledgeImportFiles。
+func (a *App) KnowledgeImportPaths(baseID string, paths []string) (KnowledgeImportResult, error) {
+	return a.knowledgeImportPaths(baseID, paths)
+}
+
 func (a *App) knowledgeImportPaths(baseID string, paths []string) (KnowledgeImportResult, error) {
 	knowledgeMu.Lock()
 	defer knowledgeMu.Unlock()

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -66,6 +69,113 @@ func TestWebServerRequiresToken(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Result == "" {
 		t.Fatalf("Version 应返回版本字符串,拿到 %s", w.Body)
 	}
+}
+
+// /healthz 无鉴权可达,回 {ok,version};受 Host 守卫。
+func TestHealthz(t *testing.T) {
+	h := newTestServer(t).Handler()
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3700/healthz", nil)
+	w := do(t, h, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/healthz 应 200,拿到 %d", w.Code)
+	}
+	var out struct {
+		OK      bool   `json:"ok"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析 healthz: %v (%s)", err, w.Body)
+	}
+	if !out.OK || out.Version != "v0.0.0-test" {
+		t.Fatalf("healthz 内容不对: %s", w.Body)
+	}
+	// 外部 Host 仍应被挡。
+	req = httptest.NewRequest(http.MethodGet, "http://evil.example.com/healthz", nil)
+	req.Host = "evil.example.com"
+	if w := do(t, h, req); w.Code != http.StatusForbidden {
+		t.Fatalf("外部 Host 的 healthz 应 403,拿到 %d", w.Code)
+	}
+}
+
+// 构造一个 multipart 上传请求体。
+func multipartBody(t *testing.T, field, filename string, content []byte) (*bytes.Buffer, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile(field, filename)
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := fw.Write(content); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	return &buf, mw.FormDataContentType()
+}
+
+// /upload 需要 token。
+func TestUploadRequiresToken(t *testing.T) {
+	h := newTestServer(t).Handler()
+	body, ct := multipartBody(t, "files", "a.txt", []byte("hello"))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3700/upload", body)
+	req.Header.Set("Content-Type", ct)
+	if w := do(t, h, req); w.Code != http.StatusUnauthorized {
+		t.Fatalf("无 token 上传应 401,拿到 %d", w.Code)
+	}
+}
+
+// /upload 带 token 落盘并返回绝对路径,内容一致。
+func TestUploadSavesFile(t *testing.T) {
+	h := newTestServer(t).Handler()
+	content := []byte("参考资料内容")
+	body, ct := multipartBody(t, "files", "note.md", content)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3700/upload", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := do(t, h, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("上传应 200,拿到 %d (%s)", w.Code, w.Body)
+	}
+	var out struct {
+		Paths []string `json:"paths"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || len(out.Paths) != 1 {
+		t.Fatalf("上传响应应含 1 个路径,拿到 %s", w.Body)
+	}
+	got, err := os.ReadFile(out.Paths[0])
+	if err != nil {
+		t.Fatalf("读回落盘文件: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("落盘内容不一致: %q", got)
+	}
+	if filepath.Base(out.Paths[0]) != "note.md" {
+		t.Fatalf("落盘文件名应保留原名,拿到 %s", out.Paths[0])
+	}
+	_ = os.RemoveAll(filepath.Dir(out.Paths[0]))
+}
+
+// 目录穿越的文件名只取 basename,不写到别处。
+func TestUploadSanitizesFilename(t *testing.T) {
+	h := newTestServer(t).Handler()
+	body, ct := multipartBody(t, "files", "../../etc/evil.conf", []byte("x"))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3700/upload", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := do(t, h, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("上传应 200,拿到 %d (%s)", w.Code, w.Body)
+	}
+	var out struct {
+		Paths []string `json:"paths"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if len(out.Paths) != 1 || filepath.Base(out.Paths[0]) != "evil.conf" {
+		t.Fatalf("文件名应被清成 basename,拿到 %v", out.Paths)
+	}
+	_ = os.RemoveAll(filepath.Dir(out.Paths[0]))
 }
 
 func TestWebServerRejectsForeignHost(t *testing.T) {

@@ -5,13 +5,17 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +107,10 @@ func (s *webServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/rpc/", s.requireToken(s.rpc))
 	mux.Handle("/events", s.requireToken(http.HandlerFunc(s.events.serveSSE)))
+	// /upload:浏览器 File API 拿不到磁盘绝对路径,而后端导入(参考资料/知识库)要的就是
+	// 路径。这里把上传的文件落到临时目录,返回绝对路径,再由前端喂给既有的导入方法。
+	// 鉴权与 /rpc 相同(Bearer token + Origin 同源 + Host 守卫)。
+	mux.Handle("/upload", s.requireToken(http.HandlerFunc(s.serveUpload)))
 	// /healthz 不校验 token —— 供「再次启动」的探活用(单实例守卫,见 singleinstance.go)。
 	// 只回 {ok,version},不含任何用户数据;同样受 guardHost 守卫,只有本机回环能连。
 	mux.HandleFunc("/healthz", s.serveHealthz)
@@ -193,6 +201,82 @@ func (s *webServer) serveStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
+}
+
+// uploadMaxBytes 是单文件大小上限(50MB)。参考资料/知识库文件都远小于这个数。
+const uploadMaxBytes = 50 << 20
+
+// serveUpload 接收 multipart 上传,把每个文件落到 os.TempDir()/onecreat-upload/<随机>/<原名>,
+// 返回落盘后的绝对路径列表。前端拿到路径后调既有的 ImportReferenceFile / KnowledgeImportPaths。
+//
+// 表单字段名固定 "files"(可多文件)。单文件超过 50MB 拒绝。
+func (s *webServer) serveUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeRPCError(w, http.StatusMethodNotAllowed, "只接受 POST")
+		return
+	}
+	// 限制整个请求体,防止超大上传打爆内存/磁盘(留一点头部余量)。
+	r.Body = http.MaxBytesReader(w, r.Body, uploadMaxBytes+1<<20)
+	reader, err := r.MultipartReader()
+	if err != nil {
+		writeRPCError(w, http.StatusBadRequest, "不是合法的 multipart 上传: "+err.Error())
+		return
+	}
+
+	dir, err := os.MkdirTemp("", "onecreat-upload-")
+	if err != nil {
+		writeRPCError(w, http.StatusInternalServerError, "创建临时目录失败: "+err.Error())
+		return
+	}
+
+	var paths []string
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			writeRPCError(w, http.StatusBadRequest, "读取上传分片失败: "+err.Error())
+			return
+		}
+		if part.FormName() != "files" || part.FileName() == "" {
+			_ = part.Close()
+			continue
+		}
+		// 只取文件名的最后一段,挡目录穿越(../ 之类)。
+		name := filepath.Base(filepath.FromSlash(part.FileName()))
+		if name == "." || name == ".." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+			name = "upload.bin"
+		}
+		dst := filepath.Join(dir, name)
+		out, err := os.Create(dst)
+		if err != nil {
+			_ = part.Close()
+			writeRPCError(w, http.StatusInternalServerError, "写入上传文件失败: "+err.Error())
+			return
+		}
+		// 单文件上限 50MB:多读 1 字节判断是否超限。
+		n, copyErr := io.Copy(out, io.LimitReader(part, uploadMaxBytes+1))
+		_ = out.Close()
+		_ = part.Close()
+		if copyErr != nil {
+			writeRPCError(w, http.StatusBadRequest, "接收上传内容失败: "+copyErr.Error())
+			return
+		}
+		if n > uploadMaxBytes {
+			_ = os.Remove(dst)
+			writeRPCError(w, http.StatusRequestEntityTooLarge, "单个文件不能超过 50MB")
+			return
+		}
+		paths = append(paths, dst)
+	}
+
+	if len(paths) == 0 {
+		writeRPCError(w, http.StatusBadRequest, "没有收到任何文件(表单字段名应为 files)")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"paths": paths})
 }
 
 // serveHealthz 是无鉴权探活端点:另一个 onecreat-web 进程再次启动时,用它确认「已有实例

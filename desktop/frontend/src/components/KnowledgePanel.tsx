@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   CheckCircle2,
@@ -9,7 +9,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { app } from "../lib/bridge";
+import { app, isWebMode, uploadFiles } from "../lib/bridge";
 import { confirmDialog } from "../lib/confirm";
 import type { FileReference } from "../lib/fileRemarks";
 import type { KnowledgeImportResult, KnowledgeSearchResult, KnowledgeView } from "../lib/types";
@@ -154,10 +154,18 @@ export function KnowledgePanel({
     [loadView, onSelectionChange, selectedBaseIds, view?.bases],
   );
 
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  // 桌面版走原生多文件对话框(KnowledgeImportFiles);Web 模式浏览器拿不到磁盘路径,
+  // 改走 <input type=file multiple> → /upload 落盘 → KnowledgeImportPaths(路径导入)。
   const importFiles = useCallback(async () => {
     const baseID = activeBase?.id;
     if (!baseID) {
       setErr("请先创建或选择一个知识库。");
+      return;
+    }
+    if (isWebMode()) {
+      importInputRef.current?.click();
       return;
     }
     setBusy(true);
@@ -172,6 +180,26 @@ export function KnowledgePanel({
       setBusy(false);
     }
   }, [activeBase?.id, loadView]);
+
+  const onImportFilesPicked = useCallback(
+    async (files: File[]) => {
+      const baseID = activeBase?.id;
+      if (!baseID || files.length === 0) return;
+      setBusy(true);
+      setErr(null);
+      try {
+        const paths = await uploadFiles(files);
+        const result = await app.KnowledgeImportPaths(baseID, paths);
+        setLastImport(result);
+        await loadView();
+      } catch (e) {
+        setErr(String((e as Error)?.message ?? e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [activeBase?.id, loadView],
+  );
 
   const toggleSelected = useCallback(
     (id: string) => {
@@ -264,6 +292,18 @@ export function KnowledgePanel({
           <section className="knowledge-section">
             <div className="knowledge-section__head">
               <span>{activeBase?.name || "文件"}</span>
+              {/* Web 模式的隐藏多文件选择器:桌面版用原生对话框,这里用它拿到 File 再上传。 */}
+              <input
+                ref={importInputRef}
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  e.target.value = ""; // 允许再次选同一批文件
+                  void onImportFilesPicked(files);
+                }}
+              />
               <button className="btn btn--small" onClick={() => void importFiles()} disabled={busy || !activeBase} title={`支持: ${supportedHint}`}>
                 {busy ? <Loader2 className="spin" size={14} /> : <Upload size={14} />}
                 导入文件

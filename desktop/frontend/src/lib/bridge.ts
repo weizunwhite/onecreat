@@ -170,6 +170,9 @@ export interface AppBindings {
   KnowledgeCreate(name: string): Promise<KnowledgeBaseView>;
   KnowledgeDelete(id: string): Promise<void>;
   KnowledgeImportFiles(baseID: string): Promise<KnowledgeImportResult>;
+  // Web 模式:前端先把浏览器选的文件 POST /upload 落到临时目录(见 uploadFiles),
+  // 再把返回的绝对路径传给这里导入。桌面版走 KnowledgeImportFiles(原生对话框)。
+  KnowledgeImportPaths(baseID: string, paths: string[]): Promise<KnowledgeImportResult>;
   KnowledgeSearch(baseIDs: string[], query: string, limit: number): Promise<KnowledgeSearchResult>;
   KnowledgeBuildPrompt(baseIDs: string[], question: string, limit: number): Promise<KnowledgePromptView>;
   RemoveMCPServer(name: string): Promise<void>;
@@ -264,7 +267,7 @@ function getMock(): AppBindings {
 
 // isWebMode 认的是服务端注入 index.html 的标记(desktop/webserver.go 的
 // webIndexMarker)。Wails 里没有它,`pnpm dev` 的裸浏览器里也没有。
-function isWebMode(): boolean {
+export function isWebMode(): boolean {
   return typeof window !== "undefined" && window.__ONECREAT_WEB__ === true;
 }
 
@@ -327,6 +330,32 @@ async function webCall(method: string, args: unknown[]): Promise<unknown> {
   const data = (await res.json().catch(() => ({}))) as { result?: unknown; error?: string };
   if (!res.ok) throw new Error(data.error || `${method} 失败(HTTP ${res.status})`);
   return data.result;
+}
+
+// uploadFiles 把浏览器选中的文件上传到本地服务的 /upload,返回落盘后的绝对路径列表。
+// 只在 Web 模式下有意义(Wails/桌面版有原生文件对话框,直接拿磁盘路径)。鉴权与 /rpc 相同。
+export async function uploadFiles(files: File[]): Promise<string[]> {
+  if (!isWebMode()) throw new Error("uploadFiles 只在 Web 模式下可用");
+  if (files.length === 0) return [];
+  const form = new FormData();
+  for (const f of files) form.append("files", f, f.name);
+  let res: Response;
+  try {
+    res = await fetch("/upload", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${webToken}` },
+      body: form,
+    });
+  } catch (e) {
+    throw new Error(`上传失败:连不上本地服务(onecreat-web 还开着吗?) ${String(e)}`);
+  }
+  if (res.status === 401) {
+    notifyDisconnected("访问令牌已失效或缺失。请回到启动 onecreat-web 的终端,重新打开它打印的那条带 token 的链接。");
+    throw new Error("上传失败:访问令牌无效");
+  }
+  const data = (await res.json().catch(() => ({}))) as { paths?: string[]; error?: string };
+  if (!res.ok) throw new Error(data.error || `上传失败(HTTP ${res.status})`);
+  return data.paths ?? [];
 }
 
 let httpSingleton: AppBindings | null = null;
@@ -1179,6 +1208,22 @@ function makeMockApp(): AppBindings {
       mockKnowledge.documents.unshift(doc);
       rebuildKnowledgeCounts();
       return { imported: [{ ...doc }], skipped: [] };
+    },
+    async KnowledgeImportPaths(baseID: string, paths: string[]) {
+      const imported = paths.map((p, i) => ({
+        id: `doc_mock_${Date.now()}_${i}`,
+        baseId: baseID,
+        name: p.split("/").pop() || p,
+        originalPath: p,
+        storedPath: `${mockKnowledge.storeDir}/files/${baseID}/${p.split("/").pop() || p}`,
+        size: 1024,
+        importedAt: Date.now(),
+        status: "ready",
+        chunks: 1,
+      }));
+      mockKnowledge.documents.unshift(...imported);
+      rebuildKnowledgeCounts();
+      return { imported: imported.map((d) => ({ ...d })), skipped: [] };
     },
     async KnowledgeSearch(baseIDs: string[], query: string, limit: number) {
       const selected = new Set(baseIDs.filter(Boolean));

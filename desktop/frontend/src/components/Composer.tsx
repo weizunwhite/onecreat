@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { ArrowUp, BookOpen, Check, ChevronDown, Eye, FileText, FolderGit2, FolderPlus, GraduationCap, Loader2, Paperclip, Search, Sparkles, Square, Trash2, X } from "lucide-react";
-import { app } from "../lib/bridge";
+import { app, isWebMode, uploadFiles } from "../lib/bridge";
 import { alertDialog } from "../lib/confirm";
 import { useT } from "../lib/i18n";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
@@ -135,37 +135,74 @@ export function Composer({
   const pastedBlocksRef = useRef<PastedTextBlock[]>([]);
   const nextPasteId = useRef(1);
   const [uploadingReference, setUploadingReference] = useState(false);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
+
+  // 把一次参考资料解析结果插入 composer(复用 pastedBlock 机制呈现+发送)。
+  const insertReferenceResult = useCallback(
+    (res: import("../lib/types").ReferenceFileResult) => {
+      const remark = `${res.name}${res.truncated ? " · 已截断" : ""} · ${res.charCount} 字`;
+      const id = nextPasteId.current++;
+      const block = createPastedTextBlock(id, res.text, remark);
+      setText((prev) => {
+        const ta = taRef.current;
+        const insertPos = ta?.selectionEnd ?? prev.length;
+        const newText = prev.slice(0, insertPos) + block.label + prev.slice(insertPos);
+        requestAnimationFrame(() => {
+          const node = taRef.current;
+          if (!node) return;
+          const pos = insertPos + block.label.length;
+          node.focus();
+          node.selectionStart = node.selectionEnd = pos;
+        });
+        return newText;
+      });
+      pastedBlocksRef.current = [...pastedBlocksRef.current, block];
+      setPastedBlocks((prev) => [...prev, block]);
+    },
+    [],
+  );
 
   // 上传参考资料(PDF/Word/HTML/Markdown/代码),复用 pastedBlock 机制呈现+发送。
+  // 桌面版走原生文件对话框(PickReferenceFile);Web 模式浏览器拿不到磁盘路径,改走
+  // <input type=file> → /upload 落盘 → 拿路径 → ImportReferenceFile。
   const handleUploadReference = useCallback(async () => {
     if (uploadingReference || disabled || running) return;
+    if (isWebMode()) {
+      referenceInputRef.current?.click();
+      return;
+    }
     setUploadingReference(true);
     try {
       const path = await app.PickReferenceFile();
       if (!path) return; // 用户取消
       const res = await app.ImportReferenceFile(path);
-      const remark = `${res.name}${res.truncated ? " · 已截断" : ""} · ${res.charCount} 字`;
-      const id = nextPasteId.current++;
-      const block = createPastedTextBlock(id, res.text, remark);
-      const ta = taRef.current;
-      const insertPos = ta?.selectionEnd ?? text.length;
-      const newText = text.slice(0, insertPos) + block.label + text.slice(insertPos);
-      pastedBlocksRef.current = [...pastedBlocksRef.current, block];
-      setPastedBlocks((prev) => [...prev, block]);
-      setText(newText);
-      requestAnimationFrame(() => {
-        const node = taRef.current;
-        if (!node) return;
-        const pos = insertPos + block.label.length;
-        node.focus();
-        node.selectionStart = node.selectionEnd = pos;
-      });
+      insertReferenceResult(res);
     } catch (e) {
       void alertDialog("上传参考资料失败: " + String((e as Error)?.message ?? e));
     } finally {
       setUploadingReference(false);
     }
-  }, [disabled, running, text, uploadingReference]);
+  }, [disabled, running, uploadingReference, insertReferenceResult]);
+
+  // Web 模式:<input type=file> 选完后,先上传到 /upload 拿绝对路径,再逐个解析为参考资料。
+  const onReferenceFilesPicked = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      setUploadingReference(true);
+      try {
+        const paths = await uploadFiles(files);
+        for (const path of paths) {
+          const res = await app.ImportReferenceFile(path);
+          insertReferenceResult(res);
+        }
+      } catch (e) {
+        void alertDialog("上传参考资料失败: " + String((e as Error)?.message ?? e));
+      } finally {
+        setUploadingReference(false);
+      }
+    },
+    [insertReferenceResult],
+  );
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -760,6 +797,19 @@ export function Composer({
           onDragLeave={onDragLeave}
         >
           <span className="composer__caret">›</span>
+          {/* Web 模式的隐藏文件选择器:桌面版用原生对话框,这里用它拿到 File 再上传。 */}
+          <input
+            ref={referenceInputRef}
+            type="file"
+            accept=".pdf,.doc,.docx,.rtf,.html,.htm,.md,.markdown,.txt,.csv,.json,.yaml,.yml,.toml,.py,.js,.ts,.tsx,.jsx,.go,.c,.h,.cpp,.hpp,.ino,.pde,.sh"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = ""; // 允许再次选同一个文件
+              void onReferenceFilesPicked(files);
+            }}
+          />
           <button
             type="button"
             className="composer__btn composer__btn--upload"
