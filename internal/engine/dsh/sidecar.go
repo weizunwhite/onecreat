@@ -28,6 +28,11 @@ import (
 // defaultStartupTimeout 是等 initialize 握手完成的默认超时。
 const defaultStartupTimeout = 60 * time.Second
 
+// gatewayTierEnv 是"当前选中档位"的进程环境变量,值形如 tier-1 / tier-2 / tier-3。
+// 与 native 路径同一个字符串(desktop/accounts_app.go 的 gatewayEnvTier 写它,
+// internal/boot/boot.go 的 applyOnecreatGateway 读它),别新造名字。
+const gatewayTierEnv = "ONECREAT_TIER"
+
 // Approver 是"问用户要不要放行这次工具调用"的回调。返回 (allow, 本会话记住, err),
 // 与 control.Controller.RequestApproval 同签名 —— dsh 引擎因此复用 native 的整套
 // 审批 UI、会话内授权记忆、YOLO/bypass 语义,前端零改动。
@@ -268,8 +273,17 @@ func (e *Engine) Start(ctx context.Context) error {
 
 // wireModel 返回下发给 dsh 的 wire model。网关模式永远是档位占位符(真实模型由
 // 平台按 token/档位映射,客户端不该也不能知道);直连模式才是真实模型 id。
+//
+// 网关模式下优先取 ONECREAT_TIER —— 平台网关就是按 "tier-N" 映射模型与计费的
+// (native 路径见 internal/boot/boot.go 的 applyOnecreatGateway,同一个来源)。
+// 不读它就等于"用户选了旗舰、请求里却写着 onecreat":要么被网关拒,要么切档不生效。
+// 档位由桌面端登录/切档时写进进程环境(desktop/accounts_app.go),切档会重建
+// controller → 重新 spawn sidecar → 这里重新读到新档位。
 func (e *Engine) wireModel() string {
 	if e.opts.Gateway {
+		if tier := strings.TrimSpace(os.Getenv(gatewayTierEnv)); tier != "" {
+			return tier
+		}
 		if e.opts.Cfg.ModelPlaceholder != "" {
 			return e.opts.Cfg.ModelPlaceholder
 		}
