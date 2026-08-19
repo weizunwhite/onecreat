@@ -67,6 +67,7 @@ import { HardwarePanel } from "./components/HardwarePanel";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { LoginGate } from "./components/LoginGate";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { WebQuitButton } from "./components/WebQuitButton";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
 import { FolderPicker } from "./components/FolderPicker";
 import { useSession, setSessionStore } from "./lib/account";
@@ -1688,6 +1689,8 @@ export default function App() {
               >
                 <SquarePen size={13} />
               </button>
+              {/* Web 模式的「退出 OneCreat」入口(桌面版自动隐藏)。 */}
+              <WebQuitButton />
             </div>
           </header>
 

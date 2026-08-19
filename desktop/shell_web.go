@@ -12,19 +12,30 @@ package main
 //   - RaiseWindow    → 无原生窗口,空操作
 type webShell struct {
 	events *eventBroadcaster
+	// quit 是「请求退出」信号:前端点退出按钮 → App.Quit → webShell.Quit 往这里投一下,
+	// main_web 的运行循环收到后走 app.shutdown + 停服。缓冲 1 + 非阻塞发,重复点也不阻塞。
+	quit chan struct{}
 }
 
 // newShell 由 NewApp 调用。webShell 需要一个 SSE 广播器,但 NewApp() 时 HTTP 服务
 // 还没起来,所以先在这里建好,main_web.go 起服务时用 App.webEvents() 取回同一个实例
 // —— 这样 NewApp 的签名在两种模式下保持一致。
 func newShell(*App) Shell {
-	return &webShell{events: newEventBroadcaster()}
+	return &webShell{events: newEventBroadcaster(), quit: make(chan struct{}, 1)}
 }
 
 // webEvents 取出当前 shell 的 SSE 广播器。
 func (a *App) webEvents() *eventBroadcaster {
 	if s, ok := a.sh().(*webShell); ok {
 		return s.events
+	}
+	return nil
+}
+
+// webQuit 取出「请求退出」信号 channel,供 main_web 的运行循环 select。
+func (a *App) webQuit() <-chan struct{} {
+	if s, ok := a.sh().(*webShell); ok {
+		return s.quit
 	}
 	return nil
 }
@@ -52,3 +63,11 @@ func (s *webShell) BrowserOpenURL(url string) {
 }
 
 func (s *webShell) RaiseWindow() {}
+
+// Quit 往 quit channel 非阻塞投一个信号;main_web 的运行循环收到后优雅停服。
+func (s *webShell) Quit() {
+	select {
+	case s.quit <- struct{}{}:
+	default: // 已经在退了,不重复
+	}
+}

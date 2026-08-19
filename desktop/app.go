@@ -416,6 +416,11 @@ func (a *App) ListTabs() []TabMeta {
 // shutdown snapshots the conversation and stops plugin subprocesses on close.
 // 遍历所有标签(不只活动镜像):多标签并行时,后台标签进行中的最后一轮也要落盘,
 // 它们的 MCP stdio 子进程也要关闭,否则退出/自更新会丢数据 + 留孤儿子进程(A7)。
+// Quit 请求优雅退出整个程序。前端「退出 OneCreat」按钮调它(Web 模式);桌面版按钮隐藏,
+// 但方法照常可用。真正的关闭动作交给宿主外壳:Wails 关窗触发 OnShutdown;Web 通知运行
+// 循环走 app.shutdown + 停服。这里不直接 shutdown,好让本次 RPC 先把 200 回给浏览器。
+func (a *App) Quit() { a.sh().Quit() }
+
 func (a *App) shutdown(context.Context) {
 	a.mu.RLock()
 	ctrls := make([]*control.Controller, 0, len(a.tabs))

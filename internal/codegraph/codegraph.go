@@ -15,6 +15,7 @@ package codegraph
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -119,6 +120,40 @@ func EnsureInit(ctx context.Context, bin, root string) error {
 		return fmt.Errorf("codegraph init: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// StopDaemon 终止 root 下 CodeGraph 的后台守护进程。
+//
+// 关键背景(实测,见 docs 与提交说明):`serve --mcp` 这个 MCP 前端进程会再 fork 出一个
+// **detached、按工作区共享、带 5 分钟 idle 超时**的守护进程(`serve --mcp --path <root>`),
+// 由它跑真正的索引 + 文件监听。这个守护进程有自己的进程组/会话,杀 MCP 前端进程(哪怕
+// SIGKILL 整个前端进程组)也波及不到它——于是主程序退出后它会残留最多 5 分钟。
+//
+// 守护进程把自己的 pid 写在 <root>/.codegraph/daemon.pid(JSON)。这里读出来直接终止,
+// 保证主程序退出后不留残留。找不到 pidfile / 进程已不在都静默返回(非致命)。
+//
+// 注意:守护进程是「按工作区共享」的——若同机另有一个 onecreat 进程正用着同一工作区,
+// 停掉它会让对方下次调用时重新拉起一个(codegraph 会按需重启),属可接受代价。
+func StopDaemon(root string) {
+	if strings.TrimSpace(root) == "" {
+		return
+	}
+	pidPath := filepath.Join(root, ".codegraph", "daemon.pid")
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return
+	}
+	var meta struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(b, &meta); err != nil || meta.PID <= 0 {
+		return
+	}
+	if p, err := os.FindProcess(meta.PID); err == nil {
+		_ = p.Kill() // SIGKILL(unix)/ TerminateProcess(windows):守护进程不吃 SIGTERM 也确保杀掉
+	}
+	// 清掉 pidfile(它记的进程已被我们干掉);下次连接时 codegraph 会重建。
+	_ = os.Remove(pidPath)
 }
 
 func expand(p string) string {

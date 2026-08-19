@@ -82,3 +82,10 @@ func (s *wailsShell) RaiseWindow() {
 	runtime.WindowUnminimise(ctx)
 	runtime.WindowCenter(ctx)
 }
+
+// Quit 关闭 Wails 应用(触发 OnShutdown → app.shutdown)。
+func (s *wailsShell) Quit() {
+	if ctx, ok := s.ctx(); ok {
+		runtime.Quit(ctx)
+	}
+}

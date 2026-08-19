@@ -229,6 +229,8 @@ export interface AppBindings {
   CheckUpdate(): Promise<UpdateInfo | null>;
   ApplyUpdate(): Promise<void>;
   OpenDownloadPage(): Promise<void>;
+  // Web 模式:优雅退出本地服务(保存会话 + 关 controller + 停服)。桌面版按钮隐藏。
+  Quit(): Promise<void>;
 }
 
 interface WailsRuntime {
@@ -1497,6 +1499,9 @@ function makeMockApp(): AppBindings {
       if (typeof window !== "undefined") {
         window.open("https://github.com/weizunwhite/onecreat/releases/latest", "_blank", "noopener");
       }
+    },
+    async Quit() {
+      console.info("mock Quit");
     },
   };
 }

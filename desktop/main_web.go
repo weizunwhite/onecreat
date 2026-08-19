@@ -148,6 +148,9 @@ func run(host string, port int, workspace string, noOpen bool) error {
 		return err
 	case <-sig:
 		fmt.Println("\n正在退出:保存会话…")
+	case <-app.webQuit():
+		// 前端「退出 OneCreat」按钮:与 Ctrl-C 同一条优雅关闭路径。
+		fmt.Println("\n收到退出请求:保存会话…")
 	}
 
 	// 与 Wails 的 OnShutdown 走同一个函数:每个标签快照 + 关 controller(含 MCP 子进程)。

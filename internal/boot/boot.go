@@ -327,6 +327,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	cleanup := pluginHost.Close
 
+	// CodeGraph 的 MCP 前端进程会 fork 出一个 detached、按工作区共享、带 5 分钟 idle 超时的
+	// 守护进程,杀前端进程杀不到它 → 主程序退出后会残留最多 5 分钟。关插件后按 pidfile 把它
+	// 一并停掉,保证退出即净(Wails 与 Web 两种壳都受益)。见 codegraph.StopDaemon。
+	if cfg.Codegraph.Enabled {
+		prev := cleanup
+		daemonRoot := cwd
+		cleanup = func() { prev(); codegraph.StopDaemon(daemonRoot) }
+	}
+
 	// LSP tools resolve their servers on PATH and spawn lazily on first query, so
 	// registering them is cheap even when no server is installed (a query then
 	// returns an install hint). The manager is session-scoped; chain its shutdown

@@ -32,6 +32,10 @@ type Shell interface {
 
 	// RaiseWindow 显示 + 取消最小化 + 居中原生窗口。Web 模式下是空操作。
 	RaiseWindow()
+
+	// Quit 请求优雅退出整个程序。Wails → runtime.Quit(关窗触发 OnShutdown);
+	// Web → 通知本地服务的运行循环走 app.shutdown 并停服(见 shell_web.go)。
+	Quit()
 }
 
 // DialogOptions 是原生对话框参数,字段刻意与 wails runtime.OpenDialogOptions 的
@@ -64,6 +68,7 @@ func (noopShell) OpenMultipleFilesDialog(DialogOptions) ([]string, error) {
 }
 func (noopShell) BrowserOpenURL(string) {}
 func (noopShell) RaiseWindow()          {}
+func (noopShell) Quit()                 {}
 
 // sh 返回可用的 Shell:未装配时给 noopShell,免得每个调用点都判空。
 func (a *App) sh() Shell {
