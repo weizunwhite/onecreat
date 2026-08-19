@@ -82,10 +82,7 @@ func (c *Controller) enginePreEdit(name string, args json.RawMessage) {
 		return
 	}
 	for _, path := range editPathsFromArgs(name, args) {
-		abs := path
-		if !filepath.IsAbs(abs) && root != "" {
-			abs = filepath.Join(root, abs)
-		}
+		abs := normalizeEditPath(root, path)
 		data, err := os.ReadFile(abs)
 		if err != nil {
 			// 文件还不存在 = 这次是创建:记 Create,rewind 时删掉它。
@@ -100,6 +97,21 @@ func (c *Controller) enginePreEdit(name string, args json.RawMessage) {
 		}
 		cp.Snapshot(diff.Change{Path: abs, Kind: diff.Modify, OldText: old})
 	}
+}
+
+// normalizeEditPath 把工具参数里的路径规整成"和 checkpoint 的工作区根同一坐标系"的
+// 绝对路径:相对路径接到根上,再对所在目录做 EvalSymlinks —— macOS 上 /tmp 是
+// /private/tmp 的符号链接,不解开就会因为 "escapes workspace" 而 rewind 失败(实测过)。
+// 文件本身可能还不存在(创建),所以只解目录再拼回文件名。
+func normalizeEditPath(root, p string) string {
+	if !filepath.IsAbs(p) && root != "" {
+		p = filepath.Join(root, p)
+	}
+	p = filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		p = filepath.Join(resolved, filepath.Base(p))
+	}
+	return p
 }
 
 // editPathsFromArgs 从工具参数里挑出"会被写"的文件路径。只认写类工具,读类工具
