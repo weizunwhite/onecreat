@@ -566,6 +566,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		dshEngine = eng
 		runner = eng
 	}
+	// 计划模式的硬门控要读 Controller 的状态,而 Controller 此刻还没造出来;
+	// 用一个指针占位,下面 control.New 之后回填(planModeRef 只在 dsh 路径用)。
+	var planModeRef *control.Controller
 
 	ctrlOpts := control.Options{
 		Runner:        runner,
@@ -598,6 +601,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	success = true // 控制器接管 cleanup;defer 不再兜底释放
 	ctrl := control.New(ctrlOpts)
+	if dshEngine != nil {
+		planModeRef = ctrl
+		dshEngine.SetDecider(dshDecider(policy, reg, func() bool { return planModeRef.PlanMode() }))
+	}
 	return ctrl, nil
 }
 

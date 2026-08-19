@@ -57,6 +57,8 @@ type dshEngineDeps struct {
 	Session      *agent.Session
 	Ledger       *evidence.Ledger
 	Policy       permission.Policy
+	// PlanMode 报告当前是否处于计划模式(Controller 造好后回填)。
+	PlanMode func() bool
 }
 
 // buildDSHEngine 造一个 dsh sidecar 引擎。它同时是 agent.Runner(跑一轮)与
@@ -111,19 +113,25 @@ func buildDSHEngine(deps dshEngineDeps) (*dsh.Engine, error) {
 			}
 			return deps.Registry.Get(name)
 		},
-		Decide: dshDecider(deps.Policy, deps.Registry),
+		Decide: dshDecider(deps.Policy, deps.Registry, deps.PlanMode),
 	})
 }
 
 // dshDecider 把 Go 侧的 permission.Policy 接到 dsh 的工具预执行钩子上。
 // 只读性优先查 Go 工具注册表(同名工具口径一致),查不到就按 dsh 侧常见工具名兜底。
-func dshDecider(policy permission.Policy, reg *tool.Registry) dsh.Decider {
+func dshDecider(policy permission.Policy, reg *tool.Registry, planMode func() bool) dsh.Decider {
 	return func(name string, args json.RawMessage) (string, string) {
 		readOnly := dshToolReadOnly(name)
 		if reg != nil {
 			if t, ok := reg.Get(name); ok {
 				readOnly = t.ReadOnly()
 			}
+		}
+		// 计划模式:与 native 的读写门一致 —— 非只读工具一律拒。dsh 自己的 plan-mode
+		// 只是"软引导"(它的 README 明说 sandbox/approval 才是硬约束),不接这条,
+		// 计划模式在 dsh 引擎下就会退化成"提示模型别改",实际仍能改文件(安全错觉)。
+		if !readOnly && planMode != nil && planMode() {
+			return dsh.DecisionDeny, "计划模式:现在只调研与设计,不执行任何会修改环境的操作。先把完整方案写出来交用户确认。"
 		}
 		switch policy.Decide(name, readOnly, args) {
 		case permission.Deny:

@@ -688,15 +688,55 @@ func (e *Engine) handleToolInvoke(n ToolInvokeNotification) {
 	e.notify(NotifyToolResult, ToolResultNotification{ID: n.ID, Output: out, Error: errText})
 }
 
-// handlePreExecute 在 dsh 执行工具前给 Go 侧一个做文件快照的机会。
+// handlePreExecute 是 dsh 每次工具执行前的**单一决策点**:Go 侧在这里一次做三件事
+//  1. 跑权限策略(deny 名单 / ask 规则 / 只读放行)—— 否则 dsh 自己的 bash/write
+//     完全绕过 OneCreat 的权限体系;
+//  2. ask 时经 Controller 弹审批(复用 native 的整套审批 UI 与会话内授权记忆);
+//  3. 放行前给 checkpoint 做文件快照(文件级 rewind 保留 Go 实现)。
 func (e *Engine) handlePreExecute(n ToolPreExecuteNotification) {
 	e.mu.Lock()
 	preEdit := e.opts.PreEdit
+	decide := e.opts.Decide
+	approver := e.opts.Approver
 	e.mu.Unlock()
-	if preEdit != nil {
-		preEdit(n.Name, json.RawMessage(n.Arguments))
+
+	args := json.RawMessage(n.Arguments)
+	decision, reason := DecisionAllow, ""
+	if decide != nil {
+		decision, reason = decide(n.Name, args)
 	}
-	e.notify(NotifyToolPreExecuteDone, AckNotification{ID: n.ID})
+	if os.Getenv("ONECREAT_DSH_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[dsh-dbg] pre-exec %s decision=%s approver=%v decide=%v\n", n.Name, decision, approver != nil, decide != nil)
+	}
+	if decision == DecisionAsk {
+		if approver == nil {
+			// 非交互(headless):与 native 的 permission.Gate 一致 —— 保持自主,放行。
+			decision = DecisionAllow
+		} else if allow, _, err := approver(context.Background(), n.Name, subjectOf(args)); err != nil || !allow {
+			decision = DecisionDeny
+			reason = "用户拒绝了这次调用 —— 不要重试,换个做法或问用户下一步怎么办。"
+		} else {
+			decision = DecisionAllow
+		}
+	}
+	if decision == DecisionAllow && preEdit != nil {
+		preEdit(n.Name, args)
+	}
+	e.notify(NotifyToolPreExecuteDone, PreExecuteDecision{ID: n.ID, Decision: decision, Reason: reason})
+}
+
+// subjectOf 从工具参数里取一个人类可读的"对象"(命令行 / 文件路径),用于审批卡片。
+func subjectOf(args json.RawMessage) string {
+	var m map[string]any
+	if err := json.Unmarshal(args, &m); err != nil {
+		return ""
+	}
+	for _, k := range []string{"command", "cmd", "path", "file_path", "filePath", "file", "url"} {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // notify 发一帧通知给 sidecar。
