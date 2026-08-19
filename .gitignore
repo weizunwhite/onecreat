@@ -53,3 +53,7 @@ Thumbs.db
 
 # Claude Code local session config (per-developer, never committed)
 /.claude/
+
+# dsh 组合包:依赖闭包与会话 store 不入仓(pnpm-lock.yaml 入仓)
+dsh/node_modules/
+dsh/.sessions/

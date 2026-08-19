@@ -1,0 +1,47 @@
+{
+  "name": "onecreat-dsh-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OneCreat 自带的 dsh(DeepSeek Harness)组合包:锁死版本的 dsh 运行时 + OneCreat 自有插件(控制面/网关适配器)",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js profiles/onecreat.cordis.yml"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-agent-spine-demo": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-bash-local": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-compaction-basic": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-fs-local": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-fs-observation-policy": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-llm-deepseek": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-mcp-client": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-plan-mode": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-sdk-jsonrpc-demo": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-sdk-protocol": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-token-meter": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-tool-fs": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-tool-todo": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-user-approval": "0.1.0-rc.7",
+    "@deepseek-ai/schemastery": "3.18.1"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3",
+    "@types/node": "22.13.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@deepseek-ai/dsh-subprocess-local",
+      "koffi",
+      "node-pty"
+    ]
+  }
+}

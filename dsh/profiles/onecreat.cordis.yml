@@ -1,0 +1,89 @@
+# OneCreat 的 dsh 组合(profile)。
+# stdout 只走 JSON-RPC 协议帧 —— 绝不能加 console logger 或终端 UI。
+#
+# 与官方 examples/jsonrpc-agent 的差别:
+#   1. 用 OneCreat 自己的 control 插件(./plugins/control/index.js)取代
+#      @deepseek-ai/dsh-sdk-jsonrpc-server —— 它在同一条 wire 上补齐官方缺的
+#      cancel / 审批 / 计划模式 / resume / 每轮注入 / 证据工具桥。
+#   2. provider 走 onecreat-gateway 自命名适配器(隐藏 DeepSeek 品牌),
+#      直连模式下它照样直接打 api.deepseek.com(由 base URL 决定)。
+#   3. 挂 OneCreat 硬件 MCP(工具名 mcp__hardware__*)。
+#   4. 审批策略 ask + 全部写操作/命令执行过审批(不自动批)。
+
+- id: onecreat-control
+  name: ../plugins/control/index.js
+  config:
+    maxTokensAsSuccess: true
+
+- id: onecreat-gateway
+  name: ../plugins/gateway/index.js
+  config:
+    # 真实 base URL 只从环境读,绝不写进本文件(网关红线)。
+    baseURLEnv: ONECREAT_DSH_BASE_URL
+    apiKeyEnv: ONECREAT_DSH_API_KEY
+
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: ask
+
+- id: plan-mode
+  name: '@deepseek-ai/dsh-plan-mode'
+  config:
+    section: |
+      你正处在「计划模式」。只做调研与设计:读代码、查资料、问清楚约束,
+      不要修改任何文件、不要执行有副作用的命令。想清楚后,把完整方案作为
+      普通回答写出来交给用户确认。
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: bash
+  name: '@deepseek-ai/dsh-bash-local'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    timeoutMs: 600000
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are a coding agent.'
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash:
+      enableRunInBackground: false
+    toolJobs: false
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './.sessions'
+    compression: !!js "process.env.DSH_SESSION_PLAIN === undefined ? 'zstd' : 'none'"
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: false
+
+- id: fs-local
+  name: '@deepseek-ai/dsh-fs-local'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+  config:
+    thresholdRatio: 0.8
+    retainRatio: 0.16
+    maxTokens: 8192
+    compactionRetries: 1
