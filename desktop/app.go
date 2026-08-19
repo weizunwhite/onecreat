@@ -17,8 +17,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
@@ -44,11 +42,16 @@ const eventChannel = "agent:event"
 // bindings and call straight through to one transport-agnostic control.Controller
 // — the same controller the chat TUI and the HTTP/SSE server drive, assembled by
 // the shared internal/boot. Events flow the other way: the controller emits to an
-// eventSink that forwards each one to the webview via runtime.EventsEmit.
+// eventSink that forwards each one to the frontend via the Shell(Wails 事件 / SSE)。
 type App struct {
 	ctx  context.Context
 	sink *eventSink
 	ctrl *control.Controller
+
+	// shell 是宿主外壳(见 shell.go):Wails 原生窗口或 Web 模式的 HTTP/SSE 服务。
+	// 事件推送、原生对话框、开外链、窗口操作全部经它,App 本身不认识 Wails。
+	// 单元测试里的裸 &App{} 不设它,统一由 a.sh() 兜底成 noopShell。
+	shell Shell
 
 	// mu protects ctrl, label, model, startupErr, and ready during the async
 	// boot sequence. startup() spawns a goroutine for boot.Build(); all methods
@@ -134,6 +137,8 @@ func NewApp() *App {
 		saving:      map[string]bool{},
 		saveAgain:   map[string]bool{},
 	}
+	// 按构建标签选宿主实现:!web → wailsShell,web → webShell。
+	a.shell = newShell(a)
 	// 主标签的 sink(tabID "main");同时作为「活动 tab 镜像」的初始 sink。
 	a.sink = &eventSink{app: a, tabID: "main"}
 	return a
@@ -167,10 +172,8 @@ func (a *App) domReady(ctx context.Context) {
 	a.showMainWindow(ctx)
 }
 
-func (a *App) showMainWindow(ctx context.Context) {
-	runtime.WindowShow(ctx)
-	runtime.WindowUnminimise(ctx)
-	runtime.WindowCenter(ctx)
+func (a *App) showMainWindow(context.Context) {
+	a.sh().RaiseWindow()
 }
 
 // buildController runs the full initialization sequence in a background goroutine:
@@ -255,7 +258,7 @@ func (a *App) buildTab(rt *tabRuntime) {
 			a.ready = true
 		}
 		a.mu.Unlock()
-		runtime.EventsEmit(a.ctx, "agent:ready:"+rt.id)
+		a.sh().Emit("agent:ready:"+rt.id, nil)
 		return
 	}
 
@@ -307,7 +310,7 @@ func (a *App) buildTab(rt *tabRuntime) {
 	}
 
 	// Notify the frontend this tab is ready — it re-fetches Meta/Context/History.
-	runtime.EventsEmit(a.ctx, "agent:ready:"+rt.id)
+	a.sh().Emit("agent:ready:"+rt.id, nil)
 }
 
 // CreateTab 新建一个独立任务标签并设为活动;controller 异步装配(期间 Ready=false,
@@ -867,7 +870,7 @@ func (a *App) PickWorkspace() (string, error) {
 		return "", nil
 	}
 	cur, _ := os.Getwd()
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+	dir, err := a.sh().OpenDirectoryDialog(DialogOptions{
 		Title:            "Choose working folder",
 		DefaultDirectory: cur,
 	})
@@ -949,7 +952,7 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	// 标签时直接拒绝并说明,让用户先收尾其他标签——诚实报错优于数据错位。
 	a.mu.RLock()
 	tabCount := len(a.tabs)
-	sink := a.sink // 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,锁外裸读是数据竞争(M3)
+	sink := a.sink       // 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,锁外裸读是数据竞争(M3)
 	activeCtrl := a.ctrl // 活动标签 controller,用于运行态守卫(D3)
 	a.mu.RUnlock()
 	if tabCount > 1 {
@@ -1490,7 +1493,7 @@ func (a *App) PickSkillFolder() (string, error) {
 		return "", nil
 	}
 	cur, _ := os.Getwd()
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+	dir, err := a.sh().OpenDirectoryDialog(DialogOptions{
 		Title:            "Choose skills folder",
 		DefaultDirectory: cur,
 	})
@@ -2506,6 +2509,13 @@ func firstNonEmptyStr(v, def string) string {
 // HardwareMonitor dispatches to the platform-appropriate serial-monitor MCP tool
 // for a short sampling window. The frontend's "看串口" button calls it.
 func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
+	// 与烧录争同一串口:占 hwFlashing 槽。烧录进行中拒绝采样——否则采样子进程会撞正在写 flash 的
+	// esptool,轻则 busy 失败、重则打断写入把板子写成半砖。后端兜底(前端按钮守卫在面板重挂载后会丢,
+	// 正是 D1 互斥要防的场景);此前 HardwareMonitor 漏了这道槽。
+	if !a.beginHardwareOp(&a.hwFlashing) {
+		return HardwareRunResult{Status: "skipped", Summary: "串口忙", NextStep: "有烧录正在进行、占用着串口,请等它完成再看串口。"}
+	}
+	defer a.endHardwareOp(&a.hwFlashing)
 	command, err := a.requireHardwareMCP()
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}
@@ -3830,11 +3840,11 @@ func parseScope(s string) memory.Scope {
 }
 
 // eventSink is the controller's event.Sink in desktop mode: it forwards every
-// agent event to the webview as one runtime event, JSON-shaped by toWire. It is a
+// agent event to the frontend as one shell event, JSON-shaped by toWire. It is a
 // type distinct from App so App's bound method set stays the clean command surface
-// — Emit must not be exposed to JS. Emit runs on the agent goroutine;
-// runtime.EventsEmit is goroutine-safe, and the ctx guard covers the brief window
-// before startup assigns it.
+// — Emit must not be exposed to JS. Emit runs on the agent goroutine; Shell.Emit
+// is goroutine-safe, and the ctx guard covers the brief window before startup
+// assigns it.
 type eventSink struct {
 	ctx   context.Context
 	app   *App
@@ -3842,12 +3852,12 @@ type eventSink struct {
 }
 
 func (s *eventSink) Emit(e event.Event) {
-	if s.ctx != nil {
+	if s.ctx != nil && s.app != nil {
 		ch := eventChannel
 		if s.tabID != "" {
 			ch = eventChannel + ":" + s.tabID
 		}
-		runtime.EventsEmit(s.ctx, ch, toWire(e))
+		s.app.sh().Emit(ch, toWire(e))
 	}
 	// Persist after each turn so a force-kill of a long session loses at most the
 	// in-flight prompt, not every turn back to the last workspace switch.

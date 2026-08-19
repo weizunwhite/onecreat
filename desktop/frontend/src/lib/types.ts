@@ -596,6 +596,7 @@ export interface AccountSession {
   tiers: AccountTier[]; // 订阅制三档(模型对用户隐藏);超管 / 未配为空
   points: number | null; // 机构点数余额(登录快照);超管 = null 不限
   selectedTier: number; // 当前选中档位 1/2/3
+  platformMode: boolean; // 平台模式(打包注入/env 开启):前端据此决定未登录时是否弹登录门
 }
 export interface AccountLoginResult {
   ok: boolean;

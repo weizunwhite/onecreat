@@ -127,7 +127,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// 平台 AI 网关(用登录 token 鉴权、平台统一拿上游 key 计费),而非客户端直连厂商。
 	applyOnecreatGateway(entry)
 	if opts.RequireKey {
-		if err := cfg.Validate(modelName); err != nil {
+		// 校验改写后的 entry(网关模式下已换成 ONECREAT_GATEWAY_TOKEN),不能再 cfg.Validate
+		// 重新解析——ResolveModel 返回副本,重解会拿回未改写的原始 entry,在网关模式下点名底层
+		// 厂商 key(DEEPSEEK_API_KEY)启动即失败并泄露厂商名。
+		if err := entry.Validate(modelName); err != nil {
 			return nil, err
 		}
 	}

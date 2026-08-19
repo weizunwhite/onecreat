@@ -7,6 +7,7 @@ OneCreat is a DeepSeek-native AI coding agent (a Claude-Code/Codex-style harness
 > **本地开发工作流见 [`docs/开发工作流.md`](docs/开发工作流.md)**(构建/打包/装机、账号网关本地实测、改完自查三连、红线教训)。
 > 本文件夹 `/Users/localwork/06_System/onecreat` 是 onecreat 的**唯一开发仓库**(2026-06-18 从 reasonix 物理分离,origin=weizunwhite/onecreat,无 upstream);旧文件夹 `reasonix_source/DeepSeek-Reasonix` 是分离前副本,**别在那开发**。
 > ⚠️ **不要把 reasonix 上游的流式渲染优化往这搬**——已实测更差,详见 `docs/开发工作流.md` 红线段。
+> **账号系统 / 登录 / 权限 / 点数 / 档位 / AI 网关**——onecreat 是教学平台(teacher)的 B 端客户端,这些改动前先读 [`docs/账号系统与教学平台互通.md`](docs/账号系统与教学平台互通.md)(讲清两半代码在哪、改一件事动哪两边;对端仓库 `/Users/zunwei/system/teacher`)。
 
 ## Two Go modules
 
@@ -33,6 +34,11 @@ cd desktop && go build ./... && go vet ./... && go test ./...
 cd desktop/frontend && pnpm tsc --noEmit && pnpm build   # frontend type-check + bundle
 cd desktop && wails dev      # hot-reload Go + Vite frontend
 cd desktop && wails build    # -> build/bin/
+
+# Web 模式(单二进制起本地 HTTP 服务 + 浏览器当 UI,纯 Go 免打包;见 docs/Web模式.md)
+make build-web               # -> bin/onecreat-web  (等价于 pnpm build + go build -tags web)
+make release-web VERSION=vX.Y.Z   # 主分发形态:全平台 Web 发行包 -> dist/ (scripts/web-build.sh;单平台传 os/arch)
+cd desktop && go test -tags web ./...   # web 标签下的测试也要绿
 
 # Hardware MCP verification (Arduino/ESP-IDF/PlatformIO toolchains)
 make hardware-verify
@@ -75,6 +81,8 @@ The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream mod
 - **Desktop multi-tab model.** `desktop/app.go` runs one independent `control.Controller` + event sink + session file **per tab** (`tabRuntime`), so background tabs run truly in parallel. The `App.ctrl`/`sink`/`model` fields are a **mirror of the active tab**; `a.mu` guards them and the `tabs` map. Methods that must reach a *specific* (possibly background) tab take a `tabID` and route via `a.tabs[tabID]` (e.g. `Approve`, `SetPlanMode`); the rest operate on the active mirror. Always read `a.ctrl` under `a.mu` (capture a local, then use it). `boot.Build` is seconds-long — never hold `a.mu` across it; build outside the lock, write back inside.
 
 - **Desktop bridge is hand-mirrored.** `desktop/frontend/src/lib/bridge.ts` (`AppBindings`) mirrors `desktop/app.go`'s exported method set by hand — change a Go signature and you must update the TS interface, the in-browser mock (`makeMockApp`), and call sites. Wails passes args positionally. `desktop/wire.go` and `internal/serve/wire.go` separately map `event.Kind` → wire strings (keep both in step).
+
+- **`*App` must not import the Wails runtime.** Everything host-specific — event emit, native dialogs, opening a URL, raising the window — goes through the `Shell` interface (`desktop/shell.go`). `wailsShell` (`//go:build !web`) is the desktop impl; `webShell` backs the browser-based Web mode (`docs/Web模式.md`), where the same 112 exported `*App` methods are dispatched by reflection over `POST /rpc/<Method>` and events stream over one SSE. Adding an `*App` method needs no routing work, but its signature must stay RPC-compatible (no variadics; returns limited to `()`/`(T)`/`(error)`/`(T, error)`) — `TestAppMethodsAreRPCCompatible` guards this.
 
 - **SaaS gateway hides the backend model — never leak it.** In OneCreat's online deployment, the client talks to the platform AI gateway (an OpenAI-compatible endpoint authed via `ONECREAT_GATEWAY_TOKEN`, see `internal/provider/openai/openai.go`) and the user only ever sees a subscription *tier* (标准/高级/旗舰). The real provider/model/route is a billing-and-routing secret: revealing it both leaks IP and lets users bypass tier-based metering. `config.ModelPrivacyPolicy` (`internal/config/config.go`) is injected at runtime to enforce this, and the client-side planner is disabled on the gateway path for the same reason. Don't add code paths or prompts that surface the underlying model name. Wallet/points readout lives in `internal/billing`.
 

@@ -15,8 +15,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	fileenc "reasonix/internal/fileutil/encoding"
 )
 
@@ -219,10 +217,10 @@ func (a *App) KnowledgeImportFiles(baseID string) (KnowledgeImportResult, error)
 		return KnowledgeImportResult{Imported: []KnowledgeDocumentView{}, Skipped: []KnowledgeImportIssue{}}, nil
 	}
 	cur, _ := os.Getwd()
-	paths, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+	paths, err := a.sh().OpenMultipleFilesDialog(DialogOptions{
 		Title:            "导入本地知识库文件",
 		DefaultDirectory: cur,
-		Filters: []runtime.FileFilter{
+		Filters: []FileFilter{
 			{
 				DisplayName: "Text, Markdown, Code",
 				Pattern:     "*.txt;*.md;*.mdx;*.csv;*.json;*.yaml;*.yml;*.toml;*.go;*.py;*.js;*.ts;*.tsx;*.jsx;*.ino;*.cpp;*.c;*.h;*.hpp;*.html;*.css;*.rs;*.java;*.swift;*.sh;*.sql",

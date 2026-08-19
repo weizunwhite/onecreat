@@ -1,0 +1,58 @@
+name: Release web
+
+# Web 模式(主分发形态)发布线。tag 命名空间 `web-v<semver>` 触发:
+#   git tag web-vX.Y.Z && git push origin web-vX.Y.Z
+# 纯 Go + 内嵌前端,不需要 Wails/WebKit/NSIS,所以单个 ubuntu runner 交叉编译全平台即可
+# (对比 release-desktop.yml 需要逐平台原生 runner)。产物由 scripts/web-build.sh 生成。
+# `v*` 是 CLI 发布(release.yml),`desktop-v*` 是 Wails 桌面版(release-desktop.yml,已降为可选)。
+on:
+  push:
+    tags: ["web-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag(如 web-v1.2.0),手动触发时必填"
+        required: true
+        type: string
+
+permissions:
+  contents: write # 建 release、传产物
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Cache hit guard
+        run: ./scripts/cache-guard.sh
+
+      - name: Build all platforms and package
+        run: ./scripts/web-build.sh all "$VERSION"
+
+      - name: Publish GitHub release
+        run: |
+          gh release create "$VERSION" \
+            dist/SHA256SUMS dist/onecreat-web-*.tar.gz dist/onecreat-web-*.zip \
+            --title "OneCreat $VERSION (Web)" \
+            --generate-notes
