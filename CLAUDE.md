@@ -35,6 +35,10 @@ cd desktop/frontend && pnpm tsc --noEmit && pnpm build   # frontend type-check +
 cd desktop && wails dev      # hot-reload Go + Vite frontend
 cd desktop && wails build    # -> build/bin/
 
+# Web 模式(单二进制起本地 HTTP 服务 + 浏览器当 UI,纯 Go 免打包;见 docs/Web模式.md)
+make build-web               # -> bin/onecreat-web  (等价于 pnpm build + go build -tags web)
+cd desktop && go test -tags web ./...   # web 标签下的测试也要绿
+
 # Hardware MCP verification (Arduino/ESP-IDF/PlatformIO toolchains)
 make hardware-verify
 make hardware-device-verify ARGS="..."
@@ -76,6 +80,8 @@ The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream mod
 - **Desktop multi-tab model.** `desktop/app.go` runs one independent `control.Controller` + event sink + session file **per tab** (`tabRuntime`), so background tabs run truly in parallel. The `App.ctrl`/`sink`/`model` fields are a **mirror of the active tab**; `a.mu` guards them and the `tabs` map. Methods that must reach a *specific* (possibly background) tab take a `tabID` and route via `a.tabs[tabID]` (e.g. `Approve`, `SetPlanMode`); the rest operate on the active mirror. Always read `a.ctrl` under `a.mu` (capture a local, then use it). `boot.Build` is seconds-long — never hold `a.mu` across it; build outside the lock, write back inside.
 
 - **Desktop bridge is hand-mirrored.** `desktop/frontend/src/lib/bridge.ts` (`AppBindings`) mirrors `desktop/app.go`'s exported method set by hand — change a Go signature and you must update the TS interface, the in-browser mock (`makeMockApp`), and call sites. Wails passes args positionally. `desktop/wire.go` and `internal/serve/wire.go` separately map `event.Kind` → wire strings (keep both in step).
+
+- **`*App` must not import the Wails runtime.** Everything host-specific — event emit, native dialogs, opening a URL, raising the window — goes through the `Shell` interface (`desktop/shell.go`). `wailsShell` (`//go:build !web`) is the desktop impl; `webShell` backs the browser-based Web mode (`docs/Web模式.md`), where the same 112 exported `*App` methods are dispatched by reflection over `POST /rpc/<Method>` and events stream over one SSE. Adding an `*App` method needs no routing work, but its signature must stay RPC-compatible (no variadics; returns limited to `()`/`(T)`/`(error)`/`(T, error)`) — `TestAppMethodsAreRPCCompatible` guards this.
 
 - **SaaS gateway hides the backend model — never leak it.** In OneCreat's online deployment, the client talks to the platform AI gateway (an OpenAI-compatible endpoint authed via `ONECREAT_GATEWAY_TOKEN`, see `internal/provider/openai/openai.go`) and the user only ever sees a subscription *tier* (标准/高级/旗舰). The real provider/model/route is a billing-and-routing secret: revealing it both leaks IP and lets users bypass tier-based metering. `config.ModelPrivacyPolicy` (`internal/config/config.go`) is injected at runtime to enforce this, and the client-side planner is disabled on the gateway path for the same reason. Don't add code paths or prompts that surface the underlying model name. Wallet/points readout lives in `internal/billing`.
 
