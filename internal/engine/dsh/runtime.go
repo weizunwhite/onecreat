@@ -79,9 +79,15 @@ func resolveRuntimeDir(configured string) (string, error) {
 		if real, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = real
 		}
-		cand := filepath.Join(filepath.Dir(exe), "runtime", "dsh")
-		if isRuntimeDir(cand) {
-			return cand, nil
+		dir := filepath.Dir(exe)
+		for _, cand := range []string{
+			filepath.Join(dir, "runtime", "dsh"), // 发行包:主程序旁 runtime/dsh
+			filepath.Join(dir, "dsh"),
+			filepath.Join(dir, "..", "dsh"), // 开发:bin/reasonix → 仓库根 dsh/
+		} {
+			if isRuntimeDir(cand) {
+				return filepath.Clean(cand), nil
+			}
 		}
 	}
 	// 开发形态:从 cwd 逐级向上找 dsh/。
