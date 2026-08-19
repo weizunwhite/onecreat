@@ -50,12 +50,12 @@ func TestSerialPortHogRule(t *testing.T) {
 		"cat sketch.ino",
 		"head -100 build.log && ls /dev/cu.*",
 		// 新规则的不误伤样本
-		"python3 read_data.py",                     // 跑脚本文件不拦(非内联)
-		"python3 -c \"print('hello')\"",            // 内联但与串口无关
-		"pip install pyserial",                     // 只是装包
-		"grep -r serial src/",                      // 文本里出现 serial
-		"edition=pro make build",                   // "tio" 不能匹配进 edition 之类的词中
-		"functional-tests run",                     // 同上,词边界
+		"python3 read_data.py",          // 跑脚本文件不拦(非内联)
+		"python3 -c \"print('hello')\"", // 内联但与串口无关
+		"pip install pyserial",          // 只是装包
+		"grep -r serial src/",           // 文本里出现 serial
+		"edition=pro make build",        // "tio" 不能匹配进 edition 之类的词中
+		"functional-tests run",          // 同上,词边界
 	}
 	for _, cmd := range allow {
 		if rule := serialPortHogRule(cmd); rule != "" {
