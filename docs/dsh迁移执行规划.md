@@ -1,5 +1,12 @@
 # OneCreat 底层 agent 迁移到 DeepSeek Harness(dsh)——执行规划
 
+> **状态更新 2026-08-19**:Phase 1(sidecar 打通)与 Phase 2(护城河搬迁)**已实施完成并逐条验收**,
+> 在分支 `feat/dsh-engine` 上(未 push)。做到哪、怎么验的、没做的、坑、待拍板 全部见
+> **[`docs/dsh调研/05_Phase1-2_实施报告.md`](dsh调研/05_Phase1-2_实施报告.md)**,那份报告里的
+> **功能对照表**(Controller 每个方法:已迁/复用/降级/暂不支持+理由)是本规划 G2 闸门要的东西。
+> 一句话:`engine="dsh"` 已是可用引擎(CLI + Web 模式全通、硬件 MCP/证据引擎/网关红线都过),
+> **默认仍是 `native`**,下一步是 Phase 3 灰度。
+>
 > 起草 2026-08-18。**2026-08-19 用户拍板:直接迁移,不再做 A/B 对比**(用户自己试过 dsh 效果好;判断 dsh 缺的正是我们的插件+知识库)。Phase 0 的 G0 视为通过,Phase 1 spike 已有驱动层骨架(`internal/engine/dsh`,见 `docs/dsh调研/04_Phase1_spike报告.md`),下一步直接做 Phase 1 收尾(Controller 接线)+ Phase 2 护城河搬迁。
 > 原文:状态:**待拍板**。前置结论见对话:两个候选(pi / dsh)里选 dsh,原因是产品 DeepSeek-first、dsh 是模型厂自家 harness、"一切皆插件"正对上我们的护城河(证据引擎/硬件 MCP/网关档位)。
 > 硬约束:dsh 目前是 developer preview,官方声明会有破坏性变更 → 本规划每一阶段都设"闸门",不过闸不进下一阶段;旧 Go 内核在最后一阶段之前**不删**。
@@ -61,7 +68,13 @@ React 前端(不动) ── Wails bridge(不动) ── desktop/app.go(不动)
 | 1.5 | 打包:仿 Tauri 版 sidecar 做法——内置 Node 运行时 + **锁死 dsh 精确版本**;`scripts/desktop-build.sh` 增加 sidecar 装配;macOS 先通,Windows 后置 | `scripts/desktop-build.sh`,`desktop/` |
 | 1.6 | 会话文件归属:明确 dsh 自己的 session store 与我们的 session 文件谁是真源,避免双写(生态里已经出过 dual-writer 损坏) | 设计决策 |
 
-**闸门 G1**:桌面端切 `engine="dsh"` 能跑通一次 ESP32 编译+烧录+串口验证,取消/审批正常,`cd desktop && go build && go vet && go test` + `pnpm tsc --noEmit` 全绿。
+**闸门 G1** ✅ **已过(2026-08-19,烧录/串口那一步除外)**:`engine="dsh"` 下 `reasonix run` 与 Web 模式
+都跑通了 ESP32 **编译**(296114 字节固件),取消/审批正常,三套 build·vet·test + 前端 tsc + `dsh/` typecheck 全绿。
+**未实测**:真机烧录 + 串口验证(本次没插板子)。
+
+> 实施与规划的差异(重要):最终接缝**不是**"在 control 里抽 engineBackend 全量接口",而是既有的
+> `agent.Runner`(一轮对话)+ 一个只有 6 个方法的可选 `EngineBackend`(引擎自有状态)。改动面小得多,
+> 且 native 路径可证不变(`c.engine == nil`)。详见实施报告 §1。
 
 ### Phase 2 — 护城河搬迁(3–4 周)
 
@@ -75,7 +88,13 @@ React 前端(不动) ── Wails bridge(不动) ── desktop/app.go(不动)
 | 2.6 | 会话回退 / 分支 / 摘要 | 映射到 dsh 的 fork/summary;文件级 checkpoint(`internal/checkpoint`)保留 Go 实现或明确放弃 | 列"保留/映射/放弃"清单 |
 | 2.7 | serve / acp / cli | 因走同一 Controller 自动受益,各跑一遍冒烟 | — |
 
-**闸门 G2**:功能对照表每一行都是"已迁 / 明确放弃(写明理由)",没有"待定";全部自动化测试绿;三个 ESP32 真机用例在 dsh 引擎下过。
+**闸门 G2** ⚠️ **部分过(2026-08-19)**:功能对照表已逐行给出"已迁 / 复用 / 降级 / 暂不支持 + 理由",
+没有"待定"(见实施报告 §4);自动化测试全绿。**未过**:三个 ESP32 **真机**用例(没插板子,只到编译)。
+
+Phase 2 各行的实际结果:2.1 硬件 MCP ✅ / 2.2 证据引擎 ✅(含"谎报烧录被判未完成"的单测)/
+2.3 网关+模型隐私 ✅(**多做了一件规划没写的事**:dsh 默认往系统提示塞 harness 身份句,已关掉)/
+2.4 账号档位 未动 ✅ / 2.5 skills+注入 ✅(零 TS 改动)/ 2.6 checkpoint ✅ 文件级保留 Go 实现并实测
+rewind 成功,fork/摘要/对话回退明确"暂不支持" / 2.7 serve·acp·cli **只冒烟了 cli 的 run**。
 
 ### Phase 3 — 灰度与切换(2 周)
 
