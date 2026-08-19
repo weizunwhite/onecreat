@@ -32,8 +32,9 @@ func NewScrubber(mask string, secrets ...string) *Scrubber {
 	return &Scrubber{secrets: s, mask: mask}
 }
 
-// text 擦除单个字符串里的所有敏感子串。
-func (s *Scrubber) text(in string) string {
+// Text 擦除单个字符串里的所有敏感子串。诊断文本(sidecar stderr、错误体)喂给
+// 用户之前必须过它 —— dsh 的错误体会带厂商品牌名与 base URL。
+func (s *Scrubber) Text(in string) string {
 	if in == "" || len(s.secrets) == 0 {
 		return in
 	}
@@ -52,10 +53,10 @@ func (s *Scrubber) Event(e event.Event) event.Event {
 	if len(s.secrets) == 0 {
 		return e
 	}
-	e.Text = s.text(e.Text)
-	e.Reasoning = s.text(e.Reasoning)
-	e.Tool.Args = s.text(e.Tool.Args)
-	e.Tool.Output = s.text(e.Tool.Output)
-	e.Tool.Err = s.text(e.Tool.Err)
+	e.Text = s.Text(e.Text)
+	e.Reasoning = s.Text(e.Reasoning)
+	e.Tool.Args = s.Text(e.Tool.Args)
+	e.Tool.Output = s.Text(e.Tool.Output)
+	e.Tool.Err = s.Text(e.Tool.Err)
 	return e
 }

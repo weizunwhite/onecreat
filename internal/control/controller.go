@@ -95,6 +95,10 @@ type Controller struct {
 	cpTurn  int
 	cpBound map[int]int
 
+	// engine 非 nil 表示跑在非 native 引擎上(dsh sidecar)。native 路径下永远是
+	// nil,所有 `if c.engine != nil` 分支都不进,行为与迁移前完全一致。
+	engine EngineBackend
+
 	// promptMu serialises approval prompts so at most one is outstanding at a
 	// time (parallel read-only tool calls don't normally gate, writers run
 	// serially — but this keeps the contract explicit). Held across the blocking
@@ -191,6 +195,9 @@ type Options struct {
 	WorkspaceRoot string
 	AutoPlan      string
 	Classifier    autoPlanClassifier
+	// Engine 非 nil 时把引擎自有状态的命令(取消/计划模式/会话切换/关闭)分流给它。
+	// native 引擎留空。
+	Engine EngineBackend
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -222,6 +229,7 @@ func New(opts Options) *Controller {
 		hooks:            opts.Hooks,
 		mem:              opts.Memory,
 		cleanup:          opts.Cleanup,
+		engine:           opts.Engine,
 		autoPlan:         normalizeAutoPlan(opts.AutoPlan),
 		classifier:       classifier,
 		balanceURL:       opts.BalanceURL,
@@ -236,6 +244,12 @@ func New(opts Options) *Controller {
 		pendingApprovals: map[string]event.Approval{},
 		pendingAsks:      map[string]event.Ask{},
 		granted:          map[string]bool{},
+	}
+	// 引擎后端(dsh)也要知道当前会话文件,以便派生它那边的会话 id(Resume 靠它对上)。
+	c.engineBind(opts.SessionPath)
+	if c.engine != nil {
+		// 文件级 checkpoint 保留 Go 实现:sidecar 每次执行工具前回调这里做快照。
+		c.engine.SetPreEdit(c.enginePreEdit)
 	}
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.rebindCheckpoints(opts.SessionPath)
@@ -630,7 +644,13 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 func (c *Controller) Cancel() {
 	c.mu.Lock()
 	cancel := c.cancel
+	engine := c.engine
 	c.mu.Unlock()
+	// dsh 引擎:先经 wire 让 sidecar 自己收敛这一轮(它有真正的 abort 接缝),
+	// 再取消 Go 侧 context —— 两者都要,前者停模型/工具,后者解阻塞在审批上的 goroutine。
+	if engine != nil {
+		_ = engine.Cancel()
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -701,6 +721,11 @@ func (c *Controller) EnableInteractiveApproval() {
 		c.executor.SetGate(permission.NewGate(c.policy, gateApprover{c}))
 		c.executor.SetAsker(c)
 	}
+	// dsh 引擎:同一个开关也把 sidecar 的审批桥接到前端。没调用它的 headless 路径
+	// 保持 approver=nil,于是 Ask 按 native 的"非交互保持自主"语义放行。
+	if c.engine != nil {
+		c.engine.SetApprover(c.RequestApproval)
+	}
 }
 
 // Ask implements agent.Asker: it emits an AskRequest and blocks until
@@ -756,6 +781,9 @@ func (c *Controller) SetPlanMode(v bool) {
 	if c.executor != nil {
 		c.executor.SetPlanMode(v)
 	}
+	if c.engine != nil {
+		_ = c.engine.SetPlanMode(v)
+	}
 }
 
 // PlanMode reports whether outgoing turns currently receive the plan-mode
@@ -779,6 +807,9 @@ func (c *Controller) SetCoachMode(preamble string) {
 // Compact runs one compaction pass on the executor's session on demand.
 // instructions is optional `/compact <focus>` guidance steering what to keep.
 func (c *Controller) Compact(ctx context.Context, instructions string) error {
+	if c.engineActive() {
+		return engineUnsupported("手动压缩")
+	}
 	if c.executor == nil {
 		return nil
 	}
@@ -836,6 +867,7 @@ func (c *Controller) NewSession() error {
 		c.mu.Unlock()
 	}
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.engineBind(c.SessionPath())
 	c.rebindCheckpoints(c.SessionPath())
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
@@ -882,6 +914,9 @@ func (c *Controller) rewindFail(err error) error {
 // unavailable for turns inherited from a resumed session (code rewind still works).
 // Frontends re-render their transcript from History after the call.
 func (c *Controller) Rewind(turn int, scope RewindScope) error {
+	if c.engineActive() && scope != RewindCode {
+		return engineUnsupported("对话回退")
+	}
 	if c.cp == nil || c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
@@ -940,10 +975,16 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 // the live boundary, so it is unavailable for resumed-session turns and refused
 // while a turn runs. Returns the new session path.
 func (c *Controller) Fork(turn int) (string, error) {
+	if c.engineActive() {
+		return "", engineUnsupported("分叉会话")
+	}
 	return c.ForkNamed(turn, "")
 }
 
 func (c *Controller) ForkNamed(turn int, name string) (string, error) {
+	if c.engineActive() {
+		return "", engineUnsupported("分叉会话")
+	}
 	if c.executor == nil {
 		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
@@ -1001,6 +1042,9 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 // Branch copies the current conversation into a child branch and switches to it.
 // Unlike Fork, it branches at the current tip and does not require a checkpoint.
 func (c *Controller) Branch(name string) (string, error) {
+	if c.engineActive() {
+		return "", engineUnsupported("新建分支")
+	}
 	if c.executor == nil {
 		return "", c.rewindFail(fmt.Errorf("branch unavailable"))
 	}
@@ -1058,6 +1102,9 @@ func (c *Controller) Branches() ([]agent.BranchInfo, error) {
 }
 
 func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
+	if c.engineActive() {
+		return agent.BranchInfo{}, engineUnsupported("切换分支")
+	}
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("usage: /switch <branch id|name>"))
@@ -1139,6 +1186,9 @@ func (c *Controller) SummarizeUpTo(ctx context.Context, turn int) error {
 }
 
 func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error {
+	if c.engineActive() {
+		return engineUnsupported("摘要会话")
+	}
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
@@ -1181,6 +1231,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.mu.Lock()
 	c.sessionPath = path
 	c.mu.Unlock()
+	c.engineBind(path)
 	c.rebindCheckpoints(path)
 }
 
@@ -1247,6 +1298,7 @@ func (c *Controller) SetSessionPath(p string) {
 	c.mu.Lock()
 	c.sessionPath = p
 	c.mu.Unlock()
+	c.engineBind(p)
 	c.rebindCheckpoints(p)
 }
 
@@ -1561,6 +1613,10 @@ func (c *Controller) Close() {
 	}
 	if c.jobs != nil {
 		c.jobs.Close() // cancel any still-running background jobs
+	}
+	if c.engine != nil {
+		// 关掉 sidecar 子进程;不关就会留下 node 残留(每 tab 一个)。
+		_ = c.engine.Close()
 	}
 	if c.cleanup != nil {
 		c.cleanup()

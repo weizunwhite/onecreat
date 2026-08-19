@@ -45,25 +45,6 @@ export const name = 'onecreat-control'
 // agents 是硬依赖;tools/approval/planMode 用 ctx.inject 可选挂载。
 export const inject = ['agents']
 
-/** Go 侧要求审批的工具名前缀/全名(与 native 的写操作口径对齐)。 */
-const APPROVAL_TOOLS = new Set([
-  'write', 'edit', 'create', 'str_replace_editor', 'bash', 'run_command',
-])
-
-/**
- * 判断一个工具调用是否需要过审批。写文件、执行命令、以及硬件 MCP 里的
- * 烧录/上传类操作都要问用户;只读工具直接放行。
- * @param {string} toolName - dsh 侧的工具名。
- * @returns {boolean} 需要审批为 true。
- */
-function needsApproval(toolName) {
-  if (APPROVAL_TOOLS.has(toolName)) return true
-  if (toolName.startsWith('mcp__')) {
-    return /upload|flash|write|install|erase|deploy|ota/i.test(toolName)
-  }
-  return false
-}
-
 /**
  * 把一条 dsh 消息压成纯文本(前端 History 只需要文本)。
  * @param {{content?: any[]}} message - dsh 消息。
@@ -115,6 +96,14 @@ export function apply(ctx, config) {
 
   /** 由 onecreat/session.load 恢复出来的会话(SDK server 不认识它们)。 */
   const resumedSessions = new Map()
+  /**
+   * initialize 传来的路由事实。resume 出来的 agent **必须**带上同样的
+   * provider/model —— 官方 SDK server 建会话时是这么做的(createSession 的
+   * agentOptions);漏了它,恢复出来的 agent 没有模型路由,收到 followup 后
+   * 直接回 idle,表现为"发了消息什么都没发生"。
+   * @type {{provider: string, model: string, maxTokens?: number}}
+   */
+  let route = { provider: 'onecreat-gateway', model: 'onecreat' }
   /** 等待 Go 侧应答的桥接请求:id → { resolve, reject }。 */
   const waiters = new Map()
 
@@ -253,20 +242,27 @@ export function apply(ctx, config) {
       presentCall: args => ({ card: 'generic', title: '签收步骤', kind: 'other', rawInput: args.step }),
     }))
 
-    // 预执行钩子:写操作前让 Go 侧做文件快照(checkpoint/rewind 保留 Go 实现)。
-    toolCtx.on('tools/pre-execute', async (exec, next) => {
+    // 预执行钩子 —— **每次工具执行前的单一决策点**,全部交给 Go 侧裁定:
+    // Go 在那边跑权限策略(deny 名单/ask 规则/只读放行)、必要时弹审批、
+    // 放行前给 checkpoint 做文件快照。dsh 自己的 bash/write 不经过 Go 的
+    // tool registry,不走这条就等于绕过 OneCreat 的整套权限体系。
+    // 不设超时:ask 会等真人;turn 被取消时 exec.signal 会撤回这次询问。
+    toolCtx.on('tools/pre-execute', async (exec, _next) => {
+      let reply
       try {
-        await ask('onecreat/tool.preExecute', {
+        reply = await ask('onecreat/tool.preExecute', {
           sessionId: exec.agent === undefined ? '' : String(exec.agent.session.id),
           name: exec.name,
           arguments: JSON.stringify(exec.arguments ?? {}),
-        }, 5000, exec.signal)
+        }, 0, exec.signal)
       } catch {
-        // 快照失败/超时不阻塞工具执行(fail-open):checkpoint 是增值能力,
-        // 不是安全闸门;安全闸门是下面的审批。
+        // 通道断开/被取消:失败关闭,拒绝执行(安全闸门不能 fail-open)。
+        return { kind: 'deny', reason: 'OneCreat 权限通道不可用,已拒绝这次调用' }
       }
-      if (needsApproval(exec.name)) return { kind: 'ask', reason: `工具 ${exec.name} 会修改环境,需要用户确认` }
-      return next()
+      if (reply?.decision === 'deny') {
+        return { kind: 'deny', reason: typeof reply.reason === 'string' && reply.reason !== '' ? reply.reason : '被 OneCreat 权限策略拒绝' }
+      }
+      return { kind: 'allow' }
     })
   })
 
@@ -298,6 +294,15 @@ export function apply(ctx, config) {
 
   transport.onRequest(async (method, params) => {
     switch (method) {
+      case 'initialize': {
+        // 记下路由事实(resume 要用),再交给官方实现。
+        route = {
+          provider: String(params.provider ?? route.provider),
+          model: String(params.model ?? route.model),
+          ...(typeof params.maxTokens === 'number' ? { maxTokens: params.maxTokens } : {}),
+        }
+        return sdk.handleRequest(method, params)
+      }
       case 'onecreat/session.cancel': {
         const agent = agentOf(String(params.sessionId ?? ''))
         if (agent === undefined) return { cancelled: false }
@@ -328,7 +333,14 @@ export function apply(ctx, config) {
         const sessionId = String(params.sessionId ?? '')
         const existing = agentOf(sessionId)
         if (existing !== undefined) return { messages: projectMessages(existing.session) }
-        const handle = await ctx.agents.resume({ resumeSessionId: SessionId(sessionId) })
+        const handle = await ctx.agents.resume({
+          resumeSessionId: SessionId(sessionId),
+          agentOptions: {
+            provider: route.provider,
+            model: route.model,
+            ...(route.maxTokens === undefined ? {} : { maxTokens: route.maxTokens }),
+          },
+        })
         resumedSessions.set(sessionId, handle)
         return { messages: projectMessages(handle.agent.session) }
       }

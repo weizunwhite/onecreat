@@ -78,6 +78,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 		GatewayBaseURL:    "https://t.weizunxy.com/api/onecreat/v1",
 		GatewayTokenEnv:   "ONECREAT_GATEWAY_TOKEN",
 		ModelPlaceholder:  "onecreat",
+		RuntimeDir:        "/opt/onecreat/runtime/dsh",
+		Profile:           "profiles/onecreat.cordis.yml",
+		DirectModel:       "deepseek-v4-flash",
 	}
 	orig.Plugins = []PluginEntry{
 		{Name: "example", Command: "reasonix-plugin-example", Tier: "eager"}, // D1:tier 必须持久化
@@ -160,6 +163,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.DSH.GatewayBaseURL != "https://t.weizunxy.com/api/onecreat/v1" || got.DSH.ModelPlaceholder != "onecreat" {
 		t.Errorf("dsh gateway/model fields not preserved: %+v", got.DSH)
+	}
+	if got.DSH.RuntimeDir != "/opt/onecreat/runtime/dsh" || got.DSH.Profile != "profiles/onecreat.cordis.yml" || got.DSH.DirectModel != "deepseek-v4-flash" {
+		t.Errorf("dsh runtime/profile/direct_model not preserved: %+v", got.DSH)
 	}
 	if len(got.Skills.Paths) != 2 || got.Skills.Paths[0] != "~/my-skills" {
 		t.Errorf("skills.paths = %v", got.Skills.Paths)

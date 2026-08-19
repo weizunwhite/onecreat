@@ -248,6 +248,10 @@ func (a *Agent) SetOnCompact(fn func()) { a.onCompact = fn }
 // pointer read against SetSession, so a frontend (serve's concurrent /history and
 // /new handlers) can't race the swap. The run loop touches a.session directly and
 // only swaps it via SetSession while idle, so its reads need no lock.
+// Evidence 返回本 agent 的证据账本。dsh 引擎复用同一个账本:它消费 sidecar 的
+// 工具事件流往里记账,Go 侧的 complete_step 再从账本里裁定"这一步到底做没做"。
+func (a *Agent) Evidence() *evidence.Ledger { return a.evidence }
+
 func (a *Agent) Session() *Session {
 	a.sessMu.Lock()
 	defer a.sessMu.Unlock()

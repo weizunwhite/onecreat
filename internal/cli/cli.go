@@ -147,6 +147,7 @@ func runAgent(args []string) int {
 	maxSteps := fs.Int("max-steps", 0, "max tool-call rounds (0 = use config/default)")
 	showThinking := fs.Bool("show-thinking", false, "show thinking text instead of the collapsed thinking marker")
 	metricsPath := fs.String("metrics", "", "write a JSON token/cache/cost summary of the run to this path")
+	engineName := fs.String("engine", "", "底层 agent 引擎:native(默认)| dsh(DeepSeek Harness sidecar)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -183,7 +184,13 @@ func runAgent(args []string) int {
 		metrics = &metricsSink{inner: textSink}
 		sink = metrics
 	}
-	ctrl, err := setup(ctx, *model, *maxSteps, true, sink)
+	ctrl, err := boot.Build(ctx, boot.Options{
+		Model:      *model,
+		MaxSteps:   *maxSteps,
+		RequireKey: true,
+		Sink:       sink,
+		Engine:     *engineName,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1

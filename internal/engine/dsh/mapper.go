@@ -16,18 +16,114 @@ type RawSessionEvent struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// dsh 会话事件 type 常量(只列本包会映射/脱敏的)。
+// dsh 会话事件 type 常量(只列本包会映射/脱敏/喂证据的)。
 const (
 	EvTurnStart      = "turn/start"
 	EvTurnEnd        = "turn/end"
 	EvAssistantChunk = "assistant/chunk"
 	EvAssistantMsg   = "assistant/message"
+	EvUserMsg        = "user/message"
 	EvToolCall       = "tool/call"
 	EvToolResult     = "tool/result"
-	EvRequestHeader  = "request/header"  // 含真实 provider/model → 脱敏
-	EvRequestContext = "request/context" // 含真实 provider/model → 脱敏
+	EvRequestHeader  = "request/header"  // 含真实 provider/model → 丢弃
+	EvRequestContext = "request/context" // 含真实 provider/model → 丢弃
 	EvTodoWrite      = "todo/write"
+	EvCompactStart   = "compaction/start"
+	EvCompactEnd     = "compaction/end"
 )
+
+// contentBlock 是 dsh 的内容块(只解本包用得到的字段)。
+type contentBlock struct {
+	Type       string         `json:"type"`
+	Text       string         `json:"text"`
+	ToolCallID string         `json:"toolCallId"`
+	Content    []contentBlock `json:"content"`
+	IsError    bool           `json:"isError"`
+}
+
+// blocksText 把内容块里的 text 拼起来(嵌套的 tool-result 也递归拼)。
+func blocksText(blocks []contentBlock) string {
+	out := ""
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			out += b.Text
+		case "tool-result":
+			out += blocksText(b.Content)
+		}
+	}
+	return out
+}
+
+// ToolResultInfo 是从 tool/result 事件解出的结构化结果,供证据引擎与事件映射共用。
+type ToolResultInfo struct {
+	CallID  string
+	Output  string
+	IsError bool
+	ErrName string
+}
+
+// ParseToolResult 解一条 tool/result 事件。ok=false 表示载荷不是预期形状。
+func ParseToolResult(raw RawSessionEvent) (ToolResultInfo, bool) {
+	var d struct {
+		Message struct {
+			Content []contentBlock `json:"content"`
+		} `json:"message"`
+		Error *struct {
+			Name string `json:"name"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw.Data, &d); err != nil {
+		return ToolResultInfo{}, false
+	}
+	info := ToolResultInfo{}
+	for _, b := range d.Message.Content {
+		if b.Type == "tool-result" {
+			info.CallID = b.ToolCallID
+			info.Output += blocksText(b.Content)
+			if b.IsError {
+				info.IsError = true
+			}
+		}
+	}
+	if d.Error != nil {
+		info.IsError = true
+		info.ErrName = d.Error.Name + ": " + d.Error.Code
+	}
+	return info, true
+}
+
+// ToolCallInfo 是从 tool/call 事件解出的调用信息。
+type ToolCallInfo struct {
+	CallID string
+	Name   string
+	Args   string
+}
+
+// ParseToolCall 解一条 tool/call 事件。
+func ParseToolCall(raw RawSessionEvent) (ToolCallInfo, bool) {
+	var d struct {
+		CallID    string `json:"callId"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	if err := json.Unmarshal(raw.Data, &d); err != nil {
+		return ToolCallInfo{}, false
+	}
+	return ToolCallInfo{CallID: d.CallID, Name: d.Name, Args: d.Arguments}, true
+}
+
+// ParseTodos 解一条 todo/write 事件的 todos 数组(原始 JSON,交给证据引擎解)。
+func ParseTodos(raw RawSessionEvent) (json.RawMessage, bool) {
+	var d struct {
+		Todos json.RawMessage `json:"todos"`
+	}
+	if err := json.Unmarshal(raw.Data, &d); err != nil || len(d.Todos) == 0 {
+		return nil, false
+	}
+	return d.Todos, true
+}
 
 // Map 把一条 dsh 会话事件映射成零或多条 internal/event.Event。
 //
@@ -44,7 +140,9 @@ func Map(raw RawSessionEvent) []event.Event {
 		return []event.Event{{Kind: event.TurnStarted}}
 
 	case EvTurnEnd:
-		return []event.Event{{Kind: event.TurnDone}}
+		// TurnDone 由 Engine.Run 在整轮收敛后统一发(它才知道有没有错),这里不发,
+		// 否则一轮里多次 turn/end 会让前端反复"收尾"。
+		return nil
 
 	case EvAssistantChunk:
 		var d struct {
@@ -74,17 +172,17 @@ func Map(raw RawSessionEvent) []event.Event {
 	case EvAssistantMsg:
 		var d struct {
 			Message struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
+				Content []contentBlock `json:"content"`
 			} `json:"message"`
+			// dsh 的 TokenUsage:inputTokens 是「未命中缓存的输入」,命中的单列
+			// cacheReadTokens(计费输入 = 三者之和),与我们 provider.Usage 的
+			// PromptTokens(总输入)语义不同,这里换算回来。
 			Usage *struct {
-				PromptTokens     int    `json:"promptTokens"`
-				CompletionTokens int    `json:"completionTokens"`
-				TotalTokens      int    `json:"totalTokens"`
-				CacheHitTokens   int    `json:"cacheReadTokens"`
-				FinishReason     string `json:"finishReason"`
+				InputTokens      int `json:"inputTokens"`
+				OutputTokens     int `json:"outputTokens"`
+				CacheReadTokens  int `json:"cacheReadTokens"`
+				CacheWriteTokens int `json:"cacheWriteTokens"`
+				ReasoningTokens  int `json:"reasoningTokens"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
@@ -101,59 +199,43 @@ func Map(raw RawSessionEvent) []event.Event {
 		}
 		out := []event.Event{{Kind: event.Message, Text: text, Reasoning: reasoning}}
 		if d.Usage != nil {
+			prompt := d.Usage.InputTokens + d.Usage.CacheReadTokens + d.Usage.CacheWriteTokens
 			out = append(out, event.Event{Kind: event.Usage, Usage: &provider.Usage{
-				PromptTokens:     d.Usage.PromptTokens,
-				CompletionTokens: d.Usage.CompletionTokens,
-				TotalTokens:      d.Usage.TotalTokens,
-				CacheHitTokens:   d.Usage.CacheHitTokens,
-				FinishReason:     d.Usage.FinishReason,
+				PromptTokens:     prompt,
+				CompletionTokens: d.Usage.OutputTokens,
+				TotalTokens:      prompt + d.Usage.OutputTokens,
+				CacheHitTokens:   d.Usage.CacheReadTokens,
+				CacheMissTokens:  d.Usage.InputTokens,
+				ReasoningTokens:  d.Usage.ReasoningTokens,
 			}})
 		}
 		return out
 
 	case EvToolCall:
-		var d struct {
-			CallID    string `json:"callId"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		}
-		if err := json.Unmarshal(raw.Data, &d); err != nil {
+		info, ok := ParseToolCall(raw)
+		if !ok {
 			return nil
 		}
 		return []event.Event{{Kind: event.ToolDispatch, Tool: event.Tool{
-			ID: d.CallID, Name: d.Name, Args: d.Arguments,
+			ID: info.CallID, Name: info.Name, Args: info.Args,
 		}}}
 
 	case EvToolResult:
-		var d struct {
-			Message struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"message"`
-			Error *struct {
-				Name string `json:"name"`
-				Code string `json:"code"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(raw.Data, &d); err != nil {
+		info, ok := ParseToolResult(raw)
+		if !ok {
 			return nil
 		}
-		var out string
-		for _, c := range d.Message.Content {
-			if c.Type == "text" {
-				out += c.Text
-			}
-		}
-		ev := event.Event{Kind: event.ToolResult, Tool: event.Tool{Output: out}}
-		if d.Error != nil {
-			ev.Tool.Err = d.Error.Name + ": " + d.Error.Code
+		ev := event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: info.CallID, Output: info.Output}}
+		if info.ErrName != "" {
+			ev.Tool.Err = info.ErrName
+		} else if info.IsError {
+			ev.Tool.Err = "tool failed"
 		}
 		return []event.Event{ev}
 
 	default:
-		// 其它 durable 事件(step/*、todo/write、compaction/* 等)本 spike 暂不映射。
+		// 其它 durable 事件(step/*、todo/write、compaction/* 等)不映射成前端事件;
+		// todo/write 由 Engine 单独消费喂证据引擎。
 		return nil
 	}
 }

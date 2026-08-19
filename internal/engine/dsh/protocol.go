@@ -19,12 +19,39 @@ const (
 	MethodShutdown      = "shutdown"
 )
 
+// OneCreat 自己补在同一条 wire 上的方法(由 dsh/plugins/control 实现)。
+// 官方 SDK server 只有上面三个方法,没有取消/审批/计划模式/resume(见
+// docs/dsh调研/01 §6 的 wire 缺口),这些是我们自己补的。
+const (
+	MethodSessionCancel  = "onecreat/session.cancel"
+	MethodPlanModeSet    = "onecreat/planMode.set"
+	MethodInject         = "onecreat/inject"
+	MethodSessionLoad    = "onecreat/session.load"
+	MethodSessionHistory = "onecreat/session.history"
+)
+
+// GatewayProviderRoute 是 OneCreat 自命名的 provider 路由名。真实厂商路由名
+// (dsh 内置的那个)绝不出现在本仓库的 wire、日志与 UI 里 —— 见 dsh/plugins/gateway。
+const GatewayProviderRoute = "onecreat-gateway"
+
 // dsh SDK JSON-RPC 通知名(server→client)。
 const (
 	NotifySessionEvent     = "session.event"
 	NotifySessionStatus    = "session.status"
 	NotifySubagentStarted  = "subagent.started"
 	NotifySubagentFinished = "subagent.finished"
+)
+
+// OneCreat 桥接通知。每条出站通知带一个 id,Go 侧用同一个 id 回一条应答通知。
+// (用通知对而不是 server→client 请求,是为了让 Go 侧的 LineClient 保持只需
+// 处理"响应 + 通知"两种入站帧。)
+const (
+	NotifyApprovalRequest    = "onecreat/approval.request"     // dsh → Go
+	NotifyApprovalResolve    = "onecreat/approval.resolve"     // Go → dsh
+	NotifyToolInvoke         = "onecreat/tool.invoke"          // dsh → Go
+	NotifyToolResult         = "onecreat/tool.result"          // Go → dsh
+	NotifyToolPreExecute     = "onecreat/tool.preExecute"      // dsh → Go
+	NotifyToolPreExecuteDone = "onecreat/tool.preExecute.done" // Go → dsh
 )
 
 // WireServerName 是 dsh SDK 运行时的稳定身份(initialize 结果里的 serverInfo.name)。
@@ -77,4 +104,82 @@ type SessionEventNotification struct {
 type SessionStatusNotification struct {
 	SessionID string `json:"sessionId"`
 	Status    string `json:"status"`
+}
+
+// SessionRefParams 是只带会话 id 的参数(cancel / load / history 共用)。
+type SessionRefParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// PlanModeParams 是 onecreat/planMode.set 的参数。
+type PlanModeParams struct {
+	SessionID string `json:"sessionId"`
+	Active    bool   `json:"active"`
+}
+
+// InjectParams 是 onecreat/inject 的参数(每轮运行时状态,进 pre-step 而非系统提示)。
+type InjectParams struct {
+	SessionID string `json:"sessionId"`
+	Text      string `json:"text"`
+}
+
+// WireMessage 是会话消息投影里的一条(只有角色与文本,不含任何 provider/model 信息)。
+type WireMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// SessionLoadResult 是 onecreat/session.load / session.history 的返回。
+type SessionLoadResult struct {
+	Messages []WireMessage `json:"messages"`
+}
+
+// ApprovalRequestNotification 是 dsh 侧发来的审批请求。
+type ApprovalRequestNotification struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	ToolName  string `json:"toolName"`
+	CallID    string `json:"callId"`
+	Reason    string `json:"reason"`
+}
+
+// ApprovalResolveNotification 是 Go 侧的审批答复。
+type ApprovalResolveNotification struct {
+	ID    string `json:"id"`
+	Allow bool   `json:"allow"`
+}
+
+// ToolInvokeNotification 是 dsh 侧请求 Go 执行一个内置工具(工具桥)。
+type ToolInvokeNotification struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolResultNotification 是 Go 侧的工具执行结果。
+type ToolResultNotification struct {
+	ID     string `json:"id"`
+	Output string `json:"output"`
+	Error  string `json:"error"`
+}
+
+// ToolPreExecuteNotification 是 dsh 侧在执行工具前给 Go 的快照机会。
+type ToolPreExecuteNotification struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// AckNotification 是只带 id 的应答通知。
+type AckNotification struct {
+	ID string `json:"id"`
+}
+
+// PreExecuteDecision 是 Go 侧对一次工具预执行的裁定:allow / ask 后的结果 / deny。
+type PreExecuteDecision struct {
+	ID       string `json:"id"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
 }

@@ -23,6 +23,7 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/engine/dsh"
 	"reasonix/internal/event"
 	"reasonix/internal/hook"
 	"reasonix/internal/jobs"
@@ -100,6 +101,9 @@ type Options struct {
 	// before an MCP flash/monitor tool runs, so the tool doesn't hit a busy port.
 	// It must NOT block or veto the call — vetoing is the hook system's job.
 	PreToolUse func(ctx context.Context, name string, args json.RawMessage)
+	// Engine 覆盖配置里的 engine 选择("native" | "dsh")。空 = 用
+	// ONECREAT_ENGINE 环境变量,再回退 config 的 engine(默认 native)。
+	Engine string
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -540,6 +544,29 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		classifier = control.NewProviderAutoPlanClassifier(classifierProv)
 	}
 
+	// ---- 底层引擎分流 ----
+	// engine="dsh" 时只把 runner 换成 dsh sidecar,其余装配(工具注册表、技能、
+	// 记忆、hooks、权限、证据账本、会话文件)一律照旧 —— 于是 Controller 的
+	// Compose / 计划门 / checkpoint / 审批 / 证据全部原样复用,前端零改动。
+	var dshEngine *dsh.Engine
+	if engineName(cfg, opts.Engine) == "dsh" {
+		eng, err := buildDSHEngine(dshEngineDeps{
+			Cfg:          cfg,
+			Sink:         sink,
+			SystemPrompt: sysPrompt,
+			CWD:          cwd,
+			Registry:     reg,
+			Session:      executor.Session(),
+			Ledger:       executor.Evidence(),
+			Policy:       policy,
+		})
+		if err != nil {
+			return nil, err
+		}
+		dshEngine = eng
+		runner = eng
+	}
+
 	ctrlOpts := control.Options{
 		Runner:        runner,
 		Executor:      executor,
@@ -566,8 +593,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if classifier != nil {
 		ctrlOpts.Classifier = classifier
 	}
+	if dshEngine != nil {
+		ctrlOpts.Engine = dshEngine
+	}
 	success = true // 控制器接管 cleanup;defer 不再兜底释放
-	return control.New(ctrlOpts), nil
+	ctrl := control.New(ctrlOpts)
+	return ctrl, nil
 }
 
 func subagentModelRef(cfg *config.Config, sk skill.Skill) string {

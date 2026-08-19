@@ -357,6 +357,21 @@ func renderDSH(b *strings.Builder, c *Config) {
 	} else {
 		b.WriteString("# model_placeholder = \"onecreat\"   # 档位占位符,绝不填真实模型名\n")
 	}
+	if d.RuntimeDir != "" {
+		fmt.Fprintf(b, "runtime_dir = %q\n", d.RuntimeDir)
+	} else {
+		b.WriteString("# runtime_dir = \"\"   # 空 = 自动找 runtime/dsh(打包)或仓库 dsh/(开发)\n")
+	}
+	if d.Profile != "" {
+		fmt.Fprintf(b, "profile = %q\n", d.Profile)
+	} else {
+		b.WriteString("# profile = \"profiles/onecreat.cordis.yml\"\n")
+	}
+	if d.DirectModel != "" {
+		fmt.Fprintf(b, "direct_model = %q   # 直连模式的真实模型 id(网关模式不用)\n", d.DirectModel)
+	} else {
+		b.WriteString("# direct_model = \"deepseek-v4-flash\"   # 直连模式的真实模型 id\n")
+	}
 }
 
 // renderCodegraph 写出 [codegraph] 段(enabled/auto_install/path)。这些字段过去不被

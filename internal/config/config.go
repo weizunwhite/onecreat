@@ -56,7 +56,16 @@ type DSHConfig struct {
 	// GatewayTokenEnv 是持有网关 token 的环境变量名(默认 ONECREAT_GATEWAY_TOKEN)。
 	GatewayTokenEnv string `toml:"gateway_token_env"`
 	// ModelPlaceholder 是下发给 dsh 的 wire model(档位占位符,绝不填真实模型名)。
+	// 只在网关模式下使用;直连模式用 DirectModel。
 	ModelPlaceholder string `toml:"model_placeholder"`
+	// RuntimeDir 是 OneCreat 自带 dsh 组合包的目录(含 node_modules 与 profiles/)。
+	// 空 = 自动解析:先找主程序同目录的 runtime/dsh(打包形态),再找开发仓库的 dsh/。
+	RuntimeDir string `toml:"runtime_dir"`
+	// Profile 是组合包内 cordis profile 的相对路径。空 = profiles/onecreat.cordis.yml。
+	Profile string `toml:"profile"`
+	// DirectModel 是**直连模式**(未走平台网关,用自己的 DEEPSEEK_API_KEY)下发给 dsh
+	// 的真实模型 id。网关模式下不使用它(那时下发 ModelPlaceholder)。
+	DirectModel string `toml:"direct_model"`
 }
 
 // UIConfig controls presentation-only settings. Theme affects CLI rendering; the
@@ -485,6 +494,8 @@ func Default() *Config {
 		DSH: DSHConfig{
 			GatewayTokenEnv:  "ONECREAT_GATEWAY_TOKEN",
 			ModelPlaceholder: "onecreat",
+			Profile:          "profiles/onecreat.cordis.yml",
+			DirectModel:      "deepseek-v4-flash",
 		},
 		UI: UIConfig{Theme: "auto"},
 		Agent: AgentConfig{
