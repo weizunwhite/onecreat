@@ -182,19 +182,21 @@ Web 模式是 onecreat 自己的主分发形态,有独立更新渠道,所以恢�
 ```json
 {
   "version": "v1.2.0",
-  "downloadPage": "http://47.95.176.214/onecreat/",
+  "downloadPage": "http://47.95.176.214/onecreat/v1.2.0/",
   "assets": {
-    "darwin-arm64": "http://47.95.176.214/onecreat/onecreat-web-darwin-arm64.tar.gz",
-    "darwin-amd64": "http://47.95.176.214/onecreat/onecreat-web-darwin-amd64.tar.gz",
-    "windows-amd64": "http://47.95.176.214/onecreat/onecreat-web-windows-amd64.zip",
-    "linux-amd64": "http://47.95.176.214/onecreat/onecreat-web-linux-amd64.tar.gz",
-    "linux-arm64": "http://47.95.176.214/onecreat/onecreat-web-linux-arm64.tar.gz"
+    "darwin-arm64": "http://47.95.176.214/onecreat/v1.2.0/onecreat-web-darwin-arm64.tar.gz",
+    "darwin-amd64": "http://47.95.176.214/onecreat/v1.2.0/onecreat-web-darwin-amd64.tar.gz",
+    "windows-amd64": "http://47.95.176.214/onecreat/v1.2.0/onecreat-web-windows-amd64.zip",
+    "linux-amd64": "http://47.95.176.214/onecreat/v1.2.0/onecreat-web-linux-amd64.tar.gz",
+    "linux-arm64": "http://47.95.176.214/onecreat/v1.2.0/onecreat-web-linux-arm64.tar.gz"
   }
 }
 ```
 
-`assets` 的 key 是 `<os>-<arch>`(与 `update.PlatformKey` 一致);基址默认阿里云 nginx,打包时可用
-`RELEASE_BASE_URL` 覆盖。代码:`desktop/updater_web.go`。
+`assets` 的 key 是 `<os>-<arch>`(与 `update.PlatformKey` 一致)。发行包按版本号放在
+`<基址>/<VERSION>/` 子目录(与 `release-web.yml` 的上传布局一致),只有 `latest.json` 覆盖在根上;
+基址默认阿里云 nginx `http://47.95.176.214/onecreat`,打包时可用 `RELEASE_BASE_URL` 覆盖。
+代码:`desktop/updater_web.go`。
 
 ## 文件上传(参考资料 / 知识库导入)
 

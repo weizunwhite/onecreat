@@ -142,7 +142,10 @@ if [ "$PLATFORM" = all ]; then
 	echo "==> latest.json"
 	BASE_URL="${RELEASE_BASE_URL:-http://47.95.176.214/onecreat}"
 	BASE_URL="${BASE_URL%/}" # 去掉可能的结尾斜杠
-	DOWNLOAD_PAGE="${RELEASE_DOWNLOAD_PAGE:-${BASE_URL}/}"
+	# CI(release-web.yml)把发行包传到 <BASE_URL>/<VERSION>/ 这个带版本号的子目录,只有
+	# latest.json 覆盖在根上。所以 assets 的下载直链必须带上 VERSION,否则会 404。
+	ASSET_BASE="${BASE_URL}/${VERSION}"
+	DOWNLOAD_PAGE="${RELEASE_DOWNLOAD_PAGE:-${ASSET_BASE}/}"
 	{
 		printf '{\n'
 		printf '  "version": "%s",\n' "$VERSION"
@@ -157,7 +160,7 @@ if [ "$PLATFORM" = all ]; then
 			[ "$os" = windows ] && file="${pkg}.zip"
 			[ "$first" = 1 ] || printf ',\n'
 			first=0
-			printf '    "%s-%s": "%s/%s"' "$os" "$arch" "$BASE_URL" "$file"
+			printf '    "%s-%s": "%s/%s"' "$os" "$arch" "$ASSET_BASE" "$file"
 		done
 		printf '\n  }\n}\n'
 	} >"$ROOT/dist/latest.json"
