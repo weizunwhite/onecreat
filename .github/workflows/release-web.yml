@@ -48,7 +48,29 @@ jobs:
         run: ./scripts/cache-guard.sh
 
       - name: Build all platforms and package
+        env:
+          # latest.json 里的下载链接基址(阿里云 nginx /var/www/onecreat,大陆直连;GitHub Releases 是镜像)
+          RELEASE_BASE_URL: http://47.95.176.214/onecreat
         run: ./scripts/web-build.sh all "$VERSION"
+
+      # 上传到阿里云下载站:专用用户 onecreat-release 只对 /var/www/onecreat 有写权限。
+      # 先传包,再传 SHA256SUMS,最后才覆盖 latest.json —— 客户端看到新版本号时包一定已就位。
+      - name: Upload to Aliyun download site
+        env:
+          SSH_KEY: ${{ secrets.ONECREAT_RELEASE_SSH_KEY }}
+          HOST: ${{ secrets.ONECREAT_RELEASE_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/release_key && chmod 600 ~/.ssh/release_key
+          ssh-keyscan -t ed25519 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSH="ssh -i ~/.ssh/release_key -o StrictHostKeyChecking=yes onecreat-release@$HOST"
+          SCP="scp -i ~/.ssh/release_key -o StrictHostKeyChecking=yes"
+          $SSH "mkdir -p /var/www/onecreat/$VERSION"
+          $SCP dist/onecreat-web-*.tar.gz dist/onecreat-web-*.zip dist/SHA256SUMS "onecreat-release@$HOST:/var/www/onecreat/$VERSION/"
+          if [ -f dist/latest.json ]; then
+            $SCP dist/latest.json "onecreat-release@$HOST:/var/www/onecreat/latest.json"
+          fi
+          $SSH "ls -la /var/www/onecreat/$VERSION"
 
       - name: Publish GitHub release
         run: |

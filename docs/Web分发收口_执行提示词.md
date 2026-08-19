@@ -8,7 +8,7 @@
 ## 决策参数(用户已拍板;没改就按这里执行)
 
 - `MERGE_STRATEGY = 全部合入 main-v2`:把 `feat/web-mode`(含 WIP 账号改动、dsh config 字段、`internal/engine/dsh` 驱动层骨架、Web 模式)整分支合进 `main-v2`。dsh 驱动层是纯增量且 `engine` 默认 `native`,不影响运行。
-- `UPDATE_CHANNEL = 阿里云 nginx`:发行包与 `latest.json` 放 `http://47.95.176.214/onecreat/`(这台机已跑固件 nginx,根目录 `/var/www`,详见记忆/`ota-remote-flash` skill),GitHub Releases 作镜像。**本任务只做客户端与打包侧**,不碰服务器(上传由用户/CI secret 另行处理);更新检查 URL 通过 ldflags 注入,默认值就写这个地址。
+- `UPDATE_CHANNEL = 阿里云 nginx`(**服务器侧已就绪,不用你碰**):`http://47.95.176.214/onecreat/` 已可访问(nginx alias `/var/www/onecreat/`,`latest.json` 设了 no-cache),CI 上传步骤已写进 `.github/workflows/release-web.yml`(secrets `ONECREAT_RELEASE_SSH_KEY/HOST` 已配,专用用户只能写该目录)。**目录约定**:包放 `/onecreat/<version>/<文件名>`,`latest.json` 放 `/onecreat/latest.json`。所以 `latest.json` 里的 assets URL = `${RELEASE_BASE_URL}/<version>/<文件名>`(`RELEASE_BASE_URL` 默认 `http://47.95.176.214/onecreat`),更新检查 URL 默认 `http://47.95.176.214/onecreat/latest.json`,通过 ldflags 注入。GitHub Releases 作镜像。本地手动上传:`scp -i ~/.ssh/onecreat_release_ed25519 … onecreat-release@47.95.176.214:/var/www/onecreat/`。
 - `MAC_SIGNING = 暂不签名`:README 说明右键打开;不要花时间研究公证。
 - `WINDOWS_VERIFY = 交叉编译产物 + 用户手测`:你没有 Windows 机器,保证 `GOOS=windows` 构建通过、脚本逻辑无平台分支错误即可,把需要用户在 Windows 上点测的清单写进报告。
 - `DESKTOP_WAILS = 停更保留`:不动 `desktop-build.sh` / `release-desktop.yml`,但任何改动必须保证 `cd desktop && go build ./... && go vet ./... && go test ./...`(默认 !web 标签)仍绿。
@@ -77,4 +77,4 @@
 - Step 7 每一项的实际输出摘要;
 - 没做到的、替用户决定的、发现的坑;
 - **"需要用户在 Windows 上手测"清单**(一条一句:双击 exe、SmartScreen、COM 串口检测、编译烧录、第二次双击、退出);
-- **"需要用户做的服务器侧动作"清单**(阿里云 nginx 建 `/var/www/onecreat/`、放发行包与 `latest.json`、CI 上传 secret)。
+- 服务器侧已就绪,报告里只需写"首次正式发布后请确认 `http://47.95.176.214/onecreat/latest.json` 已被 CI 覆盖"。
