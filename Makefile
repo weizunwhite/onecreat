@@ -5,12 +5,18 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 # with any change to the integration in internal/codegraph.
 CODEGRAPH_VERSION := v0.9.7
 
-.PHONY: build vet fmt test hardware-verify hardware-device-verify windows-package-verify hooks cross clean e2e-codegraph
+.PHONY: build build-web vet fmt test hardware-verify hardware-device-verify windows-package-verify hooks cross clean e2e-codegraph
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix ./cmd/reasonix
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix-plugin-example ./cmd/reasonix-plugin-example
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/onecreat-hardware-mcp ./cmd/reasonix-hardware-mcp
+
+# Web 模式:单二进制起本地 HTTP 服务 + 浏览器当 UI(见 docs/Web模式.md)。
+# 前端 bundle 内嵌,所以先 pnpm build 再 go build -tags web。纯 Go,无 CGO/WebKit。
+build-web:
+	cd desktop/frontend && pnpm install --frozen-lockfile && pnpm build
+	cd desktop && CGO_ENABLED=0 go build -tags web -ldflags "$(LDFLAGS)" -o ../bin/onecreat-web .
 
 vet:
 	go vet ./...
