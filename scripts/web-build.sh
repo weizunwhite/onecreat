@@ -68,9 +68,18 @@ write_readme() {
 		echo "关掉终端窗口 / Ctrl-C 即退出。AI agent 完整跑在你这台电脑上,串口、烧录照常可用。"
 		echo
 		echo "常用参数:"
-		echo "  --port 3700        改端口(默认 3700)"
+		echo "  --port 3700        改端口(默认 3700;若被别的程序占用会自动向上换端口)"
 		echo "  --no-open          不自动开浏览器(终端会打印带 token 的链接)"
 		echo "  --workspace <目录>  启动时切到指定项目目录"
+		echo
+		echo "再次双击会怎样:如果 OneCreat 已经在运行(比如你只是关掉了浏览器标签),再次双击"
+		echo "会直接帮你把浏览器打开到已经在跑的那个实例,而不是再起一个、也不会报「端口被占」。"
+		echo
+		echo "如何退出:点右上角的电源图标「退出 OneCreat」,或直接关掉这个终端窗口 / 按 Ctrl-C。"
+		echo "退出后本地服务会停止,后台的代码索引进程也会一并清理干净。"
+		echo
+		echo "如何更新:启动后若有新版本,页面顶部会出现更新提示,点它去下载页拿新版覆盖即可。"
+		echo "(Web 版只提示、不自动替换自身;检查失败时静默,不打扰。)"
 		echo
 		case "$os" in
 		darwin)
@@ -125,7 +134,34 @@ if [ "$PLATFORM" = all ]; then
 	else
 		shasum -a 256 ${NAME}-*.tar.gz ${NAME}-*.zip >SHA256SUMS
 	fi)
+
+	# 更新清单 latest.json:客户端启动时会 GET 它比对版本(见 desktop/updater_web.go)。
+	# assets 的 key 是 "<os>-<arch>"(与 update.PlatformKey 一致),value 是发行包直链。
+	# 基址默认阿里云 nginx 的 /onecreat/(UPDATE_CHANNEL),可用 RELEASE_BASE_URL 覆盖;
+	# downloadPage(人可读的下载落地页)可用 RELEASE_DOWNLOAD_PAGE 覆盖。
+	echo "==> latest.json"
+	BASE_URL="${RELEASE_BASE_URL:-http://47.95.176.214/onecreat}"
+	BASE_URL="${BASE_URL%/}" # 去掉可能的结尾斜杠
+	DOWNLOAD_PAGE="${RELEASE_DOWNLOAD_PAGE:-${BASE_URL}/}"
+	{
+		printf '{\n'
+		printf '  "version": "%s",\n' "$VERSION"
+		printf '  "downloadPage": "%s",\n' "$DOWNLOAD_PAGE"
+		printf '  "assets": {\n'
+		first=1
+		for t in $targets; do
+			os="${t%/*}"
+			arch="${t#*/}"
+			pkg="${NAME}-${os}-${arch}"
+			file="${pkg}.tar.gz"
+			[ "$os" = windows ] && file="${pkg}.zip"
+			[ "$first" = 1 ] || printf ',\n'
+			first=0
+			printf '    "%s-%s": "%s/%s"' "$os" "$arch" "$BASE_URL" "$file"
+		done
+		printf '\n  }\n}\n'
+	} >"$ROOT/dist/latest.json"
 fi
 
 echo "==> packaged into dist/:"
-ls -la "$ROOT/dist" | grep -E "${NAME}|SHA256SUMS" || true
+ls -la "$ROOT/dist" | grep -E "${NAME}|SHA256SUMS|latest.json" || true

@@ -139,10 +139,10 @@ token 不落盘,唯一泄漏面是「用户把带 token 的链接贴给别人 + 
 |---|---|---|---|
 | 选工作区文件夹 | app 内置 FolderPicker | ✅ 一样 | 主路径本来就没用系统对话框(`App.tsx` 走 `openFolderPicker`),`PickWorkspace` 前端根本没调 |
 | 添加技能目录 | 系统目录对话框 | ✅ 改走内置 FolderPicker | bridge 层把 `PickSkillFolder` 映射到 `openFolderPicker()` |
-| 上传参考资料(Composer 回形针) | 系统文件对话框 | ❌ 报错 | 浏览器 File API 拿不到磁盘绝对路径,而后端 `ImportReferenceFile` 要的就是路径。前端已有 `alertDialog` 提示 |
-| 知识库导入本地文件 | 系统多文件对话框 | ❌ 报错 | 同上,`KnowledgePanel` 会把错误显示在面板里 |
+| 上传参考资料(Composer 回形针) | 系统文件对话框 | ✅ 走 `<input type=file>` + `POST /upload` | 浏览器 File API 拿不到磁盘路径,所以前端把文件 POST 到 `/upload` 落到临时目录,再把路径喂给既有的 `ImportReferenceFile`。见「文件上传」节 |
+| 知识库导入本地文件 | 系统多文件对话框 | ✅ 走 `<input type=file multiple>` + `POST /upload` | 同上,拿到路径后调 `KnowledgeImportPaths`(桌面版仍走 `KnowledgeImportFiles`) |
 | 窗口显示/居中/取消最小化 | ✅ | 空操作 | 浏览器标签页没有这个概念 |
-| 自动更新(`ApplyUpdate` 等) | ✅(本 fork 已禁用) | 方法照常可调,但没有「替换自身并重启」的语义 | 本 fork 的自更新本就关着(manifest 端点为空),不是新问题 |
+| 自动更新(`ApplyUpdate` 等) | ✅(本 fork 已禁用) | ✅ 检查+提示(不自替换) | Web 版有自己的更新渠道(`latest.json`),只提示不自更新;见「更新检查」节 |
 | 打开外链 | webview 外的系统浏览器 | `window.open` | 行为等价 |
 | 串口 / 烧录 / OTA / 硬件面板 | ✅ | ✅ **完全一样** | 都是 Go 侧本机能力,与传输层无关 |
 | 多标签真并行 | ✅ | ✅ 一样 | 每个 tab 一条 `agent:event:<tabID>` 通道,SSE 照常分发 |
@@ -150,12 +150,73 @@ token 不落盘,唯一泄漏面是「用户把带 token 的链接贴给别人 + 
 
 ---
 
+## 单实例 + 「第二次双击」
+
+老师的心智模型是「双击图标=打开软件」。Web 模式下软件是本地 HTTP 服务 + 浏览器标签;关掉标签后
+再双击程序,不该报「端口被占」退出。所以:
+
+- 启动成功后在配置目录写锁文件 `web.lock`(`0600`,内容 `{pid, port, token, startedAt}`),退出时删。
+- **再次启动**先读锁:若 `pid` 仍存活且 `GET /healthz` 正常 → 说明已有实例在跑,用锁里的 token 把浏览器
+  开到已有实例、打印「已在运行,已为你打开页面」、本进程退出码 0(不抢端口)。锁陈旧(进程已死/服务不通)
+  则删掉照常启动。
+- **端口自动避让**:请求端口被别的程序占用时,从该端口起向上探最多 20 个端口,落到第一个能监听的;
+  实际端口会打印出来,也写进锁里。
+- 只在回环绑定时启用单实例(`--host` 改成非回环是显式的多机场景,不套这层)。
+- `GET /healthz` 是无鉴权探活端点(只回 `{"ok":true,"version":…}`),但同样受 Host 白名单守卫。
+
+代码:`desktop/singleinstance.go`(锁读写/陈旧判定/端口探测)、`desktop/webserver.go` 的 `/healthz`。
+
+## 更新检查
+
+Web 模式是 onecreat 自己的主分发形态,有独立更新渠道,所以恢复「只检查、只提示、不自更新」的最小流程
+(桌面版 `CheckUpdate` 仍刻意禁用,不 phone home 到上游 reasonix)。
+
+- 客户端启动时 `CheckUpdate` → GET `latest.json`(5s 超时),比 semver;**失败一律静默返回无更新,绝不弹错**。
+- `CanSelfUpdate=false`:Web 版只在页面顶部提示 + 「去下载」按钮(`UpdateBanner`),不替换自身。
+- manifest 地址走 ldflags 注入(`-X main.webUpdateManifestURL=…`),默认
+  `http://47.95.176.214/onecreat/latest.json`;下载落地页 `-X main.webDownloadPage=…`。
+  验收/本地假 manifest 可用环境变量 `ONECREAT_UPDATE_MANIFEST_URL` 覆盖地址。
+
+`latest.json` 最小格式(由 `scripts/web-build.sh` 在 `all` 模式下顺手生成):
+
+```json
+{
+  "version": "v1.2.0",
+  "downloadPage": "http://47.95.176.214/onecreat/",
+  "assets": {
+    "darwin-arm64": "http://47.95.176.214/onecreat/onecreat-web-darwin-arm64.tar.gz",
+    "darwin-amd64": "http://47.95.176.214/onecreat/onecreat-web-darwin-amd64.tar.gz",
+    "windows-amd64": "http://47.95.176.214/onecreat/onecreat-web-windows-amd64.zip",
+    "linux-amd64": "http://47.95.176.214/onecreat/onecreat-web-linux-amd64.tar.gz",
+    "linux-arm64": "http://47.95.176.214/onecreat/onecreat-web-linux-arm64.tar.gz"
+  }
+}
+```
+
+`assets` 的 key 是 `<os>-<arch>`(与 `update.PlatformKey` 一致);基址默认阿里云 nginx,打包时可用
+`RELEASE_BASE_URL` 覆盖。代码:`desktop/updater_web.go`。
+
+## 文件上传(参考资料 / 知识库导入)
+
+浏览器 File API 只给 `File` 对象、拿不到磁盘绝对路径,而后端导入要的就是路径。所以 Web 模式加了一个
+上传端点:
+
+- `POST /upload`(multipart,字段名 `files`,鉴权同 `/rpc`,单文件上限 50MB)→ 把文件落到
+  `os.TempDir()/onecreat-upload-*/<原文件名>`(挡目录穿越),返回绝对路径列表。
+- 前端两处调用点(Composer 回形针 / KnowledgePanel「导入文件」)在 Web 模式下改走 `<input type=file>`
+  → `uploadFiles()` → 拿到路径 → 调既有导入方法(`ImportReferenceFile` / `KnowledgeImportPaths`)。
+  桌面版仍走原生对话框,行为不变。
+
+代码:`desktop/webserver.go` 的 `serveUpload`、`bridge.ts` 的 `uploadFiles`。
+
+## 退出
+
+- Web 页面右上角有「退出 OneCreat」电源按钮(`WebQuitButton`,桌面版隐藏):二次确认 → `App.Quit()`
+  → 后端走和 `Ctrl-C` 同一条优雅关闭路径(存快照 + 关 controller + 停服)→ 页面显示「已退出,可以关闭此标签」。
+- `Ctrl-C` / 关终端窗口同样优雅退出。
+
 ## 已知问题
 
-- **退出时 codegraph MCP 子进程可能残留一个**。`Ctrl-C` 后主进程正常退出、会话已保存,但
-  `codegraph.js serve --mcp` 的 node 进程偶尔活下来。走的是和 Wails 完全相同的
-  `app.shutdown()` → `ctrl.Close()` 路径,**大概率是既有的插件 teardown 问题而非 Web 模式引入**
-  (未与 `wails build` 版本对照验证)。
 - **多个浏览器标签同时打开会各自订阅同一个事件流**。后端广播是扇出的,所以两个标签都能收到
   事件、都能操作同一个 agent——这是「同一个 App 的两个视图」,不是两个独立会话。想要独立会话
   请用 app 内的多标签(`CreateTab`),不是浏览器标签。
@@ -181,12 +242,12 @@ make release-web VERSION=v1.2.0            # 全平台 -> dist/onecreat-web-<os>
 
 ## 下一步建议
 
-
-- **文件上传**:若要让 Web 模式也能导入参考资料/知识库文件,正确做法是加一个
-  `POST /upload` 端点把浏览器选的文件落到临时目录,再把临时路径喂给既有的
-  `ImportReferenceFile` / `knowledgeImportPaths`。这需要动 React 组件(换成 `<input type=file>`),
-  本次刻意没做。
-- **单实例守卫**:现在同一端口起第二个进程会直接失败退出(监听报错),够用;要更友好可以探测
-  已有实例并直接开它的浏览器页。
+- ✅ **文件上传** —— 已实现(见「文件上传」节)。
+- ✅ **单实例守卫 + 第二次双击** —— 已实现(见「单实例」节)。
+- ✅ **更新检查** —— 已实现(见「更新检查」节)。
+- ✅ **退出残留** —— codegraph 的 detached 守护进程曾在退出后残留最多 5 分钟(它有 5 分钟 idle
+  超时),现由 `codegraph.StopDaemon` 按 `.codegraph/daemon.pid` 显式清理,Ctrl-C / Quit 后 3 秒内即净。
 - **`internal/serve`**:老的 HTTP+SSE 服务(只覆盖 Controller 子集)和本模式功能重叠了。
   本次没动它,但长期看应该二选一。
+- **多机/多用户**:当前是「本机自用」模型(见安全模型),不要当多用户服务开;真要给别人访问,
+  前面套反代 / Tailscale。
