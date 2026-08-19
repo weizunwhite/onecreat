@@ -8,6 +8,8 @@
 #   onecreat-web-<os>-<arch>/
 #     onecreat-web(.exe)            主程序:起本地 HTTP 服务 + 自动开浏览器
 #     onecreat-hardware-mcp(.exe)   硬件助手(Arduino/ESP-IDF/PlatformIO MCP)
+#     runtime/node/bin/node         内置 Node 运行时(dsh sidecar 用;Windows 是 runtime/node/node.exe)
+#     runtime/dsh/                  OneCreat 的 dsh 组合包(profile + 插件 + 依赖闭包)
 #     README.txt                    怎么启动 / macOS 首次放行 / 端口参数
 #
 # 产物落在 <repo>/dist/:
@@ -20,6 +22,7 @@
 #   scripts/web-build.sh darwin/arm64 v1.2.0   # 单平台(本机点测用)
 # 环境变量:
 #   SKIP_FRONTEND=1   跳过 pnpm install/build(前端 dist 已是最新时省时间)
+#   SKIP_DSH=1        跳过 dsh sidecar 装配(不打 runtime/,包体小 ~4 倍)
 #   TARGETS="..."     覆盖 all 的平台列表
 set -euo pipefail
 
@@ -113,6 +116,14 @@ for t in $targets; do
 		go build -tags web -ldflags "$LDFLAGS" -o "$dir/onecreat-web${ext}" .)
 	(cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
 		go build -ldflags "$MCP_LDFLAGS" -o "$dir/onecreat-hardware-mcp${ext}" ./cmd/reasonix-hardware-mcp)
+
+	# dsh sidecar(engine="dsh" 用):内置 Node 运行时 + OneCreat 的 dsh 组合包。
+	# 只有目标平台 == 本机平台时才装(原生模块的限制,脚本里有说明);
+	# SKIP_DSH=1 可整体跳过(默认 engine 仍是 native,跳过不影响主功能)。
+	if [ "${SKIP_DSH:-0}" != 1 ]; then
+		"$ROOT/scripts/dsh-bundle.sh" "$dir" "$os" "$arch" || true
+	fi
+
 	write_readme "$dir" "$os"
 
 	echo "==> package ${pkg}"

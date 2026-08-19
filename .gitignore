@@ -57,3 +57,6 @@ Thumbs.db
 # dsh 组合包:依赖闭包与会话 store 不入仓(pnpm-lock.yaml 入仓)
 dsh/node_modules/
 dsh/.sessions/
+
+# 打包缓存(内置 Node 运行时的下载压缩包)
+build-cache/
