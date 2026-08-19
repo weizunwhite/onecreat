@@ -234,6 +234,8 @@ export const zh: Record<DictKey, string> = {
   // 状态栏
   "status.connecting": "连接中…",
   "status.ctx": "{pct}% 上下文",
+  "status.engine": "引擎 {engine}",
+  "status.engineTitle": "底层 agent 引擎(native = 内置内核,dsh = 新一代 sidecar 引擎)",
   "status.plan": "计划",
   "status.switchModel": "切换模型",
   "status.noModels": "未配置任何模型",

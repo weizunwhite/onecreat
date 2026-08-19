@@ -131,6 +131,12 @@ export function StatusBar({
     <div className="statusbar">
       <span className={`statusbar__dot ${running ? "statusbar__dot--busy" : ""}`} />
       <ModelSwitcher label={meta?.label ?? t("status.connecting")} onPick={onSwitchModel} />
+      {meta?.engine && (
+        <>
+          <span className="statusbar__sep">·</span>
+          <span className="statusbar__ctx" title={t("status.engineTitle")}>{t("status.engine", { engine: meta.engine })}</span>
+        </>
+      )}
       {effort?.supported && (
         <>
           <span className="statusbar__sep">·</span>

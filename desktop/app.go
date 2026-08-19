@@ -1141,6 +1141,7 @@ type Meta struct {
 	Bypass       bool   `json:"bypass"`   // YOLO mode on (auto-approve every tool call)
 	PlanMode     bool   `json:"planMode"` // 该标签 controller 的真实 plan(只读)门控状态
 	Running      bool   `json:"running"`  // 该标签是否有 turn 正在跑(切回正在跑的标签时恢复真值)
+	Engine       string `json:"engine"`   // 底层引擎:"native" | "dsh"(状态栏显示,测试时分得清)
 }
 
 // Meta reports the model label, readiness, any startup error, the working
@@ -1167,7 +1168,19 @@ func (a *App) Meta() Meta {
 		Bypass:       ctrl != nil && ctrl.Bypass(),
 		PlanMode:     ctrl != nil && ctrl.PlanMode(),
 		Running:      ctrl != nil && ctrl.Running(),
+		Engine:       engineLabel(ctrl),
 	}
+}
+
+// engineLabel 读 controller 实际装配的引擎名;controller 还没建好时按配置/环境推断。
+func engineLabel(ctrl *control.Controller) string {
+	if ctrl != nil {
+		return ctrl.EngineName()
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ONECREAT_ENGINE")), "dsh") {
+		return "dsh"
+	}
+	return "native"
 }
 
 // SetBypass toggles YOLO mode for the session: auto-approve every tool call

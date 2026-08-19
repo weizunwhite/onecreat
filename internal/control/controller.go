@@ -641,6 +641,16 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 
 // Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
 // unblocks via the cancelled context.
+// EngineName 报告本 Controller 实际跑在哪个底层引擎上:"dsh"(sidecar)或 "native"。
+// 以运行时装配为准(flag / ONECREAT_ENGINE / 配置的最终结果),供前端状态栏显示,
+// 免得测试时分不清在测哪个引擎。
+func (c *Controller) EngineName() string {
+	if c.engine != nil {
+		return "dsh"
+	}
+	return "native"
+}
+
 func (c *Controller) Cancel() {
 	c.mu.Lock()
 	cancel := c.cancel

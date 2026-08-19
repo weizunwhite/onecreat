@@ -233,6 +233,8 @@ export const en = {
   // status bar
   "status.connecting": "connecting…",
   "status.ctx": "{pct}% ctx",
+  "status.engine": "engine {engine}",
+  "status.engineTitle": "Underlying agent engine (native = built-in kernel, dsh = next-gen sidecar engine)",
   "status.plan": "PLAN",
   "status.switchModel": "Switch model",
   "status.noModels": "no models configured",
