@@ -5,7 +5,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 # with any change to the integration in internal/codegraph.
 CODEGRAPH_VERSION := v0.9.7
 
-.PHONY: build build-web vet fmt test hardware-verify hardware-device-verify windows-package-verify hooks cross clean e2e-codegraph
+.PHONY: build build-web release-web vet fmt test hardware-verify hardware-device-verify windows-package-verify hooks cross clean e2e-codegraph
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix ./cmd/reasonix
@@ -17,6 +17,11 @@ build:
 build-web:
 	cd desktop/frontend && pnpm install --frozen-lockfile && pnpm build
 	cd desktop && CGO_ENABLED=0 go build -tags web -ldflags "$(LDFLAGS)" -o ../bin/onecreat-web .
+
+# 主分发形态:一台机器交叉编译全平台 Web 发行包 -> dist/onecreat-web-<os>-<arch>.{tar.gz,zip} + SHA256SUMS
+# (含 onecreat-hardware-mcp + README;注入 defaultAccountMode=platform)。单平台:scripts/web-build.sh darwin/arm64 vX.Y.Z
+release-web:
+	scripts/web-build.sh all $(VERSION)
 
 vet:
 	go vet ./...

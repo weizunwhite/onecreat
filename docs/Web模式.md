@@ -164,10 +164,24 @@ token 不落盘,唯一泄漏面是「用户把带 token 的链接贴给别人 + 
 - 页面刷新会重建 EventSource,期间(毫秒级)产生的事件会丢;`useController` 挂载后会重新拉
   `Meta`/`History`,所以不会卡在 loading,但正在流式输出的那一小段增量看不到。
 
+## 分发打包(主分发形态,2026-08-19 起)
+
+```bash
+scripts/web-build.sh darwin/arm64 v1.2.0   # 单平台
+make release-web VERSION=v1.2.0            # 全平台 -> dist/onecreat-web-<os>-<arch>.{tar.gz,zip} + SHA256SUMS
+```
+
+- 发行包 = 目录:`onecreat-web(.exe)` + `onecreat-hardware-mcp(.exe)` + `README.txt`,解压即用。
+  硬件 MCP 按"与主程序同目录"解析(`resolveHardwareMCP`),所以两者必须一起分发。
+- 打包版注入 `-X main.defaultAccountMode=platform`(默认平台账号模式,与桌面版打包一致);
+  `make build-web` 的开发版不注入 → 本地免登录。
+- 纯 Go、`CGO_ENABLED=0`,一台机器交叉编译全平台;CI 走 `.github/workflows/release-web.yml`
+  (tag `web-v*`,单 ubuntu runner)。不签名、不公证:macOS 首次运行需右键打开或去 quarantine,
+  README.txt 里写了。Wails 桌面版(`desktop-build.sh` / `release-desktop.yml`)降为可选,脚本保留。
+
 ## 下一步建议
 
-- **打包**:目前只产出裸二进制。可以考虑 `scripts/` 里加一个 web 版的交叉编译目标
-  (纯 Go,`make cross` 那套直接照抄即可),一次出 mac/win/linux 三份。
+
 - **文件上传**:若要让 Web 模式也能导入参考资料/知识库文件,正确做法是加一个
   `POST /upload` 端点把浏览器选的文件落到临时目录,再把临时路径喂给既有的
   `ImportReferenceFile` / `knowledgeImportPaths`。这需要动 React 组件(换成 `<input type=file>`),

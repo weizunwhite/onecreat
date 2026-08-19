@@ -37,6 +37,7 @@ cd desktop && wails build    # -> build/bin/
 
 # Web 模式(单二进制起本地 HTTP 服务 + 浏览器当 UI,纯 Go 免打包;见 docs/Web模式.md)
 make build-web               # -> bin/onecreat-web  (等价于 pnpm build + go build -tags web)
+make release-web VERSION=vX.Y.Z   # 主分发形态:全平台 Web 发行包 -> dist/ (scripts/web-build.sh;单平台传 os/arch)
 cd desktop && go test -tags web ./...   # web 标签下的测试也要绿
 
 # Hardware MCP verification (Arduino/ESP-IDF/PlatformIO toolchains)
