@@ -79,21 +79,33 @@ func run(host string, port int, workspace string, noOpen bool) error {
 		return fmt.Errorf("定位内嵌前端失败: %w", err)
 	}
 
+	// 单实例守卫:回环绑定时,若已有实例在跑,直接把浏览器开到它并退出(「第二次双击」)。
+	// 远程绑定是显式多机场景,不套这层。
+	lockPath := ""
+	if !remote {
+		lockPath = webLockPath()
+		if reuseExistingInstance(lockPath, noOpen) {
+			return nil // 已有实例接管,本进程干净退出
+		}
+	}
+
 	token, err := newWebToken()
 	if err != nil {
 		return fmt.Errorf("生成访问 token 失败: %w", err)
 	}
 
-	app := NewApp()
-	srv, err := newWebServer(app, sub, app.webEvents(), token, host, port, remote)
+	// 先监听再 startup:端口被占的话立刻知道,不必等 boot.Build 跑完。端口被「别的程序」
+	// 占用时自动向上探端口(最多 20 个),不直接死 —— 实际监听到的端口可能与请求的不同。
+	ln, actualPort, err := listenWithFallback(host, port, 20)
 	if err != nil {
 		return err
 	}
 
-	// 先监听再 startup:端口被占的话立刻失败,不必等 boot.Build 跑完。
-	ln, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(port)))
+	app := NewApp()
+	srv, err := newWebServer(app, sub, app.webEvents(), token, host, actualPort, remote, version)
 	if err != nil {
-		return fmt.Errorf("监听 %s:%d 失败(端口被占用?): %w", host, port, err)
+		_ = ln.Close()
+		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -110,9 +122,20 @@ func run(host string, port int, workspace string, noOpen bool) error {
 		}
 	}()
 
-	url := fmt.Sprintf("http://%s/?token=%s", net.JoinHostPort(displayHost(host), fmt.Sprint(port)), token)
+	// 服务真起来了才写锁:记实际端口 + token,给「第二次双击」复用。退出时删。
+	if lockPath != "" {
+		if err := writeWebLock(lockPath, webLock{PID: os.Getpid(), Port: actualPort, Token: token, StartedAt: time.Now().Unix()}); err != nil {
+			fmt.Fprintln(os.Stderr, "onecreat-web: 写单实例锁失败(不影响本次启动):", err)
+		}
+		defer removeWebLock(lockPath)
+	}
+
+	url := fmt.Sprintf("http://%s/?token=%s", net.JoinHostPort(displayHost(host), fmt.Sprint(actualPort)), token)
 	fmt.Println("OneCreat Web 已启动:")
 	fmt.Println("  " + url)
+	if actualPort != port {
+		fmt.Printf("(请求的端口 %d 被占用,已自动改用 %d)\n", port, actualPort)
+	}
 	fmt.Println("(带 token 的链接只在本次进程有效;关掉进程即失效)")
 	if !noOpen {
 		_ = openWorkspacePath(url)

@@ -47,6 +47,7 @@ type webServer struct {
 	token     string
 	assets    fs.FS
 	indexHTML []byte
+	version   string
 
 	port         string
 	allowedHosts map[string]bool
@@ -56,7 +57,7 @@ type webServer struct {
 }
 
 // newWebServer 组装服务。assets 必须是「前端 dist 的根」(即直接含 index.html)。
-func newWebServer(app *App, assets fs.FS, events *eventBroadcaster, token, host string, port int, anyHost bool) (*webServer, error) {
+func newWebServer(app *App, assets fs.FS, events *eventBroadcaster, token, host string, port int, anyHost bool, version string) (*webServer, error) {
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("读取前端 index.html 失败(是否忘了 pnpm build?): %w", err)
@@ -74,6 +75,7 @@ func newWebServer(app *App, assets fs.FS, events *eventBroadcaster, token, host 
 		token:        token,
 		assets:       assets,
 		indexHTML:    injectWebMarker(index),
+		version:      version,
 		port:         strconv.Itoa(port),
 		allowedHosts: allowed,
 		anyHost:      anyHost,
@@ -101,6 +103,9 @@ func (s *webServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/rpc/", s.requireToken(s.rpc))
 	mux.Handle("/events", s.requireToken(http.HandlerFunc(s.events.serveSSE)))
+	// /healthz 不校验 token —— 供「再次启动」的探活用(单实例守卫,见 singleinstance.go)。
+	// 只回 {ok,version},不含任何用户数据;同样受 guardHost 守卫,只有本机回环能连。
+	mux.HandleFunc("/healthz", s.serveHealthz)
 	mux.HandleFunc("/", s.serveStatic)
 	return s.guardHost(mux)
 }
@@ -188,6 +193,18 @@ func (s *webServer) serveStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
+}
+
+// serveHealthz 是无鉴权探活端点:另一个 onecreat-web 进程再次启动时,用它确认「已有实例
+// 还活着」,活着就复用、把浏览器开到已有实例(见 singleinstance.go)。只回最小信息。
+func (s *webServer) serveHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeRPCError(w, http.StatusMethodNotAllowed, "只接受 GET")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = fmt.Fprintf(w, `{"ok":true,"version":%q}`, s.version)
 }
 
 func (s *webServer) serveIndex(w http.ResponseWriter, r *http.Request) {

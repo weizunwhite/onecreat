@@ -26,7 +26,7 @@ func testAssets() fstest.MapFS {
 func newTestServer(t *testing.T) *webServer {
 	t.Helper()
 	app := NewApp()
-	srv, err := newWebServer(app, testAssets(), newEventBroadcaster(), testToken, "127.0.0.1", 3700, false)
+	srv, err := newWebServer(app, testAssets(), newEventBroadcaster(), testToken, "127.0.0.1", 3700, false, "v0.0.0-test")
 	if err != nil {
 		t.Fatalf("newWebServer: %v", err)
 	}
