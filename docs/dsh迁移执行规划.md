@@ -94,7 +94,7 @@ React 前端(不动) ── Wails bridge(不动) ── desktop/app.go(不动)
 Phase 2 各行的实际结果:2.1 硬件 MCP ✅ / 2.2 证据引擎 ✅(含"谎报烧录被判未完成"的单测)/
 2.3 网关+模型隐私 ✅(**多做了一件规划没写的事**:dsh 默认往系统提示塞 harness 身份句,已关掉)/
 2.4 账号档位 未动 ✅ / 2.5 skills+注入 ✅(零 TS 改动)/ 2.6 checkpoint ✅ 文件级保留 Go 实现并实测
-rewind 成功,fork/摘要/对话回退明确"暂不支持" / 2.7 serve·acp·cli **只冒烟了 cli 的 run**。
+rewind 成功,fork/摘要/对话回退明确"暂不支持" / 2.7 serve·acp·cli:**cli 的 `run` 与 `serve` 已冒烟通过,`chat`(TUI)与 `acp` 未实测**。
 
 ### Phase 3 — 灰度与切换(2 周)
 

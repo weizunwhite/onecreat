@@ -184,6 +184,22 @@ dist/onecreat-web-darwin-arm64.tar.gz  59,273,550 字节
 **体积**:8.6 MB → 59.3 MB(压缩后),解压后 +173 MB。其中 Node 二进制本身 108 MB、
 依赖闭包 65 MB。见 §7 待拍板第 1 条。
 
+### 其它前端 · `reasonix serve` ✅
+
+```
+$ ONECREAT_ENGINE=dsh reasonix serve --addr 127.0.0.1:8792
+$ curl -X POST …/submit -d '{"input":"用一句话介绍你自己"}'
+SSE: text 47 / reasoning 42 / message 1 / usage 1 / turn_started 1 / turn_done 1
+```
+
+### native 路径回归 ✅
+
+```
+$ ./bin/reasonix run "用一句话回答:1+1=?"     # 不带 --engine,走 native
+1+1=2。
+  · 18399 tok · in 18370 (256 cached / 18114 new) · out 29 · ¥0.0182
+```
+
 ### 三套 + typecheck 全绿 ✅
 
 根 `go build/vet/test`、`desktop` 的 `!web` 与 `-tags web` 三件套、`desktop/frontend` 的
@@ -264,7 +280,7 @@ dist/onecreat-web-darwin-arm64.tar.gz  59,273,550 字节
 | `Fork` / `Branch` / 手动 `Compact` / `Summarize` / 对话 `Rewind` | 见 §4:都要重写消息日志,而真源在 dsh 侧。dsh 有 `ctx.sessions.fork()` 与 compaction 接缝,是明确的下一步 |
 | 热加 MCP(`AddMCPServer`)对 dsh 生效 | dsh 的 MCP 走组合层;要热加得让控制面插件支持运行时 `ctx.plugin(McpClient, …)` 并从 Go 下发。目前只在启动时挂硬件 MCP |
 | 真机烧录 + 串口的端到端复跑 | 本次没插板子;1B 只做到"编译成功"。烧录/串口路径的 Go 侧代码没变(硬件面板不经 Controller),但**未实测** |
-| `reasonix chat`(TUI)/ `serve` / `acp` 三个前端在 dsh 下的冒烟 | 它们与 Web 走同一个 Controller,理应可用;本次只实测了 `run` 与 Web |
+| `reasonix chat`(TUI)与 `acp` 在 dsh 下的冒烟 | 与 Web 走同一个 Controller,理应可用,但**本次未实测**。已实测的前端:`reasonix run`、`reasonix serve`(SSE 流式正常:`text`/`reasoning`/`message`/`usage`/`turn_started`/`turn_done`)、Web 模式 |
 | 网关的**真实** token 端到端 | 本机没有活的老师账号 token;用本地假 OpenAI 兼容服务器做的等价验证(请求头/占位符/错误脱敏/落盘扫描) |
 
 ### 替你决定的(按保守默认做了)
