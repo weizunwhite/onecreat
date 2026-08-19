@@ -50,7 +50,7 @@ OneCreat Web 已启动:
 `*App` 原本直接调 `wails/v2/pkg/runtime`(事件推送 9 处、三种原生对话框各 1–2 处、开外链 1 处、
 窗口操作 3 处)。这些全部收口到一个 `Shell` 接口:
 
-| Shell 方法 | Wails 实现(`shell_wails.go`,`!web`) | Web 实现(`webshell.go`) |
+| Shell 方法 | Wails 实现(`shell_wails.go`,`!web`) | Web 实现(`shell_web.go`,`web`) |
 |---|---|---|
 | `Emit(channel, payload)` | `runtime.EventsEmit` | 投给 SSE 广播器 |
 | `OpenDirectoryDialog` | `runtime.OpenDirectoryDialog` | 返回 `ErrNoNativeDialog` |
