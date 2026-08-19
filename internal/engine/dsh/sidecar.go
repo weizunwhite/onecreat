@@ -131,10 +131,9 @@ func New(opts Options) (*Engine, error) {
 	if opts.Sink == nil {
 		opts.Sink = event.Discard
 	}
-	mask := opts.Cfg.ModelPlaceholder
-	if mask == "" {
-		mask = "onecreat"
-	}
+	// 脱敏用的替换文案:用产品名而不是档位占位符,免得错误体读成
+	// "tier-1 API request to tier-1 failed" 这种莫名其妙的话。
+	const mask = "OneCreat"
 	return &Engine{
 		opts:    opts,
 		scrub:   NewScrubber(mask, opts.SecretsToScrub...),

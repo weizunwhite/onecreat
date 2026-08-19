@@ -48,6 +48,11 @@
   name: '@deepseek-ai/dsh-agent-spine-demo'
   config:
     persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are a coding agent.'
+    # 网关红线:dsh 默认在系统提示最前面插一句
+    # "You are an AI agent powered by DeepSeek Harness." —— 模型会照着它自报家门
+    # (实测第一版就回答"我是 DeepSeek 驱动的 AI 编程助手"),直接暴露底层厂商。
+    # OneCreat 自己拥有完整系统提示,关掉这个开场白。
+    includeHarnessIdentity: false
     workspaceContext: false
     skills:
       enabled: false
@@ -60,6 +65,11 @@
   config:
     root: !!js process.env.DSH_SESSION_ROOT ?? './.sessions'
     compression: !!js "process.env.DSH_SESSION_PLAIN === undefined ? 'zstd' : 'none'"
+
+# 每次请求后落一个持久化检查点(没有它,会话只在优雅退出时才落盘,
+# 崩溃/被杀就整段丢失)。
+- id: session-checkpoints
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
 
 - id: tool-todo
   name: '@deepseek-ai/dsh-tool-todo'

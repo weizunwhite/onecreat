@@ -125,6 +125,42 @@ func ParseTodos(raw RawSessionEvent) (json.RawMessage, bool) {
 	return d.Todos, true
 }
 
+// ParseTurnFailure 从 turn/end 事件里解出"这一轮为什么失败"的人话描述。
+// ok=false 表示这一轮是正常结束(completed / aborted 等,不需要报错)。
+func ParseTurnFailure(raw RawSessionEvent) (string, bool) {
+	var d struct {
+		Reason struct {
+			Kind  string `json:"kind"`
+			Error *struct {
+				Message string `json:"message"`
+				Code    string `json:"code"`
+			} `json:"error"`
+		} `json:"reason"`
+	}
+	if err := json.Unmarshal(raw.Data, &d); err != nil {
+		return "", false
+	}
+	switch d.Reason.Kind {
+	case "error":
+		msg := "模型请求失败"
+		if d.Reason.Error != nil {
+			if d.Reason.Error.Message != "" {
+				msg = d.Reason.Error.Message
+			}
+			if d.Reason.Error.Code != "" {
+				msg = d.Reason.Error.Code + ": " + msg
+			}
+		}
+		return msg, true
+	case "blocked":
+		return "这一轮被策略拦下(blocked)", true
+	case "max-tokens":
+		return "这一轮达到输出 token 上限,回答可能被截断", true
+	default:
+		return "", false
+	}
+}
+
 // Map 把一条 dsh 会话事件映射成零或多条 internal/event.Event。
 //
 // 网关红线:request/header 与 request/context 含真实 provider/model 名,本函数
@@ -142,6 +178,13 @@ func Map(raw RawSessionEvent) []event.Event {
 	case EvTurnEnd:
 		// TurnDone 由 Engine.Run 在整轮收敛后统一发(它才知道有没有错),这里不发,
 		// 否则一轮里多次 turn/end 会让前端反复"收尾"。
+		//
+		// 但**失败必须说出来**:dsh 的 agent/error 是 agent 事件、不上 SDK wire,
+		// turn/end 的 reason 是我们唯一能看到失败的地方。不映射它,一次 401/网络错
+		// 就表现为"什么都没发生"(实测过)。
+		if fail, ok := ParseTurnFailure(raw); ok {
+			return []event.Event{{Kind: event.Notice, Level: event.LevelWarn, Text: fail}}
+		}
 		return nil
 
 	case EvAssistantChunk:
