@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -55,6 +56,9 @@ func (s *Server) initTitleProvider() {
 	if !ok {
 		return
 	}
+	// 标题模型也走平台网关:否则这是全仓唯一绕过档位计量的 AI 调用点(纯网关部署里没有直连
+	// 厂商 key,还会 401)。非网关模式下 ApplyOnecreatGateway 是 no-op,行为不变。
+	boot.ApplyOnecreatGateway(entry)
 	prov, err := provider.New(entry.Kind, provider.Config{
 		Name:    entry.Name,
 		BaseURL: entry.BaseURL,

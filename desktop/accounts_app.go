@@ -31,6 +31,10 @@ type AccountSession struct {
 	Tiers        []AccountTier `json:"tiers"`        // 三档(订阅制);超管 / 未配为空
 	Points       *float64      `json:"points"`       // 机构点数余额(登录时快照);超管=null 不限
 	SelectedTier int           `json:"selectedTier"` // 当前选中档位 1/2/3
+	// PlatformMode 报告当前是否平台模式(打包注入或 env 开启)。前端据此决定"未登录时是否弹登录门":
+	// 平台模式未登录 → 挡住要求登录;本地模式 → 不挡、默认全功能。它是运行期模式、不是会话数据,
+	// 故不进 persistedSession;由 AccountSessionInfo/RefreshAccountSession 的 defer 统一盖章。
+	PlatformMode bool `json:"platformMode"`
 }
 
 // AccountLoginResult 是登录返回。
@@ -62,10 +66,19 @@ func accountSessionPath() (string, error) {
 
 const accountModeEnv = "ONECREAT_ACCOUNT_MODE"
 
-// platformAccountEnabled 报告是否启用平台账号层。默认不启用,保证桌面端开发和交付都先
-// 走本地 API key;teacher 平台只是以后显式打开的集成通道。
+// defaultAccountMode 是打包时经 ldflags 注入的默认账号模式(-X main.defaultAccountMode=platform,
+// 见 scripts/desktop-build.sh),跟 main.version 同款注入。正式打包版注入 "platform" → 强制登录 +
+// 走平台网关;dev / go test / 裸 go build 不注入 → 空 → 本地免登录模式。环境变量优先级高于它:
+// 正式版里想临时回本地,设 ONECREAT_ACCOUNT_MODE=local 即可覆盖。
+var defaultAccountMode string
+
+// platformAccountEnabled 报告是否启用平台账号层。env 未设时回退到打包注入的 defaultAccountMode:
+// 开发默认走本地 API key(安全默认在"关"),正式打包版默认进平台模式(强制登录)。
 func platformAccountEnabled() bool {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv(accountModeEnv)))
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(defaultAccountMode))
+	}
 	return mode == "platform" || mode == "teacher" || mode == "gateway"
 }
 
@@ -320,7 +333,10 @@ func (a *App) AccountLogout() {
 }
 
 // AccountSessionInfo 返回当前会话(未登录则 LoggedIn=false)。token 不外泄。
-func (a *App) AccountSessionInfo() AccountSession {
+// PlatformMode 由 defer 按当前模式统一盖章(覆盖所有 return 路径,不会漏某条):前端据此决定
+// 未登录时是否弹登录门。
+func (a *App) AccountSessionInfo() (s AccountSession) {
+	defer func() { s.PlatformMode = platformAccountEnabled() }()
 	if !platformAccountEnabled() {
 		return AccountSession{LoggedIn: false, Account: "本地模式", SelectedTier: 1}
 	}
@@ -328,7 +344,7 @@ func (a *App) AccountSessionInfo() AccountSession {
 	p, ok := loadSessionFileLocked()
 	sessionFileMu.Unlock()
 	if !ok {
-		return AccountSession{}
+		return AccountSession{SelectedTier: 1} // 平台模式但未登录:前端会弹登录门
 	}
 	sel := p.SelectedTier
 	if sel < 1 || sel > 3 {
@@ -376,7 +392,8 @@ func (a *App) SetOnecreatTier(index int) error {
 // RefreshAccountSession 向平台 /api/onecreat/session 拉最新 points/tiers(每轮对话结束后调,
 // 让余额实时下降、看得到消耗)。网络问题或 token 失效则保持本地快照不变(AI 调用自己会报
 // 401 提示重登)。不重建 controller,纯刷新展示数据。
-func (a *App) RefreshAccountSession() AccountSession {
+func (a *App) RefreshAccountSession() (s AccountSession) {
+	defer func() { s.PlatformMode = platformAccountEnabled() }() // 覆盖所有 return 路径,与 AccountSessionInfo 同款
 	if !platformAccountEnabled() {
 		return a.AccountSessionInfo()
 	}

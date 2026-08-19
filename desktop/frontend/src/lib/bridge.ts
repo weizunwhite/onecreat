@@ -298,6 +298,8 @@ const MOCK_TIERS = [
   { index: 2, name: "高级" },
   { index: 3, name: "旗舰" },
 ];
+// platformMode: true → 浏览器 dev 也会先弹登录门(用 admin/admin 或 demo/demo 进),这样登录门 UI
+// 能在无 Wails shell 下开发调试。真实桌面本地模式(未注入 ldflags)后端会返回 platformMode:false,不挡。
 let mockSession: AccountSession = {
   loggedIn: false,
   account: "",
@@ -306,6 +308,7 @@ let mockSession: AccountSession = {
   tiers: [],
   points: null,
   selectedTier: 1,
+  platformMode: true,
 };
 
 export function onSerialData(cb: (chunk: string) => void): () => void {
@@ -701,17 +704,17 @@ function makeMockApp(): AppBindings {
     },
     async AccountLogin(account: string, password: string) {
       if (account === "admin" && password === "admin") {
-        mockSession = { loggedIn: true, account: "超级管理员", isAdmin: true, permissions: [...MOCK_ALL_FEATURES], tiers: MOCK_TIERS, points: null, selectedTier: 1 };
+        mockSession = { loggedIn: true, account: "超级管理员", isAdmin: true, permissions: [...MOCK_ALL_FEATURES], tiers: MOCK_TIERS, points: null, selectedTier: 1, platformMode: true };
         return { ok: true } as AccountLoginResult;
       }
       if (account === "demo" && password === "demo") {
-        mockSession = { loggedIn: true, account: "演示客户", isAdmin: false, permissions: ["hardware", "proposal", "paper", "knowledge"], tiers: MOCK_TIERS, points: 8500, selectedTier: 1 };
+        mockSession = { loggedIn: true, account: "演示客户", isAdmin: false, permissions: ["hardware", "proposal", "paper", "knowledge"], tiers: MOCK_TIERS, points: 8500, selectedTier: 1, platformMode: true };
         return { ok: true } as AccountLoginResult;
       }
       return { ok: false, error: "账号或密码不对" } as AccountLoginResult;
     },
     async AccountLogout() {
-      mockSession = { loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1 };
+      mockSession = { loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1, platformMode: true };
     },
     async AccountSessionInfo() {
       return mockSession;

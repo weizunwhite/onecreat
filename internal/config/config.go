@@ -33,6 +33,30 @@ type Config struct {
 	Codegraph    CodegraphConfig   `toml:"codegraph"`
 	Statusline   StatuslineConfig  `toml:"statusline"`
 	LSP          LSPConfig         `toml:"lsp"`
+	// Engine 选择底层 agent 引擎:"native"(现有 Go 内核,默认)或 "dsh"
+	// (DeepSeek Harness sidecar,通过 stdio JSON-RPC 驱动)。空 = native。
+	// dsh 引擎目前处于 spike 阶段,详见 docs/dsh调研/。
+	Engine string    `toml:"engine"`
+	DSH    DSHConfig `toml:"dsh"`
+}
+
+// DSHConfig 配置 dsh(DeepSeek Harness)sidecar 引擎。仅当 engine="dsh" 时生效。
+// 秘密(网关 token / API key)仍从环境变量取,绝不写这里——只放"环境变量名"。
+type DSHConfig struct {
+	// BinPath 是驱动 dsh sidecar 的可执行文件(通常是 node 或打包后的 dsh 运行时)。
+	BinPath string `toml:"bin_path"`
+	// Args 是启动参数(一般包含 cordis.yml 路径)。
+	Args []string `toml:"args"`
+	// Version 锁死的 dsh 精确版本(developer preview,防破坏性变更漂移)。
+	Version string `toml:"version"`
+	// StartupTimeoutSec 是等 initialize 握手完成的超时(秒);0 = 内置默认。
+	StartupTimeoutSec int `toml:"startup_timeout_sec"`
+	// GatewayBaseURL 传给 dsh provider 的 base URL(应指平台网关)。
+	GatewayBaseURL string `toml:"gateway_base_url"`
+	// GatewayTokenEnv 是持有网关 token 的环境变量名(默认 ONECREAT_GATEWAY_TOKEN)。
+	GatewayTokenEnv string `toml:"gateway_token_env"`
+	// ModelPlaceholder 是下发给 dsh 的 wire model(档位占位符,绝不填真实模型名)。
+	ModelPlaceholder string `toml:"model_placeholder"`
 }
 
 // UIConfig controls presentation-only settings. Theme affects CLI rendering; the
@@ -456,7 +480,13 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 func Default() *Config {
 	return &Config{
 		DefaultModel: "deepseek-flash",
-		UI:           UIConfig{Theme: "auto"},
+		// native = 现有 Go 内核。dsh 引擎需显式 engine="dsh" + [dsh] 配置才启用。
+		Engine: "native",
+		DSH: DSHConfig{
+			GatewayTokenEnv:  "ONECREAT_GATEWAY_TOKEN",
+			ModelPlaceholder: "onecreat",
+		},
+		UI: UIConfig{Theme: "auto"},
 		Agent: AgentConfig{
 			SystemPrompt: DefaultSystemPrompt,
 			// 0 = no step cap: the agent loops until the model gives a final answer,
@@ -852,14 +882,25 @@ func (c *Config) Validate(model string) error {
 	if !ok {
 		return fmt.Errorf("unknown model %q (configured: %s)", model, c.providerNames())
 	}
+	return e.Validate(model)
+}
+
+// Validate checks that this already-resolved provider entry is usable. It is the
+// single source of truth for the kind/base_url/api-key checks, so callers that
+// rewrite the entry before validating — e.g. boot.Build applying the onecreat
+// gateway before RequireKey — check the rewritten entry (ONECREAT_GATEWAY_TOKEN)
+// instead of re-resolving the un-rewritten original. ResolveModel returns a copy,
+// so validating via Config.Validate(model) would silently ignore the gateway
+// rewrite and demand the underlying vendor key, leaking its name.
+func (e *ProviderEntry) Validate(label string) error {
 	if e.Kind == "" {
-		return fmt.Errorf("provider %q: kind is required", model)
+		return fmt.Errorf("provider %q: kind is required", label)
 	}
 	if e.BaseURL == "" {
-		return fmt.Errorf("provider %q: base_url is required", model)
+		return fmt.Errorf("provider %q: base_url is required", label)
 	}
 	if e.APIKey() == "" {
-		return fmt.Errorf("provider %q: missing env %s", model, e.APIKeyEnv)
+		return fmt.Errorf("provider %q: missing env %s", label, e.APIKeyEnv)
 	}
 	return nil
 }

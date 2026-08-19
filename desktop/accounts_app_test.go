@@ -143,6 +143,44 @@ func TestLocalAccountModeIgnoresPersistedPlatformSession(t *testing.T) {
 	if s.LoggedIn {
 		t.Fatalf("默认本地 API 模式不应显示已登录平台账号:%+v", s)
 	}
+	if s.PlatformMode {
+		t.Fatalf("本地模式会话 PlatformMode 应为 false:%+v", s)
+	}
+}
+
+// 打包注入的 defaultAccountMode(ldflags -X main.defaultAccountMode=platform):env 未设时作为默认
+// 模式回退——正式打包版据此默认进平台模式、强制登录;dev/裸 go build 不注入=本地免登录。env 显式
+// 设置优先级更高(正式版临时回本地用 ONECREAT_ACCOUNT_MODE=local)。同时校验前端门控依据 PlatformMode。
+func TestDefaultAccountModeFallback(t *testing.T) {
+	seedTempConfigDir(t)
+	saved := defaultAccountMode
+	defer func() { defaultAccountMode = saved }()
+
+	// env 空 + 未注入 → 本地模式(开发默认,安全默认在"关")。
+	t.Setenv(accountModeEnv, "")
+	defaultAccountMode = ""
+	if platformAccountEnabled() {
+		t.Fatal("env 空 + 未注入 defaultAccountMode 应为本地模式")
+	}
+	if got := (&App{}).AccountSessionInfo(); got.PlatformMode || got.Account != "本地模式" {
+		t.Fatalf("本地模式应 PlatformMode=false & Account=本地模式,得到 %+v", got)
+	}
+
+	// env 空 + 注入 platform → 平台模式(正式打包版)。未登录时 PlatformMode=true(前端弹登录门)、
+	// LoggedIn=false。
+	defaultAccountMode = "platform"
+	if !platformAccountEnabled() {
+		t.Fatal("注入 defaultAccountMode=platform 应启用平台模式")
+	}
+	if got := (&App{}).AccountSessionInfo(); !got.PlatformMode || got.LoggedIn {
+		t.Fatalf("平台模式未登录应 PlatformMode=true & LoggedIn=false,得到 %+v", got)
+	}
+
+	// env 显式 local 覆盖注入的 platform。
+	t.Setenv(accountModeEnv, "local")
+	if platformAccountEnabled() {
+		t.Fatal("ONECREAT_ACCOUNT_MODE=local 应覆盖 defaultAccountMode=platform")
+	}
 }
 
 // H4(客户端侧):网关模式下,本地改 provider / 模型 / key 必须被后端拒绝 —— 否则登录用户

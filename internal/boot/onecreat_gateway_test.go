@@ -123,3 +123,44 @@ func TestApplyOnecreatGateway(t *testing.T) {
 		t.Fatalf("非 openai kind 不应被网关改写: %+v", e4)
 	}
 }
+
+// 网关模式下 RequireKey 必须校验「改写后」的 entry(查 ONECREAT_GATEWAY_TOKEN),而不是重新
+// 解析未改写的原始 entry(那会点名底层厂商 key DEEPSEEK_API_KEY 启动即失败并泄露厂商名)。
+// ResolveModel 返回副本,所以 boot.Build 必须校验手上这份已 applyOnecreatGateway 的 entry。
+func TestRequireKeyValidatesRewrittenGatewayEntry(t *testing.T) {
+	// 纯网关部署:有网关 token、没有直连厂商 key。
+	t.Setenv("ONECREAT_GATEWAY_URL", "https://t.example.com/api/onecreat/v1")
+	t.Setenv("ONECREAT_TIER", "tier-1")
+	t.Setenv("ONECREAT_GATEWAY_TOKEN", "gw-live-token")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+
+	entry := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", APIKeyEnv: "DEEPSEEK_API_KEY", Model: "deepseek-flash"}
+
+	// 改写前的原始 entry 校验会失败并点名 DEEPSEEK_API_KEY —— 这正是修复前 cfg.Validate 走的路径。
+	if err := entry.Validate("deepseek-flash"); err == nil {
+		t.Fatal("前置断言:未改写的 entry 应校验失败(缺 DEEPSEEK_API_KEY)")
+	} else if !strings.Contains(err.Error(), "DEEPSEEK_API_KEY") {
+		t.Fatalf("前置断言:错误应点名底层厂商 key,得到 %v", err)
+	}
+
+	// 改写后:APIKeyEnv 变成 ONECREAT_GATEWAY_TOKEN(已设),校验应通过、不再要求厂商 key。
+	applyOnecreatGateway(entry)
+	if err := entry.Validate("deepseek-flash"); err != nil {
+		t.Fatalf("网关改写后 RequireKey 校验应通过(有 ONECREAT_GATEWAY_TOKEN),却失败: %v", err)
+	}
+
+	// 反向:连网关 token 也没有时,校验失败但只点名网关 token,绝不泄露厂商 key 名。
+	t.Setenv("ONECREAT_GATEWAY_TOKEN", "")
+	entry2 := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", APIKeyEnv: "DEEPSEEK_API_KEY", Model: "deepseek-flash"}
+	applyOnecreatGateway(entry2)
+	err := entry2.Validate("deepseek-flash")
+	if err == nil {
+		t.Fatal("缺网关 token 时校验应失败")
+	}
+	if strings.Contains(err.Error(), "DEEPSEEK_API_KEY") {
+		t.Fatalf("网关模式错误不得泄露厂商 key 名: %v", err)
+	}
+	if !strings.Contains(err.Error(), "ONECREAT_GATEWAY_TOKEN") {
+		t.Fatalf("错误应点名网关 token: %v", err)
+	}
+}

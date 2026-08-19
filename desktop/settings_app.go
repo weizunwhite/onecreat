@@ -215,7 +215,10 @@ func (a *App) rebuild() error {
 			}
 		}
 	}
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink})
+	// PreToolUse 与其它四个 boot.Build 调用点(app.go buildTab/SwitchWorkspace/SetModel/
+	// rebuildTabByID)保持一致:重建后仍带串口自动释放回调,否则改任意设置后 AI 烧录不再让出
+	// 常驻串口监视器,撞 busy(e78fe02c 在此路径的回归)。
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		a.mu.Lock()
 		if rt := a.tabs[targetTab]; rt != nil {

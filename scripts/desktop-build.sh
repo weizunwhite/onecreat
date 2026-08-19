@@ -58,7 +58,9 @@ if [ "$os" = windows ]; then
 fi
 
 # NSIS installer is Windows-only (Wails requires a single windows target for -nsis).
-build_args=(-clean -platform "$PLATFORM" -ldflags "-X main.version=$VERSION")
+# defaultAccountMode=platform 让正式打包版默认进平台模式(强制登录 + 走平台网关);dev/裸 go build
+# 不注入 → 本地免登录。见 desktop/accounts_app.go platformAccountEnabled。
+build_args=(-clean -platform "$PLATFORM" -ldflags "-X main.version=$VERSION -X main.defaultAccountMode=platform")
 [ "$os" = windows ] && build_args+=(-nsis)
 
 echo "==> $WAILS build ${build_args[*]}"

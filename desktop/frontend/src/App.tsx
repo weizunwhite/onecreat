@@ -65,6 +65,7 @@ import { HelpDrawer } from "./components/HelpDrawer";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
 import { HardwarePanel } from "./components/HardwarePanel";
 import { KnowledgePanel } from "./components/KnowledgePanel";
+import { LoginGate } from "./components/LoginGate";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel, type WorkspaceOpenRequest } from "./components/WorkspacePanel";
 import { FolderPicker } from "./components/FolderPicker";
@@ -489,7 +490,8 @@ export default function App() {
       .AccountSessionInfo()
       .then(setSessionStore)
       .catch(() =>
-        setSessionStore({ loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1 })
+        // 拉会话失败(桥接异常的降级路径):按未登录本地态处理,platformMode:false 不挡门,app 仍可用。
+        setSessionStore({ loggedIn: false, account: "", isAdmin: false, permissions: [], tiers: [], points: null, selectedTier: 1, platformMode: false })
       );
   }, []);
   useEffect(() => {
@@ -1254,8 +1256,11 @@ export default function App() {
       ? t("sidebar.expand")
       : t("sidebar.collapse");
 
-  // 会话还没拉到先空着;未登录继续进入本地 API 模式。
+  // 会话还没拉到先空着(加载中)。
   if (session === null) return <div className="app" />;
+  // 平台模式(打包注入/联平台)且未登录 → 挡住整个 app 要求登录;本地模式 platformMode=false,
+  // 不挡、默认全功能。登录成功后 refreshSession 重新拉会话,loggedIn=true 放行,再按功能权限门控。
+  if (session.platformMode && !session.loggedIn) return <LoginGate onLoggedIn={refreshSession} />;
 
   return (
     <div className="app">

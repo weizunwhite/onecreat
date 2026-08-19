@@ -47,8 +47,17 @@ func acpCommand(args []string, version string) int {
 		modelName = cfg.DefaultModel
 	}
 	// Fail fast on a missing/invalid key, with stderr (never stdout) so the wire
-	// stays clean, rather than failing per-session deep inside session/new.
-	if err := cfg.Validate(modelName); err != nil {
+	// stays clean, rather than failing per-session deep inside session/new. Resolve
+	// and apply the onecreat gateway first, then validate the (possibly rewritten)
+	// entry — otherwise gateway mode fails here demanding the underlying vendor key
+	// and leaks its name, the very leak the per-session path guards (F1).
+	entry, ok := cfg.ResolveModel(modelName)
+	if !ok {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, fmt.Errorf("unknown model %q", modelName))
+		return 1
+	}
+	boot.ApplyOnecreatGateway(entry)
+	if err := entry.Validate(modelName); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}

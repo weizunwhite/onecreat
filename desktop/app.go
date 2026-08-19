@@ -2506,6 +2506,13 @@ func firstNonEmptyStr(v, def string) string {
 // HardwareMonitor dispatches to the platform-appropriate serial-monitor MCP tool
 // for a short sampling window. The frontend's "看串口" button calls it.
 func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
+	// 与烧录争同一串口:占 hwFlashing 槽。烧录进行中拒绝采样——否则采样子进程会撞正在写 flash 的
+	// esptool,轻则 busy 失败、重则打断写入把板子写成半砖。后端兜底(前端按钮守卫在面板重挂载后会丢,
+	// 正是 D1 互斥要防的场景);此前 HardwareMonitor 漏了这道槽。
+	if !a.beginHardwareOp(&a.hwFlashing) {
+		return HardwareRunResult{Status: "skipped", Summary: "串口忙", NextStep: "有烧录正在进行、占用着串口,请等它完成再看串口。"}
+	}
+	defer a.endHardwareOp(&a.hwFlashing)
 	command, err := a.requireHardwareMCP()
 	if err != nil {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}
