@@ -1,6 +1,7 @@
 # OneCreat 底层 agent 迁移到 DeepSeek Harness(dsh)——执行规划
 
-> 起草 2026-08-18。状态:**待拍板**。前置结论见对话:两个候选(pi / dsh)里选 dsh,原因是产品 DeepSeek-first、dsh 是模型厂自家 harness、"一切皆插件"正对上我们的护城河(证据引擎/硬件 MCP/网关档位)。
+> 起草 2026-08-18。**2026-08-19 用户拍板:直接迁移,不再做 A/B 对比**(用户自己试过 dsh 效果好;判断 dsh 缺的正是我们的插件+知识库)。Phase 0 的 G0 视为通过,Phase 1 spike 已有驱动层骨架(`internal/engine/dsh`,见 `docs/dsh调研/04_Phase1_spike报告.md`),下一步直接做 Phase 1 收尾(Controller 接线)+ Phase 2 护城河搬迁。
+> 原文:状态:**待拍板**。前置结论见对话:两个候选(pi / dsh)里选 dsh,原因是产品 DeepSeek-first、dsh 是模型厂自家 harness、"一切皆插件"正对上我们的护城河(证据引擎/硬件 MCP/网关档位)。
 > 硬约束:dsh 目前是 developer preview,官方声明会有破坏性变更 → 本规划每一阶段都设"闸门",不过闸不进下一阶段;旧 Go 内核在最后一阶段之前**不删**。
 
 ## 0. 目标与非目标
