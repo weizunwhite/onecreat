@@ -46,7 +46,7 @@ func TestZeroContextKeepsProcessCwdSemantics(t *testing.T) {
 	}
 	// The zero Context must be a no-op resolver, so callers not yet threaded
 	// through behave exactly as they did before.
-	for _, p := range []string{"", ".", "rel/path.txt", filepath.Join(string(filepath.Separator), "abs", "path")} {
+	for _, p := range []string{"", ".", "rel/path.txt", absPath(t, "abs.txt")} {
 		if got := zero.Resolve(p); got != p {
 			t.Errorf("zero.Resolve(%q) = %q, want unchanged", p, got)
 		}
@@ -62,7 +62,7 @@ func TestResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	abs := filepath.Join(string(filepath.Separator), "elsewhere", "x.txt")
+	abs := absPath(t, "x.txt")
 	cases := []struct{ in, want string }{
 		{"", ws.Root()},
 		{".", ws.Root()},
@@ -131,4 +131,16 @@ func evalSymlinks(t *testing.T, p string) string {
 		return p
 	}
 	return resolved
+}
+
+// absPath returns a genuinely absolute path on every platform. A literal
+// "/elsewhere/x.txt" is absolute on Unix but *not* on Windows, where an absolute
+// path needs a volume ("C:\..."); a temp dir always has one.
+func absPath(t *testing.T, name string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if !filepath.IsAbs(p) {
+		t.Fatalf("temp path %q is not absolute", p)
+	}
+	return p
 }
