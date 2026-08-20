@@ -60,6 +60,8 @@ The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream mod
 
 **Events flow outward through a sink.** The Agent/Controller emit `internal/event.Event`s to an `event.Sink`; each frontend implements the sink to render the stream (TUI redraw, SSE frame, Wails `EventsEmit`). Frontends call *in* via Controller methods (`Submit`, `Approve`, `Rewind`, …) and observe *out* via the sink. There is no direct frontend→model path.
 
+**Not every event may be dropped.** `Kind.Durable()` (`internal/event`) classifies each kind: only `reasoning`, `text` and `tool_progress` are ephemeral — a later event supersedes them — and **everything else is durable by default**, so a new kind is state-bearing until proven otherwise. `internal/eventstream` is the one delivery implementation both SSE transports use: ephemeral frames are dropped when a subscriber falls behind, durable frames queue, and a client that will not consume them is disconnected (`stream_reset`) to re-sync rather than served a stream with invisible holes. `Publish` never blocks — it runs on the agent's run-loop goroutine. Every frame carries the V2 envelope (`schemaVersion`/`eventId`/`sequence`/`sessionId`/`tabId`/`timestamp`/`durable`) stamped by an `eventwire.Stamper`, one per stream; `sequence` is gap-free so a client can *detect* loss. `Encode` produces the payload only — envelopes belong to streams, not events.
+
 ### Registry extensibility (no `switch model`)
 
 `Provider` and `Tool` are interfaces resolved by name. Compile-time built-ins self-register via `init()` and are pulled in by blank imports in `main`:
