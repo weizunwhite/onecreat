@@ -13,225 +13,33 @@
 import type {
   AccountLoginResult,
   AccountSession,
-  BalanceInfo,
-  CapabilitiesView,
-  CheckpointMeta,
-  CommandInfo,
-  ContextInfo,
-  DirEntry,
   FolderListing,
-  EffortInfo,
-  FilePreview,
-  HistoryMessage,
-  HardwareBoardFactsView,
-  HardwareDetectView,
-  HardwareInstallToolchainView,
-  HardwareInstallStepView,
-  SerialResult,
-  HardwareEvidenceStatusView,
-  HardwareBoardSummary,
-  HardwareMCPView,
   HardwarePublishInput,
   HardwareRunInput,
   HardwareRunResult,
   OTAScaffoldInput,
   OTAScaffoldResult,
   ReferenceFileResult,
-  JobView,
   KnowledgeBaseView,
-  KnowledgeImportResult,
-  KnowledgePromptView,
-  KnowledgeSearchResult,
   KnowledgeView,
   MCPServerInput,
-  MemoryView,
-  Meta,
-  ModelInfo,
   NetworkView,
-  PendingPrompts,
   ProviderView,
-  QuestionAnswer,
   ServerView,
   SessionMeta,
   SettingsView,
   SkillRootView,
   SkillView,
-  SlashArgsResult,
-  TabMeta,
-  UpdateInfo,
   UpdateProgress,
   WireEvent,
-  WorkspaceView,
 } from "./types";
 import { openFolderPicker } from "./folderPicker";
 
-// AppBindings mirrors desktop/app.go's exported method set. Keep in sync by hand
-// (or regenerate with `wails generate module` and import wailsjs instead).
-export interface AppBindings {
-  Submit(input: string): Promise<void>;
-  SubmitDisplay(display: string, input: string): Promise<void>;
-  Cancel(): Promise<void>;
-  // 审批/问答/门控带 tabId:后台标签的审批必须答到事件来源标签的 controller(A2/A8)。
-  Approve(tabId: string, id: string, allow: boolean, session: boolean): Promise<void>;
-  AnswerQuestion(tabId: string, id: string, answers: QuestionAnswer[]): Promise<void>;
-  // PendingPrompts 返回某标签当前未应答的审批 / ask;切回标签时补显弹窗(A2)。
-  PendingPrompts(tabId: string): Promise<PendingPrompts>;
-  SetPlanMode(tabId: string, on: boolean): Promise<void>;
-  // 设置某标签的「协作模式」persona(空串=默认):随每个 turn 注入,不进缓存系统前缀。
-  SetCoachMode(tabId: string, preamble: string): Promise<void>;
-  Compact(): Promise<void>;
-  NewSession(): Promise<void>;
-  // 多标签多任务(像 Codex / Claude Code):每个标签一个独立 controller + session,
-  // 后台标签的 controller 照常在自己的 goroutine 里跑。CreateTab 新建并设为活动;
-  // SetActiveTab 在切换标签时把后端「活动镜像」重指到目标标签,既有会话类方法随之作用
-  // 到该标签;事件按 agent:event:<tabId> 独立通道走。
-  CreateTab(kind: string): Promise<TabMeta>;
-  CloseTab(id: string): Promise<void>;
-  ListTabs(): Promise<TabMeta[]>;
-  SetActiveTab(id: string): Promise<void>;
-  History(): Promise<HistoryMessage[]>;
-  // Checkpoints lists the session's rewind points; Rewind restores one (scope
-  // "code" | "conversation" | "both"), after which the caller re-reads History.
-  Checkpoints(): Promise<CheckpointMeta[]>;
-  Rewind(turn: number, scope: string): Promise<void>;
-  Fork(turn: number): Promise<void>;
-  SummarizeFrom(turn: number): Promise<void>;
-  SummarizeUpTo(turn: number): Promise<void>;
-  // Session history: list saved sessions, resume one (returns its transcript),
-  // preview one read-only, delete one, or give one a custom display name ("" clears it).
-  ListSessions(): Promise<SessionMeta[]>;
-  ResumeSession(path: string): Promise<HistoryMessage[]>;
-  PreviewSession(path: string): Promise<HistoryMessage[]>;
-  DeleteSession(path: string): Promise<void>;
-  RenameSession(path: string, title: string): Promise<void>;
-  // 给当前活动会话打类型标(如 "hardware"),供历史侧栏区分垂直;写一次即定。
-  MarkSessionKind(kind: string): Promise<void>;
-  // Workspace: open a folder chooser and switch to that project (fresh session);
-  // returns the chosen path, or "" if cancelled.
-  ListWorkspaces(): Promise<WorkspaceView[]>;
-  PickWorkspace(): Promise<string>;
-  SwitchWorkspace(path: string): Promise<string>;
-  // 内置文件夹选择器列目录(绕开 macOS 原生对话框跑到窗口后面的 bug)。
-  BrowseDir(path: string): Promise<FolderListing>;
-  // 账号 / 权限(登录门控):登录 / 登出 / 查当前会话(含功能权限清单)。
-  AccountLogin(account: string, password: string): Promise<AccountLoginResult>;
-  AccountLogout(): Promise<void>;
-  AccountSessionInfo(): Promise<AccountSession>;
-  // 订阅制:切换当前档位(1/2/3);背后映射到哪个模型由平台决定,客户端不知道。
-  SetOnecreatTier(index: number): Promise<void>;
-  // 每轮对话结束后向平台拉最新 points/tiers(让余额实时下降、看到消耗)。
-  RefreshAccountSession(): Promise<AccountSession>;
-  ContextUsage(): Promise<ContextInfo>;
-  // Balance queries the active provider's wallet balance (a network call);
-  // returns an unavailable readout when no balance_url is configured or it fails.
-  Balance(): Promise<BalanceInfo>;
-  // Jobs lists the running background jobs (bash/task started in the background)
-  // for the status-bar indicator.
-  Jobs(): Promise<JobView[]>;
-  Meta(): Promise<Meta>;
-  Commands(): Promise<CommandInfo[]>;
-  // Capabilities feeds the MCP & Skills drawer: connected/failed servers + skills.
-  // Add connects + persists a server; Remove disconnects + drops it from config;
-  // Retry reconnects a configured server that failed (config untouched).
-  Capabilities(): Promise<CapabilitiesView>;
-  AddMCPServer(input: MCPServerInput): Promise<number>;
-  HardwareMCP(): Promise<HardwareMCPView>;
-  // 板卡选择器的可选项,来自共享数据驱动注册表(boards.json)。
-  HardwareBoardList(): Promise<HardwareBoardSummary[]>;
-  HardwareDetect(): Promise<HardwareDetectView>;
-  // 一键安装核心工具链（arduino-cli + 板卡 core）。cores 为空用默认 [arduino:avr, esp32:esp32]。
-  HardwareInstallToolchain(cores: string[]): Promise<HardwareInstallToolchainView>;
-  // 分步安装（GUI 实时进度用）：先装 arduino-cli，再逐个装 core，中间刷新进度。
-  HardwareInstallArduinoCLI(): Promise<HardwareInstallStepView>;
-  HardwareInstallCore(core: string): Promise<HardwareInstallStepView>;
-  HardwareEvidenceStatus(): Promise<HardwareEvidenceStatusView>;
-  // 把 tests/hardware_evidence.jsonl 的真机验证记录汇总成可粘进竞赛材料的 Markdown（无记录返回空串）。
-  HardwareEvidenceExport(projectDir: string): Promise<string>;
-  // 写代码前确定性取出已选板卡的校验事实（电平/引脚/平台 API），供前端注入 prompt。
-  HardwareBoardFacts(board: string, platform: string): Promise<HardwareBoardFactsView>;
-  PickReferenceFile(): Promise<string>;
-  ImportReferenceFile(pathOrURL: string): Promise<ReferenceFileResult>;
-  HardwareValidate(input: HardwareRunInput): Promise<HardwareRunResult>;
-  HardwareUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
-  HardwareMonitor(input: HardwareRunInput): Promise<HardwareRunResult>;
-  // OTA 远程烧录：WiFi 局域网直推(①) + 发布固件到远程服务器供云端拉取(③)。
-  HardwareOTAUpload(input: HardwareRunInput): Promise<HardwareRunResult>;
-  HardwarePublishFirmware(input: HardwarePublishInput): Promise<HardwareRunResult>;
-  HardwareScaffoldOTA(input: OTAScaffoldInput): Promise<OTAScaffoldResult>;
-  // 项目名归一（复用后端 sanitizeProjectName）：前端比对"新建名"与"发布名"是否一致（H1）。
-  SanitizeProjectName(name: string): Promise<string>;
-  // 串口监视器（常驻双向串口）：SerialOpen 后数据走 serial:data 事件，SerialWrite 反向发送。
-  SerialPorts(): Promise<string[]>;
-  SerialOpen(port: string, baud: number): Promise<SerialResult>;
-  SerialClose(): Promise<void>;
-  SerialWrite(data: string): Promise<SerialResult>;
-  AddHardwareMCPServer(): Promise<number>;
-  KnowledgeView(): Promise<KnowledgeView>;
-  KnowledgeCreate(name: string): Promise<KnowledgeBaseView>;
-  KnowledgeDelete(id: string): Promise<void>;
-  KnowledgeImportFiles(baseID: string): Promise<KnowledgeImportResult>;
-  // Web 模式:前端先把浏览器选的文件 POST /upload 落到临时目录(见 uploadFiles),
-  // 再把返回的绝对路径传给这里导入。桌面版走 KnowledgeImportFiles(原生对话框)。
-  KnowledgeImportPaths(baseID: string, paths: string[]): Promise<KnowledgeImportResult>;
-  KnowledgeSearch(baseIDs: string[], query: string, limit: number): Promise<KnowledgeSearchResult>;
-  KnowledgeBuildPrompt(baseIDs: string[], question: string, limit: number): Promise<KnowledgePromptView>;
-  RemoveMCPServer(name: string): Promise<void>;
-  RetryMCPServer(name: string): Promise<void>;
-  PickSkillFolder(): Promise<string>;
-  AddSkillPath(path: string): Promise<void>;
-  RemoveSkillPath(path: string): Promise<void>;
-  RefreshSkills(): Promise<void>;
-  // SetMCPServerEnabled is the per-session connector toggle (on reconnects, off
-  // disconnects; config untouched).
-  SetMCPServerEnabled(name: string, enabled: boolean): Promise<void>;
-  SlashArgs(input: string): Promise<SlashArgsResult>;
-  ListDir(rel: string): Promise<DirEntry[]>;
-  ReadFile(rel: string): Promise<FilePreview>;
-  OpenWorkspacePath(rel: string): Promise<void>;
-  RevealWorkspacePath(rel: string): Promise<void>;
-  // 在系统文件管理器打开任意绝对路径的文件夹(侧栏「在文件夹中打开」)。
-  OpenFolder(path: string): Promise<void>;
-  SavePastedImage(dataUrl: string): Promise<string>;
-  SavePastedFile(name: string, dataUrl: string): Promise<string>;
-  AttachmentDataURL(path: string): Promise<string>;
-  Models(): Promise<ModelInfo[]>;
-  SetModel(name: string): Promise<void>;
-  Effort(): Promise<EffortInfo>;
-  SetEffort(level: string): Promise<void>;
-  // Memory panel: read the loaded ONECREAT.md hierarchy + saved auto-memories,
-  // quick-add a note to a scope's ONECREAT.md (≡ "#<note>"), and overwrite a doc
-  // from the in-place editor.
-  Memory(): Promise<MemoryView>;
-  Remember(scope: string, note: string): Promise<string>;
-  Forget(name: string): Promise<void>;
-  SaveDoc(path: string, body: string): Promise<string>;
-  // Settings panel: read the resolved config and apply edits (each writes config
-  // and rebuilds the controller live). Secrets go through SetProviderKey (→ .env).
-  Settings(): Promise<SettingsView>;
-  SetDefaultModel(ref: string): Promise<void>;
-  SetPlannerModel(ref: string): Promise<void>;
-  SaveProvider(p: ProviderView): Promise<void>;
-  DeleteProvider(name: string): Promise<void>;
-  SetProviderKey(apiKeyEnv: string, value: string): Promise<void>;
-  SetPermissionMode(mode: string): Promise<void>;
-  AddPermissionRule(list: string, rule: string): Promise<void>;
-  RemovePermissionRule(list: string, rule: string): Promise<void>;
-  SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[]): Promise<void>;
-  SetNetwork(n: NetworkView): Promise<void>;
-  SetAgentParams(temperature: number, maxSteps: number, systemPrompt: string): Promise<void>;
-  // SetBypass toggles YOLO mode (auto-approve every tool call this session; deny
-  // rules still apply). Runtime-only — not written to config. 按 tabId 路由(A8)。
-  SetBypass(tabId: string, on: boolean): Promise<void>;
-  // Auto-updater (desktop/updater_app.go): the injected build version, a manifest
-  // check, applying an update (win/linux self-update; macOS opens the download
-  // page), and opening that page directly. Progress streams on "updater:progress".
-  Version(): Promise<string>;
-  CheckUpdate(): Promise<UpdateInfo | null>;
-  ApplyUpdate(): Promise<void>;
-  OpenDownloadPage(): Promise<void>;
-  // Web 模式:优雅退出本地服务(保存会话 + 关 controller + 停服)。桌面版按钮隐藏。
-  Quit(): Promise<void>;
-}
+// AppBindings 不再手写:它由 desktop/cmd/gen-bindings 从 Go 侧的 *App 方法签名 +
+// rpc_surface.go 的 allowlist 生成(改完 Go 跑 `cd desktop && go generate ./...`)。
+// 过去这里是一份 120 来个方法的手抄接口,只有名字对得上、签名漂移不会被发现。
+export type { AppBindings } from "./bindings.generated";
+import type { AppBindings } from "./bindings.generated";
 
 interface WailsRuntime {
   EventsOn(name: string, cb: (...data: unknown[]) => void): () => void;

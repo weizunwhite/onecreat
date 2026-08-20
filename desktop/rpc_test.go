@@ -1,16 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
-	"regexp"
-	"sort"
 	"strings"
 	"testing"
+
+	"reasonix/desktop/internal/tsgen"
 )
 
 // rpcFake 覆盖 App 上出现过的全部方法签名形态,用来单测反射分发/参数解码/返回值折叠,
@@ -228,37 +229,21 @@ func TestAppMethodsAreRPCCompatible(t *testing.T) {
 	}
 }
 
-func TestRPCSurfaceMatchesFrontendBindings(t *testing.T) {
-	b, err := os.ReadFile("frontend/src/lib/bridge.ts")
+// TestFrontendBindingsAreUpToDate replaces the old name-only comparison between
+// rpcPublicMethods and a hand-written AppBindings interface. The interface is now
+// generated from this package's own source, so the check is exact: regenerate in
+// memory and compare against the file on disk. A changed Go signature, a new
+// allowlist entry, or a hand edit of the generated file all fail here.
+func TestFrontendBindingsAreUpToDate(t *testing.T) {
+	want, err := tsgen.Generate(".")
 	if err != nil {
-		t.Fatalf("读取 bridge.ts: %v", err)
+		t.Fatalf("生成 bindings 失败: %v", err)
 	}
-	text := string(b)
-	const marker = "export interface AppBindings {"
-	start := strings.Index(text, marker)
-	if start < 0 {
-		t.Fatal("bridge.ts 缺少 AppBindings 接口")
+	got, err := os.ReadFile(tsgen.OutputFile)
+	if err != nil {
+		t.Fatalf("读取 %s: %v", tsgen.OutputFile, err)
 	}
-	body := text[start+len(marker):]
-	if end := strings.Index(body, "\n}"); end >= 0 {
-		body = body[:end]
-	} else {
-		t.Fatal("bridge.ts 的 AppBindings 接口未闭合")
-	}
-	re := regexp.MustCompile(`(?m)^\s{2}([A-Z][A-Za-z0-9_]*)\(`)
-	matches := re.FindAllStringSubmatch(body, -1)
-	bridge := make([]string, 0, len(matches))
-	for _, m := range matches {
-		bridge = append(bridge, m[1])
-	}
-	sort.Strings(bridge)
-
-	allowed := make([]string, 0, len(rpcPublicMethods))
-	for name := range rpcPublicMethods {
-		allowed = append(allowed, name)
-	}
-	sort.Strings(allowed)
-	if !reflect.DeepEqual(bridge, allowed) {
-		t.Fatalf("Web RPC allowlist 与 AppBindings 漂移\nbridge=%v\nallowlist=%v", bridge, allowed)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s 已过期 —— 运行 `cd desktop && go generate ./...` 重新生成", tsgen.OutputFile)
 	}
 }

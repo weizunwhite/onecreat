@@ -1,11 +1,19 @@
 package main
 
+//go:generate go run ./cmd/gen-bindings .
+
 // rpcPublicMethods is the browser-visible application API.
 //
 // This is deliberately an allowlist, not "all exported methods minus a few". Adding
-// an exported Go method must not silently turn it into an HTTP endpoint. When the
-// frontend contract grows, add the method here and to AppBindings in bridge.ts in the
-// same change; rpc_test.go checks that the two sets stay identical.
+// an exported Go method must not silently turn it into an HTTP endpoint.
+//
+// It is also the *input* to the frontend contract: desktop/cmd/gen-bindings reads
+// this list plus the listed methods' Go signatures and writes
+// frontend/src/lib/bindings.generated.ts, the AppBindings interface all three
+// shells implement. So growing the contract is one edit here plus
+// `go generate ./...` — the 120-method TypeScript interface is no longer
+// maintained by hand, and a changed signature can no longer drift past a test
+// that only compared names. TestFrontendBindingsAreUpToDate fails on a stale file.
 var rpcPublicMethods = map[string]struct{}{
 	"Submit":                    {},
 	"SubmitDisplay":             {},

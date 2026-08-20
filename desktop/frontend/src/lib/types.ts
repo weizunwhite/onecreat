@@ -123,7 +123,10 @@ export interface SessionMeta {
   kind?: string; // 会话类型(如 "hardware");空=普通对话。历史侧栏据此区分垂直
 }
 
-export interface WorkspaceView {
+// WorkspaceMeta 与 Go 侧 desktop.WorkspaceMeta 同名同形:生成的 AppBindings 直接按
+// Go 类型名引用它,名字对不上会在生成/编译时就暴露(过去这里叫 WorkspaceView,
+// 手抄的接口把它悄悄改了名,两边靠人记着对应关系)。
+export interface WorkspaceMeta {
   path: string;
   name: string;
   current: boolean;

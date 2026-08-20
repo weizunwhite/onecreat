@@ -6,7 +6,7 @@ import { alertDialog } from "../lib/confirm";
 import { useT } from "../lib/i18n";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createPastedTextBlock, renderPastedTextBlock, shouldFoldPastedText, type PastedTextBlock } from "../lib/pastedText";
-import type { CommandInfo, DirEntry, Mode, SlashArgItem, SlashArgsResult, WorkspaceView } from "../lib/types";
+import type { CommandInfo, DirEntry, Mode, SlashArgItem, SlashArgsResult, WorkspaceMeta } from "../lib/types";
 import { SlashMenu } from "./SlashMenu";
 import { ArgMenu } from "./ArgMenu";
 import { FileMenu } from "./FileMenu";
@@ -208,7 +208,7 @@ export function Composer({
   const [dragOver, setDragOver] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [workspaceQuery, setWorkspaceQuery] = useState("");
-  const [workspaces, setWorkspaces] = useState<WorkspaceView[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceMeta[]>([]);
   const [composerHeight, setComposerHeight] = useState<number | null>(loadComposerHeight);
   const [composerResizing, setComposerResizing] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
