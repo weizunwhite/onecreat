@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
+	"reasonix/internal/workspace"
 )
 
 // eventChannel is the Wails runtime event name the frontend subscribes to for the
@@ -79,6 +80,12 @@ type App struct {
 	activeTab string
 	tabSeq    int // 生成新 tab id 的自增计数
 
+	// ws 是「当前选中的项目文件夹」:新建标签在这里开,原生对话框以它为起点,
+	// UI 的文件浏览/知识库/硬件面板按它解析相对路径。它不是 tabs 的镜像 —— 每个
+	// 标签在 tabRuntime.ws 里持有自己【实际】的 root,切换项目只改这里和活动标签,
+	// 后台标签继续读写它们自己的目录。由 a.mu 保护。
+	ws workspace.Context
+
 	// Per-turn autosave runs off the event goroutine so disk I/O never delays
 	// event delivery; overlapping requests coalesce into one trailing write.
 	// 按 tab 单飞:后台 tab 完成一轮也各存各的 session,不串到活动 tab。
@@ -99,8 +106,12 @@ type App struct {
 // session(session 路径存在 ctrl 里)。kind 仅供前端决定显示对话还是硬件视图,
 // 后端不据此分支(硬件视图也只是往同一个 controller 注入提示词)。
 type tabRuntime struct {
-	id         string
-	kind       string // "chat" | "hardware"
+	id   string
+	kind string // "chat" | "hardware"
+	// ws 是这个标签实际工作的项目根目录。它是该标签运行时的真源:controller、
+	// 工具、bash、MCP 全部按它解析,与进程 cwd 无关,所以两个标签可以同时开在
+	// 不同项目上。
+	ws         workspace.Context
 	sink       *eventSink
 	ctrl       *control.Controller
 	label      string
@@ -126,6 +137,30 @@ type TabMeta struct {
 	Ready      bool   `json:"ready"`
 	StartupErr string `json:"startupErr,omitempty"`
 	Active     bool   `json:"active"`
+}
+
+// workspace returns the currently selected project folder. Callers that resolve
+// a path for the UI (file browsing, pickers, the hardware panel) use it instead
+// of os.Getwd: the process working directory is fixed at startup and no longer
+// tracks which project the user has open.
+func (a *App) workspace() workspace.Context {
+	if a == nil {
+		return workspace.Context{}
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ws
+}
+
+// workspaceRoot is workspace().Root() with a process-cwd fallback, for the call
+// sites that need a concrete directory (a subprocess argument, a browse base).
+// The fallback only fires in tests that construct a bare &App{}.
+func (a *App) workspaceRoot() string {
+	if root := a.workspace().Root(); root != "" {
+		return root
+	}
+	wd, _ := os.Getwd()
+	return wd
 }
 
 // NewApp constructs the bound object. The controller is built later, in startup,
@@ -181,21 +216,24 @@ func (a *App) showMainWindow(context.Context) {
 // wires up the controller and flips ready; on failure it stores the error so
 // Meta().StartupErr surfaces it.
 func (a *App) buildController() {
-	// A GUI launch starts in "/" (read-only); move into a real, writable working
-	// folder (the remembered one, else home) before anything reads/writes config,
-	// .env, memory, or skills relative to cwd.
-	ensureWorkspace()
+	// A GUI launch starts in "/" (read-only). Resolve the folder this launch
+	// opens in (the remembered one, else home) — that Context is what config,
+	// memory, skills and the tools resolve against from here on; it also chdirs
+	// there so the remaining cwd-relative corners of the app land somewhere
+	// writable. Switching projects later re-points the Context, never the process.
+	ws := resolveStartupWorkspace()
 
 	// Drive the Go-side catalogue (i18n.M) from the configured language so the
 	// backend-provided slash UI — command descriptions, sub-command hints,
 	// listing notices — comes through localized, matching the frontend.
-	if cfg, err := config.Load(); err == nil {
+	if cfg, err := config.LoadIn(ws); err == nil {
 		i18n.DetectLanguage(cfg.Language)
 	}
 
 	// 注册初始的「主标签」,沿用 NewApp 建好的 a.sink(tabID "main"),并设为活动。
 	a.mu.Lock()
-	rt := &tabRuntime{id: "main", kind: "chat", sink: a.sink}
+	a.ws = ws
+	rt := &tabRuntime{id: "main", kind: "chat", sink: a.sink, ws: ws}
 	a.tabs["main"] = rt
 	a.tabOrder = append(a.tabOrder, "main")
 	a.activeTab = "main"
@@ -235,16 +273,20 @@ func (a *App) tokenRefreshLoop() {
 // CreateTab 放到 goroutine 里调)。装配完成后:写回该 tab 的运行时;若它正是当前活动
 // tab,则同步「活动镜像」字段;最后发 agent:ready:<tabID> 通知前端该标签可用。
 func (a *App) buildTab(rt *tabRuntime) {
-	// 解析当前文件夹的默认模型为规范的 "provider/model"。
+	// 这个标签的项目文件夹 —— 不是进程 cwd。config、模型默认值、以及下面 boot.Build
+	// 装配出的工具/bash/MCP 全部按它解析,所以两个标签可以同时开在不同项目上。
+	ws := rt.ws
+
+	// 解析该文件夹的默认模型为规范的 "provider/model"。
 	model := ""
-	if cfg, err := config.Load(); err == nil {
+	if cfg, err := config.LoadIn(ws); err == nil {
 		model = cfg.DefaultModel
 		if e, ok := cfg.ResolveModel(cfg.DefaultModel); ok {
 			model = e.Name + "/" + e.Model
 		}
 	}
 
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink, PreToolUse: a.serialReleaseForToolUse})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		a.mu.Lock()
 		if rt.closed { // 标签已在 build 期间被关闭:什么都不写、不发 ready(A6)
@@ -326,7 +368,9 @@ func (a *App) CreateTab(kind string) (TabMeta, error) {
 	a.mu.Lock()
 	a.tabSeq++
 	id := fmt.Sprintf("tab%d", a.tabSeq)
-	rt := &tabRuntime{id: id, kind: kind, sink: &eventSink{ctx: a.ctx, app: a, tabID: id}}
+	// 新标签开在【当前选中的】项目上,并把这个 root 固定进标签自己的运行时:
+	// 之后用户换项目只影响新标签和活动标签,这个标签继续读写它开的那个目录。
+	rt := &tabRuntime{id: id, kind: kind, ws: a.ws, sink: &eventSink{ctx: a.ctx, app: a, tabID: id}}
 	a.tabs[id] = rt
 	a.tabOrder = append(a.tabOrder, id)
 	// 新建即设为活动(用户刚开它就是要用),活动镜像先指向未就绪的新 tab。
@@ -500,8 +544,8 @@ func (a *App) SubmitDisplay(display, input string) {
 	_ = recordSessionDisplay(dir, sessionPath, input, display)
 	// 记录该 session 创建时所在的 workspace,用于侧栏按文件夹分组。
 	// 只在首次有效消息时落,后续 workspace 切换不影响归属。
-	if cwd, err := os.Getwd(); err == nil {
-		_ = rememberSessionCwd(dir, sessionPath, cwd)
+	if root := a.workspaceRoot(); root != "" {
+		_ = rememberSessionCwd(dir, sessionPath, root)
 	}
 	ctrl.Submit(input)
 }
@@ -874,10 +918,9 @@ func (a *App) PickWorkspace() (string, error) {
 	if a.ctx == nil {
 		return "", nil
 	}
-	cur, _ := os.Getwd()
 	dir, err := a.sh().OpenDirectoryDialog(DialogOptions{
 		Title:            "Choose working folder",
-		DefaultDirectory: cur,
+		DefaultDirectory: a.workspaceRoot(),
 	})
 	if err != nil || dir == "" {
 		return "", err // cancelled or error → no change
@@ -886,7 +929,7 @@ func (a *App) PickWorkspace() (string, error) {
 }
 
 func (a *App) ListWorkspaces() []WorkspaceMeta {
-	cur, _ := os.Getwd()
+	cur := a.workspaceRoot()
 	seen := map[string]bool{}
 	paths := make([]string, 0, 8)
 	add := func(path string) {
@@ -947,42 +990,43 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s is not a directory", dir)
 	}
-	cur, _ := os.Getwd()
-	if dir == cur {
+	ws, err := workspace.New(dir)
+	if err != nil {
+		return "", err
+	}
+	// 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,
+	// 锁外裸读是数据竞争(M3)。
+	a.mu.RLock()
+	cur := a.ws
+	sink := a.sink
+	activeCtrl := a.ctrl // 活动标签 controller,用于运行态守卫(D3)
+	a.mu.RUnlock()
+	if ws.Root() == cur.Root() {
 		saveWorkspace(dir)
 		return dir, nil
 	}
-	// v1 限制防护:进程 cwd 是全局的,切换工作区只重建「活动」标签的 controller,
-	// 后台标签会继续按旧目录的相对路径读写(静默错位,极难排查)。开着多个任务
-	// 标签时直接拒绝并说明,让用户先收尾其他标签——诚实报错优于数据错位。
-	a.mu.RLock()
-	tabCount := len(a.tabs)
-	sink := a.sink       // 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,锁外裸读是数据竞争(M3)
-	activeCtrl := a.ctrl // 活动标签 controller,用于运行态守卫(D3)
-	a.mu.RUnlock()
-	if tabCount > 1 {
-		return "", fmt.Errorf("当前开着 %d 个任务标签;切换项目文件夹前请先关闭其他任务标签(工作目录是全局的,后台任务会读写到错误的目录)", tabCount)
-	}
-	// 后端运行态守卫:活动标签有回合在跑时,os.Chdir 会让在途 bash(cmd.Dir 为空 → 用进程
-	// cwd)在被取消前落到【新】项目目录执行,可能对错误项目做删除/部署。前端 disabled={running}
-	// 只覆盖 UI 入口,这里补后端防线(与 SetEffort 同款)。
+	// 运行态守卫:活动标签有回合在跑时,重建它的 controller 会把在途工具调用连同
+	// 会话状态一起丢掉。工作目录本身已经不再是进程级的(每个标签持有自己的
+	// workspace.Context),所以这里只是拦「别在跑的时候换掉脚下的 session」。
+	// 前端 disabled={running} 只覆盖 UI 入口,这里补后端防线(与 SetEffort 同款)。
 	if activeCtrl != nil && activeCtrl.Running() {
 		return "", fmt.Errorf("有任务正在运行,请先停止再切换项目文件夹")
 	}
-	if err := os.Chdir(dir); err != nil {
-		return "", err
-	}
+	// 只重建【活动】标签。后台标签各自持有自己的 workspace.Context,继续读写它们
+	// 打开的那个项目 —— 这正是过去必须靠 os.Chdir 才做不到、因而只能拒绝多标签
+	// 切换的地方。
+	//
 	// Resolve the new folder's default model from its own config.
 	model := ""
-	if cfg, cerr := config.Load(); cerr == nil {
+	if cfg, cerr := config.LoadIn(ws); cerr == nil {
 		model = cfg.DefaultModel
 		if e, ok := cfg.ResolveModel(cfg.DefaultModel); ok {
 			model = e.Name + "/" + e.Model
 		}
 	}
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, PreToolUse: a.serialReleaseForToolUse})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
-		_ = os.Chdir(cur) // roll back; the current session stays intact
+		// 装配失败:什么都没提交,当前会话原样保留(不再需要回滚进程 cwd)。
 		return "", err
 	}
 	saveWorkspace(dir) // remember it so the next launch reopens here
@@ -993,12 +1037,14 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 		_ = a.ctrl.Snapshot()
 		a.ctrl.Close()
 	}
+	a.ws = ws
 	a.ctrl = ctrl
 	a.model = model
 	a.label = ctrl.Label()
 	a.startupErr = ""
 	// 同步活动 tab 的运行时(SwitchWorkspace 只重建当前活动 tab 的 controller)。
 	if rt := a.tabs[a.activeTab]; rt != nil {
+		rt.ws = ws
 		rt.ctrl = ctrl
 		rt.model = model
 		rt.label = ctrl.Label()
@@ -1157,7 +1203,7 @@ func (a *App) Meta() Meta {
 	if gatewayActive() {
 		label = "OneCreat 智能档位"
 	}
-	cwd, _ := os.Getwd()
+	cwd := a.workspaceRoot()
 	return Meta{
 		Label:        label,
 		Ready:        ready,
@@ -1428,19 +1474,21 @@ func (a *App) Capabilities() CapabilitiesView {
 			Scope: string(s.Scope), RunAs: string(s.RunAs),
 		})
 	}
-	out.SkillRoots = skillRootsView()
+	out.SkillRoots = skillRootsView(a.workspace())
 	return out
 }
 
-func skillRootsView() []SkillRootView {
-	cwd, _ := os.Getwd()
-	cfg, _ := config.Load()
+// skillRootsView lists the skill roots for one project. ws is the workspace whose
+// project-level skills are counted, so the panel shows the open project's skills
+// rather than whatever directory the process happens to stand in.
+func skillRootsView(ws workspace.Context) []SkillRootView {
+	cfg, _ := config.LoadIn(ws)
 	userCfg := config.LoadForEdit(config.UserConfigPath())
 	var custom []string
 	if cfg != nil {
 		custom = cfg.SkillCustomPaths()
 	}
-	st := skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: custom, DisableBuiltins: true, Stderr: io.Discard})
+	st := skill.New(skill.Options{ProjectRoot: ws.Root(), CustomPaths: custom, DisableBuiltins: true, Stderr: io.Discard})
 	counts := map[string]int{}
 	for _, sk := range st.List() {
 		counts[config.CanonicalSkillPath(filepath.Dir(skillRootPath(sk.Path)))]++
@@ -1497,10 +1545,9 @@ func (a *App) PickSkillFolder() (string, error) {
 	if a.ctx == nil {
 		return "", nil
 	}
-	cur, _ := os.Getwd()
 	dir, err := a.sh().OpenDirectoryDialog(DialogOptions{
 		Title:            "Choose skills folder",
-		DefaultDirectory: cur,
+		DefaultDirectory: a.workspaceRoot(),
 	})
 	if err != nil || dir == "" {
 		return "", err
@@ -1772,8 +1819,7 @@ func (a *App) HardwareDetect() HardwareDetectView {
 		view.Error = err.Error()
 		return view
 	}
-	cwd, _ := os.Getwd()
-	text, err := callHardwareMCPTool(command, "hardware_detect", map[string]any{"project_dir": cwd}, 20*time.Second)
+	text, err := callHardwareMCPTool(command, "hardware_detect", map[string]any{"project_dir": a.workspaceRoot()}, 20*time.Second)
 	if err != nil {
 		view.Error = err.Error()
 		return view
@@ -1901,8 +1947,7 @@ func (a *App) HardwareEvidenceStatus() HardwareEvidenceStatusView {
 		view.Error = err.Error()
 		return view
 	}
-	cwd, _ := os.Getwd()
-	text, err := callHardwareMCPTool(command, "hardware_evidence_status", map[string]any{"project_dir": cwd}, 20*time.Second)
+	text, err := callHardwareMCPTool(command, "hardware_evidence_status", map[string]any{"project_dir": a.workspaceRoot()}, 20*time.Second)
 	if err != nil {
 		view.Error = err.Error()
 		return view
@@ -1935,7 +1980,7 @@ type evidenceRecordMirror struct {
 // 编译/烧录/串口/部署证据」，而不是凭记忆编数字（这条是项目红线）。
 // 返回空字符串表示还没有任何验证记录。
 func (a *App) HardwareEvidenceExport(projectDir string) (string, error) {
-	dir := resolveHardwareProjectDir(projectDir)
+	dir := a.resolveHardwareProjectDir(projectDir)
 	path := filepath.Join(dir, "tests", "hardware_evidence.jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -2308,7 +2353,7 @@ func (a *App) HardwareValidate(input HardwareRunInput) HardwareRunResult {
 		return HardwareRunResult{Status: "failed", Error: err.Error()}
 	}
 	args := map[string]any{
-		"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
+		"project_dir":     a.resolveHardwareProjectDir(input.ProjectDir),
 		"timeout_seconds": 180,
 	}
 	if input.Platform != "" {
@@ -2367,7 +2412,7 @@ func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
 	}
 	// 烧录前先关掉串口监视器:它占着串口,不关上传会被它卡住(串口同一时刻只能一个进程用)。
 	a.SerialClose()
-	projectDir := resolveHardwareProjectDir(input.ProjectDir)
+	projectDir := a.resolveHardwareProjectDir(input.ProjectDir)
 	switch input.Platform {
 	case "arduino":
 		if input.Port == "" {
@@ -2438,7 +2483,7 @@ func (a *App) HardwareOTAUpload(input HardwareRunInput) HardwareRunResult {
 	if strings.TrimSpace(input.Address) == "" {
 		return HardwareRunResult{Status: "skipped", Summary: "缺少板子地址", NextStep: "填入板子的 WiFi 地址(IP 或 esp32-onecreat.local)后再点 WiFi 烧录。"}
 	}
-	projectDir := resolveHardwareProjectDir(input.ProjectDir)
+	projectDir := a.resolveHardwareProjectDir(input.ProjectDir)
 	fqbn := resolveFlashFQBN(projectDir, input.Board) // manifest.board 优先,与「编译」一致
 	if fqbn == "" {
 		fqbn = "esp32:esp32:esp32" // OTA 以 ESP32 为主,板卡缺省时兜底
@@ -2486,7 +2531,7 @@ func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunRes
 	if sshHost == "" || remoteDir == "" || baseURL == "" {
 		return HardwareRunResult{Status: "skipped", Summary: "未配置固件服务器", NextStep: "在「发布固件」里填好 服务器URL / SSH目标 / 远程目录(填你自己的 NAS 或 VPS)后再发布。"}
 	}
-	projectDir := resolveHardwareProjectDir(input.ProjectDir)
+	projectDir := a.resolveHardwareProjectDir(input.ProjectDir)
 	fqbn := resolveFlashFQBN(projectDir, input.Board) // manifest.board 优先,与「编译」一致
 	if fqbn == "" {
 		fqbn = "esp32:esp32:esp32"
@@ -2569,7 +2614,7 @@ func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
 		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
 	case "esp_idf":
 		args := map[string]any{
-			"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
+			"project_dir":     a.resolveHardwareProjectDir(input.ProjectDir),
 			"action":          "monitor",
 			"timeout_seconds": seconds + 5,
 		}
@@ -2599,12 +2644,13 @@ func (a *App) requireHardwareMCP() (string, error) {
 	return command, nil
 }
 
-func resolveHardwareProjectDir(dir string) string {
+// resolveHardwareProjectDir defaults an unset hardware project directory to the
+// open project's root.
+func (a *App) resolveHardwareProjectDir(dir string) string {
 	if d := strings.TrimSpace(dir); d != "" {
 		return d
 	}
-	cwd, _ := os.Getwd()
-	return cwd
+	return a.workspaceRoot()
 }
 
 // validationResult mirrors cmd/reasonix-hardware-mcp's structure for unmarshalling.
@@ -3084,8 +3130,14 @@ func (a *App) SetModel(name string) error {
 	ctrl := a.ctrl
 	targetTab := a.activeTab
 	targetSink := a.sink
-	if rt := a.tabs[targetTab]; rt != nil && rt.sink != nil {
-		targetSink = rt.sink
+	// 重建必须沿用【该标签自己的】workspace:换模型不该把标签的项目根偷偷挪回
+	// 进程 cwd(那正是 Plan 01 要根除的隐式状态)。
+	targetWS := a.ws
+	if rt := a.tabs[targetTab]; rt != nil {
+		if rt.sink != nil {
+			targetSink = rt.sink
+		}
+		targetWS = rt.ws
 	}
 	a.mu.RUnlock()
 	if name == curModel {
@@ -3099,7 +3151,7 @@ func (a *App) SetModel(name string) error {
 		ctrl.Close()
 	}
 
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		return err
 	}
@@ -3158,6 +3210,7 @@ func (a *App) rebuildTabByID(tabID string) {
 	}
 	ctrl := rt.ctrl
 	model := rt.model
+	targetWS := rt.ws // 重建沿用该标签自己的项目根,不回落到进程 cwd
 	targetSink := rt.sink
 	if targetSink == nil {
 		targetSink = a.sink
@@ -3176,7 +3229,7 @@ func (a *App) rebuildTabByID(tabID string) {
 		carried = ctrl.History()
 		ctrl.Close()
 	}
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
 	}
@@ -3401,10 +3454,12 @@ func trimUTF8PartialSuffix(data []byte) []byte {
 	return data
 }
 
-func workspacePath(rel string) (string, bool, error) {
-	base, err := os.Getwd()
-	if err != nil {
-		return "", false, err
+// workspacePath resolves a frontend-supplied path against the open project and
+// refuses anything that escapes it. base is that project's root — the confinement
+// boundary moves with the selected workspace, not with the process.
+func workspacePath(base, rel string) (string, bool, error) {
+	if base == "" {
+		return "", false, os.ErrInvalid
 	}
 	if rel == "" {
 		return "", false, os.ErrInvalid
@@ -3425,9 +3480,9 @@ func workspacePath(rel string) (string, bool, error) {
 }
 
 // ListDir lists one directory level (directories first, then files, each
-// alphabetical) for the "@" file-reference menu. rel resolves against the process
-// cwd; "" lists the cwd. The menu navigates one level at a time, never
-// recursively — bounded for huge trees.
+// alphabetical) for the "@" file-reference menu. rel resolves against the open
+// project's root; "" lists that root. The menu navigates one level at a time,
+// never recursively — bounded for huge trees.
 // FolderListing 是内置文件夹选择器的一页:某个绝对路径下的子文件夹列表 + 导航锚点。
 type FolderListing struct {
 	Path    string   `json:"path"`    // 当前绝对路径
@@ -3481,8 +3536,8 @@ func (a *App) BrowseDir(path string) FolderListing {
 }
 
 func (a *App) ListDir(rel string) []DirEntry {
-	base, err := os.Getwd()
-	if err != nil {
+	base := a.workspaceRoot()
+	if base == "" {
 		return nil
 	}
 	dir := base
@@ -3521,7 +3576,7 @@ func (a *App) ListDir(rel string) []DirEntry {
 // ReadFile returns a small text preview for a file under the current workspace.
 func (a *App) ReadFile(rel string) FilePreview {
 	out := FilePreview{Path: rel}
-	path, ok, err := workspacePath(rel)
+	path, ok, err := workspacePath(a.workspaceRoot(), rel)
 	if err != nil || !ok {
 		out.Err = "invalid path"
 		return out
@@ -3598,7 +3653,7 @@ func (a *App) ReadFile(rel string) FilePreview {
 
 // OpenWorkspacePath opens a file or folder from the workspace in the OS default app.
 func (a *App) OpenWorkspacePath(rel string) error {
-	path, ok, err := workspacePath(rel)
+	path, ok, err := workspacePath(a.workspaceRoot(), rel)
 	if err != nil || !ok {
 		return os.ErrInvalid
 	}
@@ -3621,7 +3676,7 @@ func (a *App) OpenFolder(path string) error {
 
 // RevealWorkspacePath shows a workspace file in the native file manager.
 func (a *App) RevealWorkspacePath(rel string) error {
-	path, ok, err := workspacePath(rel)
+	path, ok, err := workspacePath(a.workspaceRoot(), rel)
 	if err != nil || !ok {
 		return os.ErrInvalid
 	}

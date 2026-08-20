@@ -71,7 +71,7 @@ func run(host string, port int, workspace string, noOpen bool) error {
 		if err := os.Chdir(abs); err != nil {
 			return fmt.Errorf("切到 --workspace 失败: %w", err)
 		}
-		saveWorkspace(abs) // 让 ensureWorkspace 在 startup 里沿用它
+		saveWorkspace(abs) // 让 resolveStartupWorkspace 在 startup 里沿用它
 	}
 
 	sub, err := fs.Sub(assets, "frontend/dist")

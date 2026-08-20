@@ -82,16 +82,18 @@ type Controller struct {
 	pluginCtx context.Context
 
 	// Checkpoints (snapshot-based rewind). cp is the per-session store rebound when
-	// the session path changes; cpRoot is the workspace root used to guard restore
-	// writes. cpTurn is the monotonic turn counter (decoupled from the store so it
-	// never collides after a restructure); cpBound[turn] records len(Session.Messages)
-	// at that turn's start — the truncation boundary for a conversation rewind/fork.
+	// the session path changes; wsRoot is this session's workspace root — it guards
+	// checkpoint restore writes, and is the project directory workspace-scoped
+	// subprocesses (CodeGraph) are pinned to. cpTurn is the monotonic turn counter
+	// (decoupled from the store so it never collides after a restructure);
+	// cpBound[turn] records len(Session.Messages) at that turn's start — the
+	// truncation boundary for a conversation rewind/fork.
 	// Boundaries are persisted in each checkpoint and rebuilt from the store on
 	// resume (so a reopened session can still rewind conversation / fork), but
 	// dropped after a summarize restructures the log so those operations report
 	// "unavailable" rather than mis-truncating; code rewind (file-based) is unaffected.
 	cp      *checkpoint.Store
-	cpRoot  string
+	wsRoot  string
 	cpTurn  int
 	cpBound map[int]int
 
@@ -186,8 +188,11 @@ type Options struct {
 	// context; both are needed for hot-adding MCP servers via AddMCPServer.
 	Registry  *tool.Registry
 	PluginCtx context.Context
-	// WorkspaceRoot is the project root checkpoint restores are confined to ("" =
-	// no confinement). Frontends pass the cwd they launched the session in.
+	// WorkspaceRoot is this session's project root: checkpoint restores are
+	// confined to it ("" = no confinement) and workspace-scoped subprocesses are
+	// pinned to it. boot.Build fills it from its workspace.Context, so a frontend
+	// holding several projects at once gets one root per session rather than the
+	// shared process working directory.
 	WorkspaceRoot string
 	AutoPlan      string
 	Classifier    autoPlanClassifier
@@ -230,7 +235,7 @@ func New(opts Options) *Controller {
 		jobs:             opts.Jobs,
 		reg:              opts.Registry,
 		pluginCtx:        pluginCtx,
-		cpRoot:           opts.WorkspaceRoot,
+		wsRoot:           opts.WorkspaceRoot,
 		approvals:        map[string]chan approvalReply{},
 		asks:             map[string]chan []event.AskAnswer{},
 		pendingApprovals: map[string]event.Approval{},
@@ -283,7 +288,7 @@ func ckptDir(sessionPath string) string {
 func (c *Controller) rebindCheckpoints(sessionPath string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cp = checkpoint.New(ckptDir(sessionPath), c.cpRoot)
+	c.cp = checkpoint.New(ckptDir(sessionPath), c.wsRoot)
 	c.cpTurn = c.cp.NextTurn() // continue numbering past any checkpoints on disk
 	c.cpBound = c.cp.Bounds()  // rebuilt from persisted checkpoints so a resumed
 	if c.cpBound == nil {      // session can still rewind conversation / fork
@@ -1459,14 +1464,21 @@ func (c *Controller) connectCodegraphMCPServer(cfg *config.Config) (int, error) 
 	if !ok {
 		return 0, fmt.Errorf("codegraph is not installed")
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return 0, err
+	// Pin the daemon to this session's workspace, not the process working
+	// directory: with several projects open at once they are not the same, and
+	// indexing the wrong tree is silent and expensive.
+	root := c.wsRoot
+	if root == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return 0, err
+		}
+		root = wd
 	}
-	if err := codegraph.EnsureInit(c.pluginCtx, bin, cwd); err != nil {
+	if err := codegraph.EnsureInit(c.pluginCtx, bin, root); err != nil {
 		return 0, fmt.Errorf("codegraph init: %w", err)
 	}
-	return c.connectMCPSpec(plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: cwd})
+	return c.connectMCPSpec(plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: root})
 }
 
 // RemoveMCPServer disconnects a live MCP server — its tools vanish from the next

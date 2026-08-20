@@ -37,6 +37,7 @@ import (
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
+	"reasonix/internal/workspace"
 )
 
 // ErrUnknownModel is returned by Build when the configured model can't be
@@ -100,6 +101,17 @@ type Options struct {
 	// before an MCP flash/monitor tool runs, so the tool doesn't hit a busy port.
 	// It must NOT block or veto the call — vetoing is the hook system's job.
 	PreToolUse func(ctx context.Context, name string, args json.RawMessage)
+	// Workspace is the project directory this runtime works in. Everything
+	// workspace-scoped — project config, .mcp.json, memory, skills, the file
+	// tools' relative-path root, bash's working directory, CodeGraph and plugin
+	// subprocess directories — resolves against it.
+	//
+	// The zero Context means "the process working directory", which is what
+	// Build assumed unconditionally before workspaces became explicit; the CLI
+	// leaves it zero. A frontend that can hold several projects at once (the
+	// desktop, one per tab) must set it, otherwise two runtimes silently share
+	// one root.
+	Workspace workspace.Context
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -111,7 +123,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	cfg, err := config.Load()
+	ws := opts.Workspace
+	cfg, err := config.LoadIn(ws)
 	if err != nil {
 		return nil, err
 	}
@@ -182,15 +195,18 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// durable, cache-stable prefix every turn reuses, so memory costs nothing per
 	// turn. Mid-session changes never touch this prefix — they ride the
 	// controller's transient turn-injection and fold in on the next session.
-	mem := memory.Load(memory.Options{CWD: ".", UserDir: config.MemoryUserDir()})
+	mem := memory.Load(memory.Options{CWD: ws.Resolve("."), UserDir: config.MemoryUserDir()})
 	sysPrompt = memory.Compose(sysPrompt, mem)
 
 	// Skills: discover playbooks (built-in + project/custom/global) and fold their
 	// one-liner index into the same cache-stable prefix — names + descriptions
 	// only; bodies load on demand via run_skill or "/<name>". Bodies never enter
 	// the prefix, so the index costs a fixed, small amount per turn.
-	cwd, _ := os.Getwd()
-	skillStore := skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: cfg.SkillCustomPaths(), Stderr: opts.Stderr})
+	// The workspace root is this runtime's project root. Only when no workspace
+	// was supplied does it fall back to the process working directory.
+	procCwd, _ := os.Getwd()
+	root := ws.RootOr(procCwd)
+	skillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), Stderr: opts.Stderr})
 	skills := skillStore.List()
 	sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 	sysPrompt += "\n\n" + config.ModelPrivacyPolicy
@@ -204,7 +220,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		fmt.Fprintln(stderr, "warning: bash not found on PATH; the shell tool will run commands under Windows PowerShell. Install Git for Windows or WSL to use bash.")
 	}
 	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, stderr)
-	addBuiltins(reg, cfg.Tools.Enabled, cfg.WriteRoots(), bashSpec, searchSpec, stderr)
+	addBuiltins(reg, ws, cfg.Tools.Enabled, cfg.WriteRoots(), bashSpec, searchSpec, stderr)
 	// Always construct a host, even with no plugins configured, so the controller's
 	// host pointer is stable for the session and `/mcp add` can hot-add into it.
 	pluginHost := plugin.NewHost()
@@ -251,11 +267,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
 		switch {
 		case ok:
-			if err := codegraph.EnsureInit(ctx, bin, cwd); err != nil {
+			if err := codegraph.EnsureInit(ctx, bin, root); err != nil {
 				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 					Text: "codegraph: init failed (" + err.Error() + ") — symbol-graph tools disabled this session"})
 			}
-			eagerSpecs = append(eagerSpecs, plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: cwd})
+			eagerSpecs = append(eagerSpecs, plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: root})
 		case cfg.Codegraph.AutoInstall:
 			notify := func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg}) }
 			notify("codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session")
@@ -332,7 +348,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// 一并停掉,保证退出即净(Wails 与 Web 两种壳都受益)。见 codegraph.StopDaemon。
 	if cfg.Codegraph.Enabled {
 		prev := cleanup
-		daemonRoot := cwd
+		daemonRoot := root
 		cleanup = func() { prev(); codegraph.StopDaemon(daemonRoot) }
 	}
 
@@ -341,7 +357,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// returns an install hint). The manager is session-scoped; chain its shutdown
 	// into the controller's cleanup so servers stop with the session, not the turn.
 	if cfg.LSP.Enabled {
-		lspMgr := lsp.NewManager(cwd, LSPSpecs(cfg.LSP))
+		lspMgr := lsp.NewManager(root, LSPSpecs(cfg.LSP))
 		for _, t := range lsp.Tools(lspMgr) {
 			reg.Add(t)
 		}
@@ -379,13 +395,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// silently execute them). Non-blocking hook output is surfaced to the user as
 	// a Notice through the shared sink. The runner fires PreToolUse/PostToolUse in
 	// the agent loop and UserPromptSubmit/Stop at the controller's turn boundary.
-	hooksTrusted := hook.IsTrusted(cwd, "")
+	hooksTrusted := hook.IsTrusted(root, "")
 	hookRunner := hook.NewRunner(
-		hook.Load(hook.LoadOptions{ProjectRoot: cwd, Trusted: hooksTrusted}),
-		cwd, nil,
+		hook.Load(hook.LoadOptions{ProjectRoot: root, Trusted: hooksTrusted}),
+		root, nil,
 		func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg}) },
 	)
-	if hook.ProjectDefinesHooks(cwd) && !hooksTrusted {
+	if hook.ProjectDefinesHooks(root) && !hooksTrusted {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: "this project defines hooks but they are not trusted — run /hooks trust to enable them"})
 	}
@@ -560,7 +576,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Jobs:          jm,
 		Registry:      reg,
 		PluginCtx:     ctx,
-		WorkspaceRoot: cwd,
+		WorkspaceRoot: root,
 		AutoPlan:      cfg.Agent.AutoPlan,
 	}
 	if classifier != nil {
@@ -674,10 +690,15 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 }
 
 // addBuiltins adds enabled built-in tools to reg. An empty list means all of
-// them. writeRoots confines the file-writing built-ins to the workspace: after
-// the (unconfined) defaults are added, each enabled writer is replaced by an
-// instance bound to writeRoots (preserving registry order).
-func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, searchSpec builtin.SearchSpec, stderr io.Writer) {
+// them. writeRoots confines the file-writing built-ins to the workspace, and ws
+// binds every workspace-relative built-in to this runtime's project root: after
+// the (unconfined, process-cwd) defaults are added, each enabled one is replaced
+// by an instance bound to the workspace (preserving registry order).
+//
+// A zero ws leaves the replacements' work dir empty, i.e. process-cwd relative —
+// identical to the registered defaults — so a process-scoped frontend is
+// unaffected.
+func addBuiltins(reg *tool.Registry, ws workspace.Context, enabled, writeRoots []string, bashSpec sandbox.Spec, searchSpec builtin.SearchSpec, stderr io.Writer) {
 	if len(enabled) == 0 {
 		for _, t := range tool.Builtins() {
 			reg.Add(t)
@@ -691,10 +712,11 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 			}
 		}
 	}
-	// Replace the unconfined defaults with confined instances (registry order is
-	// preserved on replace): file-writers bound to the workspace, bash to the OS
-	// sandbox. Only replace tools actually enabled/present.
-	confined := append(builtin.ConfineWriters(writeRoots), builtin.ConfineBash(bashSpec), builtin.ConfineSearch(searchSpec))
+	// Replace the unconfined defaults with workspace-bound instances (registry
+	// order is preserved on replace): relative paths resolve against the
+	// workspace root, file-writers are confined to writeRoots, bash runs in the
+	// workspace under the OS sandbox. Only replace tools actually enabled/present.
+	confined := builtin.ConfineWorkspace(ws.Root(), writeRoots, bashSpec, searchSpec)
 	for _, t := range confined {
 		if _, ok := reg.Get(t.Name()); ok {
 			reg.Add(t)

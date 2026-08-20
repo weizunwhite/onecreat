@@ -15,6 +15,7 @@ import (
 
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
+	"reasonix/internal/workspace"
 )
 
 // Config is Reasonix's runtime configuration.
@@ -38,7 +39,18 @@ type Config struct {
 	// dsh 引擎目前处于 spike 阶段,详见 docs/dsh调研/。
 	Engine string    `toml:"engine"`
 	DSH    DSHConfig `toml:"dsh"`
+
+	// workspace is the project directory this config was loaded from. It is
+	// unexported (and therefore invisible to the TOML codec, which decodes onto
+	// an existing *Config) because it is loader-supplied identity, not a
+	// configurable field. WriteRoots resolves its default root against it, so a
+	// config loaded for workspace B never confines writes to workspace A.
+	workspace workspace.Context
 }
+
+// Workspace reports the project directory this config was loaded from. The zero
+// Context means "process working directory" (see LoadIn).
+func (c *Config) Workspace() workspace.Context { return c.workspace }
 
 // DSHConfig 配置 dsh(DeepSeek Harness)sidecar 引擎。仅当 engine="dsh" 时生效。
 // 秘密(网关 token / API key)仍从环境变量取,绝不写这里——只放"环境变量名"。
@@ -227,6 +239,13 @@ type SandboxConfig struct {
 // paths. The result is always non-empty, so confinement is on by default.
 func (c *Config) WriteRoots() []string {
 	root := ExpandVars(c.Sandbox.WorkspaceRoot)
+	if root == "" {
+		// Default to this config's workspace root. Only when there is no
+		// explicit workspace (the CLI, or a Config built by Default()) does it
+		// fall back to the process working directory, which is what this did
+		// unconditionally before workspaces became explicit.
+		root = c.workspace.Root()
+	}
 	if root == "" {
 		if wd, err := os.Getwd(); err == nil {
 			root = wd
@@ -526,11 +545,23 @@ func Default() *Config {
 	}
 }
 
-// Load builds the configuration: defaults, then user config, then project
-// config, then any MCP servers from Claude Code's .mcp.json. A .env in the
-// working directory is loaded first so api_key_env can resolve.
+// Load builds the configuration for the process working directory. It is
+// LoadIn with the zero workspace — see LoadIn for what "project config" means.
 func Load() (*Config, error) {
-	loadDotEnv()
+	return LoadIn(workspace.Context{})
+}
+
+// LoadIn builds the configuration: defaults, then user config, then the
+// workspace's project config, then any MCP servers from Claude Code's
+// .mcp.json. The workspace's .env is loaded first so api_key_env can resolve.
+//
+// ws names the project directory the four project-scoped files
+// (reasonix.toml, onecreat.toml, .mcp.json, .env) are read from. The zero
+// Context resolves them relative to the process working directory, which is
+// exactly what Load did before workspaces became explicit — so the CLI, which
+// genuinely is process-cwd scoped, needs no root and behaves identically.
+func LoadIn(ws workspace.Context) (*Config, error) {
+	loadDotEnvIn(ws)
 	cfg := Default()
 
 	var tomlSources []string
@@ -539,7 +570,7 @@ func Load() (*Config, error) {
 	}
 	// 项目级配置:旧名 reasonix.toml 先合并、新名 onecreat.toml 后合并(同名键 onecreat 胜)。
 	// mergeFile 对不存在的文件是 no-op,所以两者都列无副作用。
-	tomlSources = append(tomlSources, "reasonix.toml", "onecreat.toml")
+	tomlSources = append(tomlSources, ws.Resolve("reasonix.toml"), ws.Resolve("onecreat.toml"))
 	for _, path := range tomlSources {
 		if err := mergeFile(cfg, path); err != nil {
 			return nil, err
@@ -557,12 +588,13 @@ func Load() (*Config, error) {
 	// Claude Code's .mcp.json (project root) is read last and merged into
 	// [[plugins]], so a server configured for Claude works here unchanged.
 	// reasonix.toml wins on a name collision (see mergeMCPJSON).
-	entries, err := loadMCPJSON(mcpJSONFile)
+	entries, err := loadMCPJSON(ws.Resolve(mcpJSONFile))
 	if err != nil {
 		return nil, err
 	}
 	cfg.mergeMCPJSON(entries)
 	normalizeLegacyEffort(cfg)
+	cfg.workspace = ws
 	return cfg, nil
 }
 

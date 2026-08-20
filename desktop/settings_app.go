@@ -196,8 +196,13 @@ func (a *App) rebuild() error {
 	model := a.model
 	targetTab := a.activeTab
 	targetSink := a.sink
-	if rt := a.tabs[targetTab]; rt != nil && rt.sink != nil {
-		targetSink = rt.sink
+	// 重建沿用该标签自己的 workspace:改设置不该把标签的项目根挪回进程 cwd。
+	targetWS := a.ws
+	if rt := a.tabs[targetTab]; rt != nil {
+		if rt.sink != nil {
+			targetSink = rt.sink
+		}
+		targetWS = rt.ws
 	}
 	a.mu.RUnlock()
 
@@ -207,7 +212,7 @@ func (a *App) rebuild() error {
 		carried = old.History()
 		old.Close()
 	}
-	if cfg, err := config.Load(); err == nil {
+	if cfg, err := config.LoadIn(targetWS); err == nil {
 		if _, ok := cfg.ResolveModel(model); !ok {
 			model = cfg.DefaultModel
 			if e, ok := cfg.ResolveModel(model); ok {
@@ -218,7 +223,7 @@ func (a *App) rebuild() error {
 	// PreToolUse 与其它四个 boot.Build 调用点(app.go buildTab/SwitchWorkspace/SetModel/
 	// rebuildTabByID)保持一致:重建后仍带串口自动释放回调,否则改任意设置后 AI 烧录不再让出
 	// 常驻串口监视器,撞 busy(e78fe02c 在此路径的回归)。
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
 		a.mu.Lock()
 		if rt := a.tabs[targetTab]; rt != nil {
