@@ -59,11 +59,11 @@ func TestRenderPlatformAPIFactsFromJSON(t *testing.T) {
 // 证据导出：读 tests/hardware_evidence.jsonl，汇总成可粘进竞赛材料的 Markdown。
 // 空目录返回空串(不报错)；有记录时关键字段(阶段中文名/状态/命令/输出)都要出现。
 func TestHardwareEvidenceExport(t *testing.T) {
-	app := &App{}
+	app := &hardwareService{}
 
 	// 没有证据文件 → 空串、无错
 	empty := t.TempDir()
-	if md, err := app.HardwareEvidenceExport(empty); err != nil || md != "" {
+	if md, err := app.EvidenceExport(empty); err != nil || md != "" {
 		t.Fatalf("无证据文件应返回空串无错，得到 md=%q err=%v", md, err)
 	}
 
@@ -78,7 +78,7 @@ func TestHardwareEvidenceExport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "tests", "hardware_evidence.jsonl"), []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	md, err := app.HardwareEvidenceExport(dir)
+	md, err := app.EvidenceExport(dir)
 	if err != nil {
 		t.Fatalf("export error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestEvidenceOutputWithBackticksUsesLongerFence(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "tests", "hardware_evidence.jsonl"), []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	md, err := (&App{}).HardwareEvidenceExport(dir)
+	md, err := (&hardwareService{}).EvidenceExport(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestHardwareBoardFactsESP32EndToEnd(t *testing.T) {
 	}
 	t.Setenv("REASONIX_HARDWARE_MCP", bin)
 
-	v := NewApp().HardwareBoardFacts("esp32_arduino", "auto")
+	v := (&hardwareService{}).BoardFacts("esp32_arduino", "auto")
 	if !v.Found {
 		t.Fatal("expected facts for esp32_arduino, got Found=false")
 	}

@@ -40,37 +40,37 @@ func TestResolveHardwareMCPRejectsBadEnv(t *testing.T) {
 }
 
 // D1 回归:三个工具链安装入口(Toolchain/ArduinoCLI/Core)共享同一把互斥锁。占住
-// hwInstalling 槽后,三者都必须返回"已有工具链安装正在进行"忙碌话术,而不是并发去写同一个
-// arduino-cli。去掉 Toolchain/ArduinoCLI 的 beginHardwareOp 守卫,本测试应挂。
+// installing 槽后,三者都必须返回"已有工具链安装正在进行"忙碌话术,而不是并发去写同一个
+// arduino-cli。去掉 Toolchain/ArduinoCLI 的 begin 守卫,本测试应挂。
 func TestHardwareInstallEntriesMutualExclusion(t *testing.T) {
-	a := &App{}
-	if !a.beginHardwareOp(&a.hwInstalling) {
-		t.Fatal("首次占用 hwInstalling 槽应成功")
+	a := &hardwareService{}
+	if !a.begin(&a.installing) {
+		t.Fatal("首次占用 installing 槽应成功")
 	}
-	defer a.endHardwareOp(&a.hwInstalling)
+	defer a.end(&a.installing)
 
 	const busy = "已有工具链安装正在进行,请等它完成再试。"
-	if got := a.HardwareInstallArduinoCLI(); got.Action != "failed" || got.Message != busy {
+	if got := a.InstallArduinoCLI(); got.Action != "failed" || got.Message != busy {
 		t.Fatalf("HardwareInstallArduinoCLI 忙碌时 = %+v, want failed/%q", got, busy)
 	}
-	if got := a.HardwareInstallCore("arduino:avr"); got.Action != "failed" || got.Message != busy {
+	if got := a.InstallCore("arduino:avr"); got.Action != "failed" || got.Message != busy {
 		t.Fatalf("HardwareInstallCore 忙碌时 = %+v, want failed/%q", got, busy)
 	}
-	if got := a.HardwareInstallToolchain(nil); got.Error != busy {
+	if got := a.InstallToolchain(nil); got.Error != busy {
 		t.Fatalf("HardwareInstallToolchain 忙碌时 Error = %q, want %q", got.Error, busy)
 	}
 }
 
-// D2 回归:HardwarePublishFirmware 与烧录共用 hwFlashing 互斥槽。占住槽后发布必须返回忙碌,
-// 不并发去交错写远端固件。去掉发布入口的 beginHardwareOp 守卫,本测试应挂。
+// D2 回归:PublishFirmware 与烧录共用 flashing 互斥槽。占住槽后发布必须返回忙碌,
+// 不并发去交错写远端固件。去掉发布入口的 begin 守卫,本测试应挂。
 func TestHardwarePublishFirmwareMutualExclusion(t *testing.T) {
-	a := &App{}
-	if !a.beginHardwareOp(&a.hwFlashing) {
-		t.Fatal("首次占用 hwFlashing 槽应成功")
+	a := &hardwareService{}
+	if !a.begin(&a.flashing) {
+		t.Fatal("首次占用 flashing 槽应成功")
 	}
-	defer a.endHardwareOp(&a.hwFlashing)
+	defer a.end(&a.flashing)
 
-	got := a.HardwarePublishFirmware(HardwarePublishInput{})
+	got := a.PublishFirmware(HardwarePublishInput{})
 	if got.Status != "skipped" || got.Summary != "有硬件操作进行中" {
 		t.Fatalf("发布忙碌时 = %+v, want skipped/有硬件操作进行中", got)
 	}

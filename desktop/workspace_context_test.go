@@ -138,18 +138,19 @@ func TestListDirFollowsTheSelectedProject(t *testing.T) {
 }
 
 // TestResolveHardwareProjectDirDefaultsToSelectedWorkspace keeps the hardware
-// panel pointed at the open project.
+// panel pointed at the open project — the service resolves against the App's
+// selected workspace, not the process cwd.
 func TestResolveHardwareProjectDirDefaultsToSelectedWorkspace(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
 	t.Chdir(b)
 	app := newTestApp(t, a)
 
-	if got := app.resolveHardwareProjectDir(""); !samePath(got, a) {
-		t.Errorf("resolveHardwareProjectDir(\"\") = %q, want the selected workspace %q", got, a)
+	if got := app.hw.resolveProjectDir(""); !samePath(got, a) {
+		t.Errorf("resolveProjectDir(\"\") = %q, want the selected workspace %q", got, a)
 	}
 	// An explicit directory still wins.
-	if got := app.resolveHardwareProjectDir(b); !samePath(got, b) {
-		t.Errorf("resolveHardwareProjectDir(b) = %q, want %q", got, b)
+	if got := app.hw.resolveProjectDir(b); !samePath(got, b) {
+		t.Errorf("resolveProjectDir(b) = %q, want %q", got, b)
 	}
 }
 
