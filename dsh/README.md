@@ -13,10 +13,17 @@ newline-delimited JSON-RPC over stdio 驱动它(见 `internal/engine/dsh`)。
 
 ## 版本锁定策略
 
-所有 `@deepseek-ai/dsh-*` 依赖锁到 **`0.1.0-rc.7`**(与 `docs/dsh调研/` 的调研版本一致),
-`pnpm-lock.yaml` 入仓。**升级 dsh 版本是一件独立的任务**:改版本 → 跑 `pnpm typecheck`
-→ 跑 `go test ./internal/engine/dsh/...` → 用 `reasonix run --engine dsh` 过一遍
+所有 `@deepseek-ai/dsh-*` 依赖锁到 **`0.1.0-rc.8`**,`pnpm-lock.yaml` 入仓。
+**升级 dsh 版本是一件独立的任务**:改版本 → 跑 `pnpm typecheck` →
+跑 `go test ./internal/engine/dsh/...` → 用 `reasonix run --engine dsh` 过一遍
 1A/1B 验收,全绿才提交。
+
+### 升级记录
+
+| 日期 | 版本 | 要点 |
+|---|---|---|
+| 2026-08-19 | `0.1.0-rc.7` | 迁移基线(`docs/dsh调研/` 的调研版本) |
+| 2026-08-20 | `0.1.0-rc.8` | 主要动机是 `llm-deepseek` 的 CoT 每轮回传(生成质量修复)。协议/agent/tools/审批/system-prompt 全部零源码改动;控制面照 rc.8 官方 sdk/server 补了 `initialize` 前的 loader await。完整差异复核见 [`docs/dsh调研/06_rc8升级笔记.md`](../docs/dsh调研/06_rc8升级笔记.md) |
 
 > `@deepseek-ai/cordis` 是底座框架,自己的版本线(`4.0.1`),不跟 dsh 的 rc 号。
 

@@ -1,7 +1,7 @@
 // Package dsh 是 OneCreat 的 dsh(DeepSeek Harness)sidecar 引擎的驱动层(spike)。
 //
 // 它把一个 dsh 运行时当子进程拉起,用 newline-delimited JSON-RPC 2.0 over stdio
-// 驱动(对齐 dsh 的 @deepseek-ai/dsh-sdk-jsonrpc-server 协议,dsh 版本 0.1.0-rc.7)。
+// 驱动(对齐 dsh 的 @deepseek-ai/dsh-sdk-jsonrpc-server 协议,dsh 版本 0.1.0-rc.8)。
 // dsh 把每一条 durable 会话事实以 session.event 通知全量推回来,本包把它们映射成
 // internal/event.Event 喂给现有前端 sink。
 //

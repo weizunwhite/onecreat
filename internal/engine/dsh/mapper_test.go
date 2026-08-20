@@ -42,7 +42,7 @@ func TestMapToolCallAndResult(t *testing.T) {
 		t.Fatalf("tool/call 映射错误: %+v", call)
 	}
 	// tool/result 的真实形状:message.content = [ToolResultBlock],块里带 toolCallId
-	// 与嵌套的 content 文本块(对齐 dsh 0.1.0-rc.7 的 llm 类型)。
+	// 与嵌套的 content 文本块(对齐 dsh 0.1.0-rc.8 的 llm 类型)。
 	res := Map(raw(t, EvToolResult, map[string]any{
 		"message": map[string]any{"content": []map[string]any{{
 			"type":       "tool-result",
