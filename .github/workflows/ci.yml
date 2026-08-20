@@ -4,7 +4,12 @@ on:
   push:
     branches: [main-v2]
   pull_request:
-    branches: [main-v2]
+    # main-v2 plus the architecture-refactor branches. The refactor roadmap
+    # (docs/架构重构执行总计划.md) lands one Plan per PR, and a Plan whose
+    # predecessor has not merged yet stacks on that predecessor's branch — so its
+    # base is a refactor/* branch, not main-v2. Without this pattern those PRs get
+    # no matrix at all and each Plan's cross-platform acceptance would be unverifiable.
+    branches: [main-v2, "refactor/**"]
 
 permissions:
   contents: read
