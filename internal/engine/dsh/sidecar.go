@@ -31,6 +31,10 @@ type Options struct {
 	GatewayToken string
 	// SecretsToScrub 是要兜底擦除的真实 provider/model/URL 串(从运行时注入)。
 	SecretsToScrub []string
+	// OnTurnEnd 在 dsh 推来 turn/end 时调用(可空)。这是这个协议里唯一的「一轮
+	// 跑完了」信号 —— Adapter 用它兑现 engine.TurnHandle.Wait。它只是通知,不改变
+	// 事件映射:turn/end 仍然照常经 Map 走向 sink,该由谁吞掉由 sink 那侧决定。
+	OnTurnEnd func()
 }
 
 // Engine 驱动一个 dsh sidecar 子进程。它实现"拉起→握手→驱动→关闭"的生命周期,
@@ -172,6 +176,16 @@ func (e *Engine) Running() bool {
 	return e.running
 }
 
+// Died 在 sidecar 的读循环终止(EOF 或读错误)时收到原因。子进程半路死掉时,
+// dsh 再也不会推 turn/end —— 没有这个信号,等一轮结束就会永远挂住。未启动时返回
+// nil channel(select 上永远不就绪),调用方无需特判。
+func (e *Engine) Died() <-chan error {
+	if e.rpc == nil {
+		return nil
+	}
+	return e.rpc.Wait()
+}
+
 // Cancel 取消当前工作。dsh SDK JSON-RPC 无 mid-turn 取消方法(见 01 笔记),故取消
 // 语义降级为"关闭子进程"。这是 spike 的已知取舍,Phase 1 收尾需评估改走 ACP 或等
 // 上游补 cancel。
@@ -219,6 +233,11 @@ func (e *Engine) onNotify(method string, params json.RawMessage) {
 		}
 		for _, ev := range Map(n.Event) {
 			e.emit(ev)
+		}
+		// 先把事件发完再通知「这轮结束了」:Wait 返回后 Controller 会立刻收尾
+		// (Stop hook、落盘),此时这一轮的事件必须已经全部出去了。
+		if n.Event.Type == EvTurnEnd && e.opts.OnTurnEnd != nil {
+			e.opts.OnTurnEnd()
 		}
 	case NotifySessionStatus:
 		var n SessionStatusNotification

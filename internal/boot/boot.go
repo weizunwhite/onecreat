@@ -630,8 +630,23 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		classifier = control.NewProviderAutoPlanClassifier(classifierProv)
 	}
 
+	// 回合引擎:内置 Go 内核,或 dsh sidecar(见 engine.go)。sidecar 的关闭挂在
+	// 会话作用域上,与 MCP host 同级 —— 它也是随会话生灭的子进程。
+	turnEngine, err := selectEngine(ctx, engineSpec{
+		Cfg:     cfg,
+		Root:    root,
+		Sink:    sink,
+		Gateway: gw,
+		Runner:  runner,
+		Secrets: []string{entry.Model, entry.BaseURL},
+		Scope:   sess,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	ctrlOpts := control.Options{
-		Runner:        runner,
+		Engine:        turnEngine,
 		Executor:      executor,
 		Sink:          sink,
 		Policy:        policy,

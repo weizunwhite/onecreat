@@ -52,7 +52,7 @@ func TestControllerHoldsNoDomainLock(t *testing.T) {
 	_, file := controllerFile(t)
 	allowed := map[string]bool{
 		// transport / identity / immutable-after-construction
-		"runner": true, "executor": true, "sink": true, "label": true,
+		"engine": true, "executor": true, "sink": true, "label": true,
 		"systemPrompt": true, "commands": true, "skills": true, "hooks": true,
 		"cleanup": true, "autoPlan": true, "classifier": true, "startedOnce": true,
 		"balanceURL": true, "balanceKey": true, "balanceClient": true,

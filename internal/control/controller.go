@@ -24,6 +24,8 @@ import (
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
+	"reasonix/internal/engine"
+	"reasonix/internal/engine/native"
 	"reasonix/internal/event"
 	"reasonix/internal/hook"
 	"reasonix/internal/jobs"
@@ -40,7 +42,10 @@ import (
 // Controller drives one chat session. Construct with New; drive with the command
 // methods; observe through the Sink passed in Options.
 type Controller struct {
-	runner   agent.Runner
+	// engine 是「谁来跑这一轮」的唯一答案(A14 / Plan 12)。Controller 之上的
+	// 一切 —— 记忆、证据、权限、计费、检查点 —— 对内置 Go 内核和 dsh sidecar
+	// 一视同仁;它们的差别只在这一个字段后面。
+	engine   engine.TurnEngine
 	executor *agent.Agent
 	sink     event.Sink
 
@@ -115,6 +120,12 @@ type Controller struct {
 // lets the controller mint and rotate session files; Host/Commands are surfaced
 // to frontends that resolve MCP prompts and slash commands.
 type Options struct {
+	// Engine 是这个会话的回合引擎。留空则用 Runner 包一个内置引擎。
+	//
+	// 两个字段不是两个真源:New 在构造时就把它们收敛成唯一的 Controller.engine,
+	// Engine 优先。Runner 是「用内置 Go 内核」的简写,绝大多数调用方(和全部
+	// 既有测试)只需要它。
+	Engine       engine.TurnEngine
 	Runner       agent.Runner
 	Executor     *agent.Agent
 	Sink         event.Sink
@@ -169,7 +180,7 @@ func New(opts Options) *Controller {
 		pluginCtx = context.Background()
 	}
 	c := &Controller{
-		runner:        opts.Runner,
+		engine:        resolveEngine(opts),
 		executor:      opts.Executor,
 		sink:          sink,
 		approvals:     newApprovalBroker(sink, opts.Policy, opts.Hooks),
@@ -266,7 +277,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 		}
 		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), turn) }()
 	}
-	if err := c.runner.Run(ctx, input); err != nil {
+	if err := c.runEngineTurn(ctx, input); err != nil {
 		return err
 	}
 	if !c.turn.PlanMode() {
@@ -291,7 +302,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	// work. Auto-approve writers for the duration of this execution turn only.
 	c.approvals.SetAutoApprove(true)
 	defer c.approvals.SetAutoApprove(false)
-	return c.runner.Run(ctx, planApprovedMessage)
+	return c.runEngineTurn(ctx, planApprovedMessage)
 }
 
 // lastAssistantText returns the content of the most recent assistant message with
@@ -319,7 +330,32 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 		}
 		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), turn) }()
 	}
-	return c.runner.Run(ctx, input)
+	return c.runEngineTurn(ctx, input)
+}
+
+// resolveEngine 把 Options 里那两种写法收敛成唯一的引擎。
+func resolveEngine(opts Options) engine.TurnEngine {
+	if opts.Engine != nil {
+		return opts.Engine
+	}
+	if opts.Runner != nil {
+		return native.New(opts.Runner)
+	}
+	return nil
+}
+
+// runEngineTurn 把一轮交给引擎并等它跑完。这是 Controller 与「谁来跑」之间的
+// **唯一**接触点 —— 上面那些策略代码永远不该知道底下是 native 还是 dsh。
+func (c *Controller) runEngineTurn(ctx context.Context, input string) error {
+	h, err := c.engine.Start(ctx, engine.TurnRequest{Input: input})
+	if err != nil {
+		return err
+	}
+	// 正常跑完时 Cancel 是空操作;只有 ctx 被取消时它才真正生效。取消的触发源
+	// 仍然只有 ctx 一个,Cancel 只是把它传达给那些不会随 ctx 一起死的引擎
+	// (dsh sidecar 是独立进程,ctx 取消它一无所知)。
+	defer func() { _ = h.Cancel() }()
+	return h.Wait(ctx)
 }
 
 // EnableInteractiveApproval swaps the executor's gate for one that routes "ask"
