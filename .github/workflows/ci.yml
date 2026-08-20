@@ -10,6 +10,12 @@ on:
     # base is a refactor/* branch, not main-v2. Without this pattern those PRs get
     # no matrix at all and each Plan's cross-platform acceptance would be unverifiable.
     branches: [main-v2, "refactor/**"]
+  # 手动重跑入口。2026-08-20 的 runner 分配故障(见 docs/架构重构执行总计划.md
+  # §19.5)暴露了一个真实缺口:整个 matrix 因基础设施原因全红时,没有 rerun 权限
+  # 的一方只能靠推提交来换一次新 run —— 而「为撞 CI 推空提交」是本项目的红线。
+  # 有了 workflow_dispatch,基础设施恢复后可以直接对同一个 commit 重跑,拿到干净
+  # 的验收证据。
+  workflow_dispatch:
 
 permissions:
   contents: read
