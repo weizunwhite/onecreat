@@ -8,11 +8,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
+// jsonPathFragment 把一个相对/绝对路径转成它在 prettyJSON 输出里的样子:分隔符按平台
+// 归一,再套一层 JSON 字符串转义(Windows 的 `\` 变成 `\\`)。只适用于直接出现在
+// JSON 值里的路径;嵌套在 snippet 文本里的路径会被再转义一次,别用这个去匹配。
 func jsonPathFragment(path string) string {
 	b, _ := json.Marshal(filepath.FromSlash(path))
 	return strings.Trim(string(b), `"`)
@@ -1139,13 +1143,27 @@ func TestESPIDFMCPConfigUsesWorkspaceEnvForEIM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runESPIDFMCPConfig() error = %v", err)
 	}
+	// snippets 里的两段配置本身就是 JSON / TOML 文本,又被 prettyJSON 二次转义,
+	// Windows 路径的反斜杠在 out 里因此是四重的。先解一层再断言,断言就不必去猜
+	// 转义层数(此前直接在 out 上做子串匹配,Windows CI 必红)。
+	var status struct {
+		Snippets map[string]string `json:"snippets"`
+	}
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatalf("config output 不是合法 JSON: %v\n%s", err, out)
+	}
+	snippet, ok := status.Snippets[".mcp.json"]
+	if !ok {
+		t.Fatalf("config output 缺少 .mcp.json snippet:\n%s", out)
+	}
 	for _, want := range []string{
-		jsonPathFragment(fakeEIM),
+		// espIDFMCPHint 用 %q 写入命令路径,所以这里比对的是 Go 引号形式。
+		strconv.Quote(fakeEIM),
 		`IDF_MCP_WORKSPACE_FOLDER`,
 		`idf.py mcp-server`,
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("config output missing %q:\n%s", want, out)
+		if !strings.Contains(snippet, want) {
+			t.Fatalf(".mcp.json snippet missing %q:\n%s", want, snippet)
 		}
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// rpcFake 覆盖 App 上出现过的全部方法签名形态，用来单测反射分发/参数解码/返回值折叠，
+// rpcFake 覆盖 App 上出现过的全部方法签名形态,用来单测反射分发/参数解码/返回值折叠,
 // 不必构造真 controller。
 type rpcFake struct{}
 
@@ -93,21 +93,25 @@ func TestRPCDecodesPositionalArgs(t *testing.T) {
 func TestRPCReturnSignatures(t *testing.T) {
 	s := newFakeRPCServer()
 
+	// 无返回值 → result null
 	w := postRPC(t, s, "Void", `[]`)
 	if w.Code != 200 || decodeResult(t, w) != nil {
 		t.Fatalf("Void: 状态 %d body %s", w.Code, w.Body)
 	}
 
+	// error(nil) → result null
 	w = postRPC(t, s, "Ok", `[]`)
 	if w.Code != 200 || decodeResult(t, w) != nil {
 		t.Fatalf("Ok: 状态 %d body %s", w.Code, w.Body)
 	}
 
+	// error(非 nil) → 500 + error
 	w = postRPC(t, s, "Fail", `[]`)
 	if w.Code != 500 || decodeErr(t, w) != "炸了" {
 		t.Fatalf("Fail: 状态 %d body %s", w.Code, w.Body)
 	}
 
+	// (T, error) 成功
 	w = postRPC(t, s, "Struct", `[7]`)
 	if w.Code != 200 {
 		t.Fatalf("Struct: 状态 %d body %s", w.Code, w.Body)
@@ -117,6 +121,7 @@ func TestRPCReturnSignatures(t *testing.T) {
 		t.Fatalf("Struct: 拿到 %s", w.Body)
 	}
 
+	// (T, error) 失败
 	w = postRPC(t, s, "StructErr", `[]`)
 	if w.Code != 500 || decodeErr(t, w) != "坏了" {
 		t.Fatalf("StructErr: 状态 %d body %s", w.Code, w.Body)
@@ -136,6 +141,7 @@ func TestRPCUnknownMethod404(t *testing.T) {
 	if w := postRPC(t, s, "NoSuchThing", `[]`); w.Code != 404 {
 		t.Fatalf("未知方法应 404,拿到 %d", w.Code)
 	}
+	// 非导出方法不进方法表
 	if w := postRPC(t, s, "unexported", `[]`); w.Code != 404 {
 		t.Fatalf("非导出方法应 404,拿到 %d", w.Code)
 	}
@@ -188,9 +194,12 @@ func TestRPCPanicBecomes500(t *testing.T) {
 	}
 }
 
-// TestAppMethodsAreRPCCompatible validates the explicit browser API rather than
-// every exported App method. An exported helper can now exist without becoming an
-// HTTP endpoint; every allowlisted method must exist and use a supported signature.
+// TestAppMethodsAreRPCCompatible 守住「零手写路由」这个前提:allowlist 里的每个方法
+// 都必须真实存在于 *App,且签名是反射分发能处理的(不能是可变参数 / 三个及以上返回值 /
+// 第二返回值不是 error)。
+//
+// 与收口前的区别:检查对象是显式的浏览器 API,不再是「全部导出方法」—— 现在可以有
+// 只给桌面用的导出辅助方法而不变成 HTTP 端点。
 func TestAppMethodsAreRPCCompatible(t *testing.T) {
 	tp := reflect.TypeOf(NewApp())
 	if len(rpcPublicMethods) < 100 {
@@ -206,6 +215,7 @@ func TestAppMethodsAreRPCCompatible(t *testing.T) {
 		if ft.IsVariadic() {
 			t.Errorf("%s 是可变参数方法,RPC 分发不支持", m.Name)
 		}
+		// ft 含接收者,故返回值数量看 NumOut。
 		switch ft.NumOut() {
 		case 0, 1:
 		case 2:

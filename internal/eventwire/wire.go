@@ -8,7 +8,11 @@ package eventwire
 
 import "reasonix/internal/event"
 
-// Event is the stable JSON shape for an event.Event.
+// Event is the stable JSON shape an event.Event takes on the way to a rich
+// frontend — the Wails webview and the SSE stream consume the identical typed
+// stream, so the React client and a browser SSE client share contract types.
+// The Kind enum becomes a stable string and the TurnDone error becomes a
+// message, since neither serializes cleanly.
 type Event struct {
 	Kind       string      `json:"kind"`
 	Text       string      `json:"text,omitempty"`
@@ -22,7 +26,9 @@ type Event struct {
 	Err        string      `json:"err,omitempty"`
 }
 
-// Compaction is the wire form of event.Compaction.
+// Compaction is the JSON form of an event.Compaction. On a compaction_started
+// event only Trigger is set; compaction_done carries the rest (an aborted pass
+// leaves Summary empty so the frontend drops its placeholder).
 type Compaction struct {
 	Trigger  string `json:"trigger,omitempty"`
 	Messages int    `json:"messages,omitempty"`
@@ -72,7 +78,8 @@ type Usage struct {
 	CacheHitTokens   int `json:"cacheHitTokens"`
 	CacheMissTokens  int `json:"cacheMissTokens"`
 	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
-
+	// Session-cumulative cache tokens — the status line shows the aggregate
+	// hit-rate Σhit/Σ(hit+miss), steadier than the single-turn CacheHitTokens.
 	SessionCacheHitTokens  int     `json:"sessionCacheHitTokens"`
 	SessionCacheMissTokens int     `json:"sessionCacheMissTokens"`
 	CostUSD                float64 `json:"costUsd,omitempty"`
@@ -85,7 +92,10 @@ type Approval struct {
 	Subject string `json:"subject"`
 }
 
-// KindNames is the single domain-kind -> stable-wire-name mapping.
+// KindNames is the single domain-kind -> stable-wire-name mapping for every
+// rich frontend. An unmapped Kind encodes as kind:"" and is silently dropped by
+// the frontend reducer / SSE client, so a new event.Kind must be added here —
+// TestKindNamesCoversEveryDeclaredKind fails until it is.
 var KindNames = map[event.Kind]string{
 	event.TurnStarted:       "turn_started",
 	event.Reasoning:         "reasoning",
@@ -102,7 +112,7 @@ var KindNames = map[event.Kind]string{
 	event.CompactionStarted: "compaction_started",
 	event.CompactionDone:    "compaction_done",
 	event.ToolProgress:      "tool_progress",
-	event.MCPSurfaceReady:   "mcp_surface_ready",
+	event.MCPSurfaceReady:   "mcp_surface_ready", // 漏了它 → MCP phase B 完成时前端收到 kind:"" 被丢弃(E8)
 }
 
 // EncodeAsk converts an event.Ask into its transport form.
