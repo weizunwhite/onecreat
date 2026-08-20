@@ -1,29 +1,23 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
-	fileenc "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
-	"reasonix/internal/memory"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
 	"reasonix/internal/workspace"
@@ -71,8 +65,11 @@ type App struct {
 	// hw 是硬件面板的后端(检测 / 装工具链 / 编译 / 烧录 / 证据链),mcp 是 MCP
 	// 抽屉的后端。两者各自持有自己的状态与锁 —— 过去它们的互斥槽和视图缓存都挤在
 	// App 的字段里,和「当前项目文件夹」共用同一把 a.mu。
-	hw  *hardwareService
-	mcp *mcpService
+	hw       *hardwareService
+	mcp      *mcpService
+	files    *fileService
+	memory   *memoryService
+	sessions *sessionService
 
 	// mu 只保护下面这个 App 自身的字段(当前选中的项目文件夹)。
 	// 标签运行时由 tabs 自己的锁保护 —— 两把锁互不嵌套。
@@ -87,13 +84,6 @@ type App struct {
 	// 标签在 tabRuntime.ws 里持有自己【实际】的 root,切换项目只改这里和活动标签,
 	// 后台标签继续读写它们自己的目录。由 a.mu 保护。
 	ws workspace.Context
-
-	// Per-turn autosave runs off the event goroutine so disk I/O never delays
-	// event delivery; overlapping requests coalesce into one trailing write.
-	// 按 tab 单飞:后台 tab 完成一轮也各存各的 session,不串到活动 tab。
-	saveMu    sync.Mutex
-	saving    map[string]bool
-	saveAgain map[string]bool
 }
 
 // TabMeta 是给前端的标签快照。
@@ -134,10 +124,8 @@ func (a *App) workspaceRoot() string {
 // once the Wails context exists.
 func NewApp() *App {
 	a := &App{
-		tabs:      newTabManager(),
-		factory:   boot.NewFactory(context.Background()),
-		saving:    map[string]bool{},
-		saveAgain: map[string]bool{},
+		tabs:    newTabManager(),
+		factory: boot.NewFactory(context.Background()),
 	}
 	// 按构建标签选宿主实现:!web → wailsShell,web → webShell。
 	a.shell = newShell(a)
@@ -145,6 +133,9 @@ func NewApp() *App {
 	// 因为它在这一行之前才装上,且裸 &App{} 靠 a.sh() 兜底成 noopShell。
 	a.serial = newSerialService(a.sh)
 	a.mcp = newMCPService(a.activeCtrl)
+	a.files = newFileService(a.workspaceRoot)
+	a.memory = newMemoryService(a.activeCtrl)
+	a.sessions = newSessionService(a.tabs)
 	a.hw = newHardwareService(a.workspaceRoot, a.activeCtrl, a.serial)
 	// 主标签在这里就注册进 tabs 并设为活动:标签运行时只有这一份,不再有「App 上的
 	// 活动镜像」。它的 controller 由 buildController 异步装配,期间 Ready=false。
@@ -656,147 +647,10 @@ func (a *App) SummarizeUpTo(turn int) error {
 	return ctrl.SummarizeUpTo(a.ctx, turn)
 }
 
-// SessionMeta summarises one saved session for the history panel.
-type SessionMeta struct {
-	Path           string `json:"path"`
-	Preview        string `json:"preview"`         // first user message
-	Title          string `json:"title,omitempty"` // user-chosen name, when set (overrides preview)
-	Turns          int    `json:"turns"`
-	CreatedAt      int64  `json:"createdAt"`      // unix milliseconds
-	LastActivityAt int64  `json:"lastActivityAt"` // unix milliseconds
-	ModTime        int64  `json:"modTime"`        // compatibility alias for lastActivityAt
-	Current        bool   `json:"current"`
-	Cwd            string `json:"cwd,omitempty"`  // workspace path at session creation, for sidebar grouping
-	Kind           string `json:"kind,omitempty"` // 会话类型(如 "hardware");空=普通对话。历史侧栏据此区分垂直
-}
-
 type WorkspaceMeta struct {
 	Path    string `json:"path"`
 	Name    string `json:"name"`
 	Current bool   `json:"current"`
-}
-
-// ListSessions returns the saved sessions newest-first for the history panel,
-// marking the one the current conversation is writing to and attaching any
-// user-chosen titles.
-func (a *App) ListSessions() []SessionMeta {
-	dir := config.SessionDir()
-	infos, err := agent.ListSessions(dir)
-	if err != nil {
-		return []SessionMeta{}
-	}
-	titles := loadSessionTitles(dir)
-	cwds := loadSessionCwds(dir)
-	kinds := loadSessionKinds(dir)
-	ctrl := a.activeCtrl()
-	cur := ""
-	if ctrl != nil {
-		cur = ctrl.SessionPath()
-	}
-	out := make([]SessionMeta, 0, len(infos))
-	for _, s := range infos {
-		out = append(out, SessionMeta{
-			Path:           s.Path,
-			Preview:        s.Preview,
-			Title:          titles[filepath.Base(s.Path)],
-			Turns:          s.Turns,
-			CreatedAt:      s.CreatedAt.UnixMilli(),
-			LastActivityAt: s.LastActivityAt.UnixMilli(),
-			ModTime:        s.LastActivityAt.UnixMilli(),
-			Current:        s.Path == cur,
-			Cwd:            cwds[filepath.Base(s.Path)],
-			Kind:           kinds[filepath.Base(s.Path)],
-		})
-	}
-	return out
-}
-
-// MarkSessionKind 给当前活动会话打类型标(写入一次即定),供历史侧栏区分垂直。前端在真正
-// 进入某垂直定制流程时调用(如硬件面板跑编译/烧录/生成代码)——硬件视图是切 mainView、
-// 不换 tab,所以只能由前端显式标记,后端无法从 tab 类型推断(Phase 1 收尾)。
-func (a *App) MarkSessionKind(kind string) {
-	ctrl := a.activeCtrl()
-	if ctrl == nil {
-		return
-	}
-	_ = rememberSessionKind(config.SessionDir(), ctrl.SessionPath(), kind)
-}
-
-// sessionPathsInUse 返回所有标签 controller 当前正在写的 session 路径 → 标签 id 映射;
-// exclude 跳过指定标签(空串=不跳过)。先在锁内取出 controller 列表再调 SessionPath(),
-// 避免持 a.mu 时回调进 controller 锁。用于跨标签防双写同一 session 文件(A4)。
-func (a *App) sessionPathsInUse(exclude string) map[string]string {
-	type pair struct {
-		id   string
-		ctrl *control.Controller
-	}
-	tabs := a.tabs.List()
-	pairs := make([]pair, 0, len(tabs))
-	for _, t := range tabs {
-		if t.ID == exclude {
-			continue
-		}
-		if ctrl := a.tabs.Ctrl(t.ID); ctrl != nil {
-			pairs = append(pairs, pair{t.ID, ctrl})
-		}
-	}
-	out := map[string]string{}
-	for _, p := range pairs {
-		if sp := p.ctrl.SessionPath(); sp != "" {
-			out[sp] = p.id
-		}
-	}
-	return out
-}
-
-// DeleteSession removes a saved session (and its title). It refuses any session a
-// tab is currently writing to — the active one (auto-save would recreate it) and
-// any background tab's session too, so a background task can't be deleted mid-run (A4).
-func (a *App) DeleteSession(path string) error {
-	active := a.tabs.ActiveID()
-	if tab := a.sessionPathsInUse("")[path]; tab != "" {
-		if tab == active {
-			return errActiveSession
-		}
-		return fmt.Errorf("该会话正在另一个任务标签中使用,无法删除;请先在那个标签里新建会话")
-	}
-	return deleteSessionFile(config.SessionDir(), path)
-}
-
-// RenameSession sets a custom display name for a session (empty clears it back to
-// the preview). It only affects the history panel; the file on disk is unchanged.
-func (a *App) RenameSession(path, title string) error {
-	return setSessionTitle(config.SessionDir(), path, title)
-}
-
-// ResumeSession snapshots the current conversation, then loads the session at
-// path and continues it — auto-save keeps appending to that file. The model and
-// working folder are unchanged (same controller); only the transcript is swapped.
-// Returns the resumed messages for the frontend to render.
-func (a *App) ResumeSession(path string) ([]HistoryMessage, error) {
-	v, _ := a.tabs.View("")
-	ctrl, active := v.ctrl, v.id
-	if ctrl == nil {
-		return []HistoryMessage{}, nil
-	}
-	// 目标 session 若正被「其它标签」写入,拒绝 resume——两个 controller 各自整文件快照
-	// 同一个 .jsonl 会后写覆盖先写、互丢对话轮次(A4)。
-	if tab := a.sessionPathsInUse(active)[path]; tab != "" {
-		return nil, fmt.Errorf("该会话已在另一个任务标签中打开;请切到那个标签继续,而不是在此重复打开")
-	}
-	loaded, err := agent.LoadSession(path)
-	if err != nil {
-		return nil, err
-	}
-	_ = ctrl.Snapshot() // persist the current session before switching away
-	ctrl.Resume(loaded, path)
-	return a.History(), nil
-}
-
-// PreviewSession reads a saved session for display only. It does not snapshot or
-// swap the active controller, so the history drawer can call it while a turn runs.
-func (a *App) PreviewSession(path string) ([]HistoryMessage, error) {
-	return previewSessionMessages(config.SessionDir(), path)
 }
 
 // PickWorkspace opens a folder chooser and, on a pick, switches the agent to that
@@ -941,48 +795,6 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 		ctrl.SetSessionPath(agent.NewSessionPath(d, ctrl.Label()))
 	}
 	return dir, nil
-}
-
-// HistoryMessage is one prior turn, for the frontend to repopulate its transcript
-// after a reload.
-type HistoryMessage struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning,omitempty"`
-}
-
-// History returns the session's message log.
-func (a *App) History() []HistoryMessage {
-	ctrl := a.activeCtrl()
-	if ctrl == nil {
-		return nil
-	}
-	msgs := ctrl.History()
-	return historyMessages(msgs, sessionDisplayResolver(config.SessionDir(), ctrl.SessionPath()))
-}
-
-func historyMessages(msgs []provider.Message, resolveUserContent func(string) string) []HistoryMessage {
-	out := make([]HistoryMessage, 0, len(msgs))
-	for _, m := range msgs {
-		content := m.Content
-		if m.Role == provider.RoleUser {
-			content = resolveUserContent(m.Content)
-		}
-		reasoning := ""
-		if m.Role == provider.RoleAssistant {
-			reasoning = m.ReasoningContent
-		}
-		out = append(out, HistoryMessage{Role: string(m.Role), Content: content, Reasoning: reasoning})
-	}
-	return out
-}
-
-func previewSessionMessages(sessionDir, path string) ([]HistoryMessage, error) {
-	loaded, err := agent.LoadSession(path)
-	if err != nil {
-		return nil, err
-	}
-	return historyMessages(loaded.Snapshot(), sessionDisplayResolver(sessionDir, path)), nil
 }
 
 // ContextInfo is the prompt-vs-window gauge payload. Both zero means no data yet.
@@ -1728,283 +1540,6 @@ func (a *App) SetEffort(level string) error {
 	})
 }
 
-// DirEntry is one entry in the "@" file-reference menu.
-type DirEntry struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"isDir"`
-}
-
-// FilePreview is a bounded, read-only file payload for the workspace side panel.
-type FilePreview struct {
-	Path      string `json:"path"`
-	Body      string `json:"body"`
-	Size      int64  `json:"size"`
-	Truncated bool   `json:"truncated"`
-	Binary    bool   `json:"binary"`
-	Err       string `json:"err,omitempty"`
-}
-
-// atSkip are entries the "@" menu hides as noise.
-var atSkip = map[string]bool{".git": true, "node_modules": true, ".DS_Store": true}
-
-const filePreviewLimit = 256 * 1024
-
-func trimUTF8PartialSuffix(data []byte) []byte {
-	if utf8.Valid(data) {
-		return data
-	}
-	for i := len(data) - 1; i >= 0 && len(data)-i <= utf8.UTFMax; i-- {
-		if !utf8.RuneStart(data[i]) {
-			continue
-		}
-		if !utf8.Valid(data[:i]) || utf8.FullRune(data[i:]) {
-			return data
-		}
-		return data[:i]
-	}
-	return data
-}
-
-// workspacePath resolves a frontend-supplied path against the open project and
-// refuses anything that escapes it. base is that project's root — the confinement
-// boundary moves with the selected workspace, not with the process.
-func workspacePath(base, rel string) (string, bool, error) {
-	if base == "" {
-		return "", false, os.ErrInvalid
-	}
-	if rel == "" {
-		return "", false, os.ErrInvalid
-	}
-	path := rel
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(base, rel)
-	}
-	path = filepath.Clean(path)
-	r, err := filepath.Rel(base, path)
-	if err != nil {
-		return "", false, err
-	}
-	if r == ".." || strings.HasPrefix(r, ".."+string(os.PathSeparator)) {
-		return "", false, os.ErrPermission
-	}
-	return path, true, nil
-}
-
-// ListDir lists one directory level (directories first, then files, each
-// alphabetical) for the "@" file-reference menu. rel resolves against the open
-// project's root; "" lists that root. The menu navigates one level at a time,
-// never recursively — bounded for huge trees.
-// FolderListing 是内置文件夹选择器的一页:某个绝对路径下的子文件夹列表 + 导航锚点。
-type FolderListing struct {
-	Path    string   `json:"path"`    // 当前绝对路径
-	Parent  string   `json:"parent"`  // 上级目录(已在根则等于自身)
-	Dirs    []string `json:"dirs"`    // 子文件夹名(排序后)
-	Home    string   `json:"home"`    // 用户主目录(快捷入口)
-	Desktop string   `json:"desktop"` // 桌面(快捷入口)
-	Error   string   `json:"error,omitempty"`
-}
-
-// BrowseDir 列出某个绝对路径下的子文件夹,供 app 内置文件夹选择器导航——绕开 macOS
-// 原生选择对话框在隐藏标题栏窗口下会开到窗口后面的 bug。path 为空时从主目录开始。
-func (a *App) BrowseDir(path string) FolderListing {
-	home, _ := os.UserHomeDir()
-	desktop := ""
-	if home != "" {
-		desktop = filepath.Join(home, "Desktop")
-	}
-	p := strings.TrimSpace(path)
-	if p == "" {
-		p = home
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return FolderListing{Path: home, Parent: home, Home: home, Desktop: desktop, Error: err.Error()}
-	}
-	entries, err := os.ReadDir(abs)
-	if err != nil {
-		// 打不开(权限/不存在)就退回上级,别让用户卡死
-		return FolderListing{Path: abs, Parent: filepath.Dir(abs), Home: home, Desktop: desktop, Error: "打不开这个目录:" + err.Error()}
-	}
-	dirs := []string{}
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue // 隐藏目录不显示,减少噪音
-		}
-		if e.IsDir() {
-			dirs = append(dirs, name)
-			continue
-		}
-		// 软链可能指向目录
-		if e.Type()&os.ModeSymlink != 0 {
-			if info, serr := os.Stat(filepath.Join(abs, name)); serr == nil && info.IsDir() {
-				dirs = append(dirs, name)
-			}
-		}
-	}
-	sort.Strings(dirs)
-	return FolderListing{Path: abs, Parent: filepath.Dir(abs), Dirs: dirs, Home: home, Desktop: desktop}
-}
-
-func (a *App) ListDir(rel string) []DirEntry {
-	base := a.workspaceRoot()
-	if base == "" {
-		return nil
-	}
-	dir := base
-	if rel != "" {
-		if filepath.IsAbs(rel) {
-			dir = filepath.Clean(rel)
-		} else {
-			dir = filepath.Join(base, rel)
-		}
-	}
-	es, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var dirs, files []DirEntry
-	for _, e := range es {
-		name := e.Name()
-		if atSkip[name] {
-			continue
-		}
-		if e.IsDir() {
-			dirs = append(dirs, DirEntry{Name: name, IsDir: true})
-			continue
-		}
-		info, err := e.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		files = append(files, DirEntry{Name: name, IsDir: false})
-	}
-	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name) })
-	sort.Slice(files, func(i, j int) bool { return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name) })
-	return append(dirs, files...)
-}
-
-// ReadFile returns a small text preview for a file under the current workspace.
-func (a *App) ReadFile(rel string) FilePreview {
-	out := FilePreview{Path: rel}
-	path, ok, err := workspacePath(a.workspaceRoot(), rel)
-	if err != nil || !ok {
-		out.Err = "invalid path"
-		return out
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		out.Err = err.Error()
-		return out
-	}
-	if info.IsDir() {
-		out.Err = "path is a directory"
-		return out
-	}
-	if !info.Mode().IsRegular() {
-		out.Err = "path is not a regular file"
-		return out
-	}
-	out.Size = info.Size()
-	f, err := os.Open(path)
-	if err != nil {
-		out.Err = err.Error()
-		return out
-	}
-	defer f.Close()
-
-	buf := make([]byte, filePreviewLimit+1)
-	n, err := f.Read(buf)
-	if err != nil && err != io.EOF {
-		out.Err = err.Error()
-		return out
-	}
-	data := buf[:n]
-	if len(data) > filePreviewLimit {
-		data = data[:filePreviewLimit]
-		out.Truncated = true
-	}
-
-	// Check for BOM first (just the first 2-3 bytes — always complete
-	// even at a truncation boundary). BOM-prefixed files skip the NUL
-	// check since UTF-16 normally contains 0x00 for ASCII characters.
-	bomKind := fileenc.DetectQuick(data)
-	if bomKind != fileenc.UTF8 {
-		enc, _ := fileenc.Detect(data)
-		if enc == fileenc.LossyUTF8 {
-			out.Binary = true
-			return out
-		}
-		decoded := fileenc.Decode(data, enc)
-		out.Body = string(decoded)
-		return out
-	}
-
-	// No BOM — NUL in raw bytes is a binary signal.
-	if bytes.Contains(data, []byte{0}) {
-		out.Binary = true
-		return out
-	}
-
-	// Trim any partial multi-byte rune at the truncation boundary BEFORE
-	// encoding detection. Without this, a large UTF-8 file truncated
-	// mid-character would fail utf8.Valid and be misdetected as GB18030
-	// or LossyUTF8, producing mojibake or a false binary classification.
-	if out.Truncated {
-		data = trimUTF8PartialSuffix(data)
-	}
-	enc, _ := fileenc.Detect(data)
-	if enc == fileenc.LossyUTF8 {
-		out.Binary = true
-		return out
-	}
-	out.Body = string(fileenc.Decode(data, enc))
-	return out
-}
-
-// OpenWorkspacePath opens a file or folder from the workspace in the OS default app.
-func (a *App) OpenWorkspacePath(rel string) error {
-	path, ok, err := workspacePath(a.workspaceRoot(), rel)
-	if err != nil || !ok {
-		return os.ErrInvalid
-	}
-	return openWorkspacePath(path)
-}
-
-// OpenFolder 在系统文件管理器里打开一个绝对路径的文件夹(供侧栏「在文件夹中打开」用)。
-// 与 OpenWorkspacePath 不同:不限制在当前 workspace 内,可打开任意已存在的目录。
-func (a *App) OpenFolder(path string) error {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return os.ErrInvalid
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		return os.ErrInvalid
-	}
-	return openWorkspacePath(path)
-}
-
-// RevealWorkspacePath shows a workspace file in the native file manager.
-func (a *App) RevealWorkspacePath(rel string) error {
-	path, ok, err := workspacePath(a.workspaceRoot(), rel)
-	if err != nil || !ok {
-		return os.ErrInvalid
-	}
-	switch goruntime.GOOS {
-	case "darwin":
-		return exec.Command("open", "-R", path).Start()
-	case "windows":
-		return exec.Command("explorer", "/select,", path).Start()
-	default:
-		dir := path
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			dir = filepath.Dir(path)
-		}
-		return exec.Command("xdg-open", dir).Start()
-	}
-}
-
 func (a *App) notice(text string) {
 	// 活动标签的 sink 由 tabs 在自己的锁内解析(M3:/effort 命令经 Submit→
 	// runEffortCommand 调到这里,与 tab 生命周期方法并发,裸读指针是数据竞态)。
@@ -2067,136 +1602,7 @@ func (a *App) currentProviderEntry() (*config.ProviderEntry, error) {
 	return entry, nil
 }
 
-// SavePastedImage stores a browser clipboard image data URL under
-// .reasonix/attachments and returns the relative @-reference path.
-func (a *App) SavePastedImage(dataURL string) (string, error) {
-	return control.SaveImageDataURL(dataURL)
-}
-
-// SavePastedFile stores a dropped non-image file (the browser exposes its bytes
-// as a data URL but not a real path) under .reasonix/attachments and returns the
-// relative @-reference path.
-func (a *App) SavePastedFile(name, dataURL string) (string, error) {
-	return control.SaveAttachmentDataURL(name, dataURL)
-}
-
-// AttachmentDataURL returns a safe data URL for a stored image attachment.
-func (a *App) AttachmentDataURL(path string) (string, error) {
-	return control.ImageDataURL(path)
-}
-
 // --- memory panel (frontend ⇄ controller) ---
-
-// MemoryDoc is one loaded doc-memory file for the panel: path, scope, and body.
-type MemoryDoc struct {
-	Path  string `json:"path"`
-	Scope string `json:"scope"`
-	Body  string `json:"body"`
-}
-
-// MemoryFact is one saved auto-memory, surfaced read-only in the panel.
-type MemoryFact struct {
-	Name        string `json:"name"`
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description"`
-	Type        string `json:"type"`
-	Body        string `json:"body"`
-}
-
-// MemoryScope is one writable quick-add target (scope id + the file it writes to).
-type MemoryScope struct {
-	Scope string `json:"scope"`
-	Path  string `json:"path"`
-}
-
-// MemoryView is the whole memory panel payload: hierarchical docs, saved facts,
-// and the writable scopes for the quick-add selector.
-type MemoryView struct {
-	Docs      []MemoryDoc   `json:"docs"`
-	Facts     []MemoryFact  `json:"facts"`
-	Scopes    []MemoryScope `json:"scopes"`
-	StoreDir  string        `json:"storeDir"`
-	Available bool          `json:"available"`
-}
-
-// writableScopes are the quick-add targets the panel offers, broad → specific.
-var writableScopes = []memory.Scope{memory.ScopeUser, memory.ScopeProject, memory.ScopeLocal}
-
-// Memory returns the loaded memory for the panel: the REASONIX.md hierarchy, the
-// saved auto-memories, and the writable scopes. Read-only; mutations go through
-// Remember / SaveDoc.
-func (a *App) Memory() MemoryView {
-	// Always return non-nil slices: a nil Go slice marshals to JSON `null`, which
-	// would crash the panel's `view.facts.length` / `.map`.
-	view := MemoryView{Docs: []MemoryDoc{}, Facts: []MemoryFact{}, Scopes: []MemoryScope{}}
-	ctrl := a.activeCtrl()
-	if ctrl == nil {
-		return view
-	}
-	set := ctrl.Memory()
-	if set == nil {
-		return view
-	}
-	view.StoreDir = set.Store.Dir
-	view.Available = true
-	for _, d := range set.Docs {
-		view.Docs = append(view.Docs, MemoryDoc{Path: d.Path, Scope: string(d.Scope), Body: d.Body})
-	}
-	for _, f := range set.Store.List() {
-		view.Facts = append(view.Facts, MemoryFact{
-			Name: f.Name, Title: f.Title, Description: f.Description, Type: string(f.Type), Body: f.Body,
-		})
-	}
-	for _, sc := range writableScopes {
-		if p := set.DocPath(sc); p != "" { // user scope yields "" when no config dir
-			view.Scopes = append(view.Scopes, MemoryScope{Scope: string(sc), Path: p})
-		}
-	}
-	return view
-}
-
-// Remember quick-adds a one-line note to the doc-memory file for scope — the
-// panel's explicit "remember" action, equivalent to typing "#<note>". An unknown
-// scope falls back to project. Returns the file written.
-func (a *App) Remember(scope, note string) (string, error) {
-	ctrl := a.activeCtrl()
-	if ctrl == nil {
-		return "", nil
-	}
-	return ctrl.QuickAdd(parseScope(scope), note)
-}
-
-// Forget deletes a saved auto-memory by name — the panel's delete action for a
-// fact the model owns. A no-op when no controller is attached.
-func (a *App) Forget(name string) error {
-	ctrl := a.activeCtrl()
-	if ctrl == nil {
-		return nil
-	}
-	return ctrl.ForgetMemory(name)
-}
-
-// SaveDoc overwrites a memory doc with the panel editor's contents. The controller
-// validates path against the recognized memory files. Returns the file written.
-func (a *App) SaveDoc(path, body string) (string, error) {
-	ctrl := a.activeCtrl()
-	if ctrl == nil {
-		return "", nil
-	}
-	return ctrl.SaveDoc(path, body)
-}
-
-// parseScope maps a frontend scope id to a memory.Scope, defaulting to project.
-func parseScope(s string) memory.Scope {
-	switch memory.Scope(s) {
-	case memory.ScopeUser:
-		return memory.ScopeUser
-	case memory.ScopeLocal:
-		return memory.ScopeLocal
-	default:
-		return memory.ScopeProject
-	}
-}
 
 // eventSink is the controller's event.Sink in desktop mode: it forwards every
 // agent event to the frontend as one shell event, JSON-shaped by toWire. It is a
@@ -2222,41 +1628,6 @@ func (s *eventSink) Emit(e event.Event) {
 	// in-flight prompt, not every turn back to the last workspace switch.
 	// 存的是「本 sink 所属标签」的 session,后台标签完成一轮也各存各的。
 	if e.Kind == event.TurnDone && s.app != nil {
-		s.app.scheduleSnapshot(s.tabID)
-	}
-}
-
-// scheduleSnapshot kicks a single-flight background save of one tab's session;
-// a request arriving while one runs sets a trailing pass so the final state lands.
-func (a *App) scheduleSnapshot(tabID string) {
-	a.saveMu.Lock()
-	if a.saving[tabID] {
-		a.saveAgain[tabID] = true
-		a.saveMu.Unlock()
-		return
-	}
-	a.saving[tabID] = true
-	a.saveMu.Unlock()
-	go a.snapshotLoop(tabID)
-}
-
-func (a *App) snapshotLoop(tabID string) {
-	for {
-		ctrl := a.tabs.Ctrl(tabID)
-		if ctrl != nil {
-			if err := ctrl.Snapshot(); err != nil {
-				slog.Warn("desktop: per-turn snapshot", "err", err)
-			}
-		}
-		a.saveMu.Lock()
-		if a.saveAgain[tabID] {
-			a.saveAgain[tabID] = false
-			a.saveMu.Unlock()
-			continue
-		}
-		delete(a.saving, tabID)
-		delete(a.saveAgain, tabID)
-		a.saveMu.Unlock()
-		return
+		s.app.sessions.ScheduleSnapshot(s.tabID)
 	}
 }

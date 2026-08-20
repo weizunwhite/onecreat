@@ -35,14 +35,11 @@ func controllerWithContent(t *testing.T, path string) *control.Controller {
 }
 
 // newAutosaveTestApp 按多标签结构装好一个测试 App:maps 初始化 + 注册 main 标签 +
-// sink 归属 main,这样 per-tab 自动保存(scheduleSnapshot/snapshotLoop 按 tab 查 ctrl)
+// sink 归属 main,这样 per-tab 自动保存(sessionService 按 tab 查 ctrl)
 // 能命中。替代旧的 &App{ctrl: ...} 直接构造。
 func newAutosaveTestApp(ctrl *control.Controller) *App {
-	a := &App{
-		tabs:      newTabManager(),
-		saving:    map[string]bool{},
-		saveAgain: map[string]bool{},
-	}
+	tabs := newTabManager()
+	a := &App{tabs: tabs, sessions: newSessionService(tabs)}
 	a.tabs.Register(&tabRuntime{id: "main", kind: "chat", sink: &eventSink{app: a, tabID: "main"}, ctrl: ctrl, ready: true})
 	return a
 }
@@ -92,7 +89,7 @@ func TestScheduleSnapshotCoalesces(t *testing.T) {
 	a := newAutosaveTestApp(controllerWithContent(t, path))
 
 	for i := 0; i < 64; i++ {
-		go a.scheduleSnapshot("main")
+		go a.sessions.ScheduleSnapshot("main")
 	}
 
 	waitForFile(t, path, "acknowledged")

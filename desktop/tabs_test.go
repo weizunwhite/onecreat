@@ -10,11 +10,8 @@ import (
 
 // newTabTestApp 构造一个空 App(不经 boot.Build,直接塞 stub 标签)。
 func newTabTestApp() *App {
-	return &App{
-		tabs:      newTabManager(),
-		saving:    map[string]bool{},
-		saveAgain: map[string]bool{},
-	}
+	tabs := newTabManager()
+	return &App{tabs: tabs, sessions: newSessionService(tabs)}
 }
 
 // seedTab 直接注册一个 stub 标签(注册即成为活动标签,与 CreateTab 一致)。
