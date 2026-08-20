@@ -13,7 +13,7 @@ import (
 func newTestApp(t *testing.T, root string) *App {
 	t.Helper()
 	app := NewApp()
-	app.ws = testWorkspace(t, root)
+	app.rt.SetWorkspace(testWorkspace(t, root))
 	return app
 }
 
@@ -32,9 +32,7 @@ func TestSwitchWorkspaceDoesNotChdir(t *testing.T) {
 	app := newTestApp(t, a)
 	// SwitchWorkspace rebuilds the active tab's controller, which needs a real
 	// app context; drive the part under test directly instead.
-	app.mu.Lock()
-	app.ws = testWorkspace(t, b)
-	app.mu.Unlock()
+	app.rt.SetWorkspace(testWorkspace(t, b))
 
 	after, err := os.Getwd()
 	if err != nil {
@@ -60,16 +58,12 @@ func TestTabsHoldIndependentWorkspaces(t *testing.T) {
 	app.tabs.Register(background)
 
 	// The user opens project B and creates a tab there.
-	app.mu.Lock()
-	app.ws = testWorkspace(t, b)
-	app.mu.Unlock()
+	app.rt.SetWorkspace(testWorkspace(t, b))
 	foreground := &tabRuntime{id: "fg", kind: "chat", ws: app.workspace()}
 	app.tabs.Register(foreground)
 
 	// …then selects project C.
-	app.mu.Lock()
-	app.ws = testWorkspace(t, c)
-	app.mu.Unlock()
+	app.rt.SetWorkspace(testWorkspace(t, c))
 
 	bgView, _ := app.tabs.View("bg")
 	fgView, _ := app.tabs.View("fg")

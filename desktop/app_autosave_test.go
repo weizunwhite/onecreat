@@ -39,7 +39,7 @@ func controllerWithContent(t *testing.T, path string) *control.Controller {
 // 能命中。替代旧的 &App{ctrl: ...} 直接构造。
 func newAutosaveTestApp(ctrl *control.Controller) *App {
 	tabs := newTabManager()
-	a := &App{tabs: tabs, sessions: newSessionService(tabs)}
+	a := newBareApp(nil, tabs)
 	a.tabs.Register(&tabRuntime{id: "main", kind: "chat", sink: &eventSink{app: a, tabID: "main"}, ctrl: ctrl, ready: true})
 	return a
 }

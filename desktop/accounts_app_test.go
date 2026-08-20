@@ -45,7 +45,7 @@ func TestRefreshDoesNotClobberConcurrentTierChange(t *testing.T) {
 	_ = saveSessionFileLocked(persistedSession{Account: "u", Token: "tok", SelectedTier: 1})
 	sessionFileMu.Unlock()
 
-	a := &App{} // ctx 为 nil:rebuildAllTabs 早返回,无需真 controller
+	a := newBareApp(nil, nil) // ctx 为 nil:rebuildAllTabs 早返回,无需真 controller
 
 	done := make(chan struct{})
 	go func() { a.RefreshAccountSession(); close(done) }()
@@ -88,7 +88,7 @@ func TestSetOnecreatTierRejectsWhileTabRunning(t *testing.T) {
 	}
 	defer close(runner.release)
 
-	a := &App{tabs: newTabManager()}
+	a := newBareApp(nil, nil)
 	a.tabs.Register(&tabRuntime{id: "bg", ctrl: ctrl})
 
 	if err := a.SetOnecreatTier(2); err == nil || !strings.Contains(err.Error(), "有标签正在运行") {
@@ -106,7 +106,7 @@ func TestSetOnecreatTierClampsAndPersists(t *testing.T) {
 	sessionFileMu.Lock()
 	_ = saveSessionFileLocked(persistedSession{Token: "tok", SelectedTier: 1})
 	sessionFileMu.Unlock()
-	a := &App{}
+	a := newBareApp(nil, nil)
 
 	a.SetOnecreatTier(2)
 	if got := a.AccountSessionInfo().SelectedTier; got != 2 {
@@ -139,7 +139,7 @@ func TestLocalAccountModeIgnoresPersistedPlatformSession(t *testing.T) {
 	if os.Getenv(gatewayEnvURL) != "" || os.Getenv(gatewayEnvToken) != "" || os.Getenv(gatewayEnvTier) != "" {
 		t.Fatalf("默认本地 API 模式应清空网关 env,url=%q token=%q tier=%q", os.Getenv(gatewayEnvURL), os.Getenv(gatewayEnvToken), os.Getenv(gatewayEnvTier))
 	}
-	s := (&App{}).AccountSessionInfo()
+	s := (newBareApp(nil, nil)).AccountSessionInfo()
 	if s.LoggedIn {
 		t.Fatalf("默认本地 API 模式不应显示已登录平台账号:%+v", s)
 	}
@@ -162,7 +162,7 @@ func TestDefaultAccountModeFallback(t *testing.T) {
 	if platformAccountEnabled() {
 		t.Fatal("env 空 + 未注入 defaultAccountMode 应为本地模式")
 	}
-	if got := (&App{}).AccountSessionInfo(); got.PlatformMode || got.Account != "本地模式" {
+	if got := (newBareApp(nil, nil)).AccountSessionInfo(); got.PlatformMode || got.Account != "本地模式" {
 		t.Fatalf("本地模式应 PlatformMode=false & Account=本地模式,得到 %+v", got)
 	}
 
@@ -172,7 +172,7 @@ func TestDefaultAccountModeFallback(t *testing.T) {
 	if !platformAccountEnabled() {
 		t.Fatal("注入 defaultAccountMode=platform 应启用平台模式")
 	}
-	if got := (&App{}).AccountSessionInfo(); !got.PlatformMode || got.LoggedIn {
+	if got := (newBareApp(nil, nil)).AccountSessionInfo(); !got.PlatformMode || got.LoggedIn {
 		t.Fatalf("平台模式未登录应 PlatformMode=true & LoggedIn=false,得到 %+v", got)
 	}
 
@@ -195,7 +195,7 @@ func TestGatewayModeBlocksProviderMutations(t *testing.T) {
 	// 网关模式(登录):provider / 模型 / key 改动全部被拒。
 	enablePlatformAccountMode(t)
 	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
-	a := &App{ctx: context.Background()}
+	a := newBareApp(context.Background(), nil)
 	checks := map[string]error{
 		"SaveProvider":    a.SaveProvider(ProviderView{Name: "evil", Kind: "anthropic"}),
 		"SetProviderKey":  a.SetProviderKey("ANTHROPIC_API_KEY", "sk-x"),

@@ -195,7 +195,7 @@ func (a *App) rebuild() error {
 	targetTab, targetSink, targetWS := active.id, active.sink, active.ws
 	// 跨重建持住该标签的项目(同 SetModel):改设置不该把项目的语言服务器和 CodeGraph
 	// 守护进程停掉再重启。
-	defer a.holdWorkspace(targetWS).Release()
+	defer a.rt.hold(targetWS).Release()
 
 	var carried []provider.Message
 	if old != nil {

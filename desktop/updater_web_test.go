@@ -42,7 +42,7 @@ func TestWebUpdateOverrideAvailable(t *testing.T) {
 	version = "v1.0.0"
 	defer func() { version = old }()
 
-	a := &App{}
+	a := newBareApp(nil, nil)
 	info, ok := a.webUpdateOverride()
 	if !ok || info == nil {
 		t.Fatal("Web 模式应接管 CheckUpdate")
@@ -69,7 +69,7 @@ func TestWebUpdateOverrideSilentOnFailure(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ONECREAT_UPDATE_MANIFEST_URL", srv.URL)
 
-	a := &App{}
+	a := newBareApp(nil, nil)
 	info, ok := a.webUpdateOverride()
 	if !ok || info == nil {
 		t.Fatal("失败也应由 Web 路径接管(ok=true)")

@@ -31,7 +31,7 @@ func TestSwitchWorkspaceRejectsWhileRunning(t *testing.T) {
 	ctrl := control.New(control.Options{Runner: runner})
 	defer ctrl.Close()
 
-	a := &App{ctx: context.Background(), tabs: newTabManager()}
+	a := newBareApp(context.Background(), nil)
 	a.tabs.Register(&tabRuntime{id: "t", ctrl: ctrl})
 
 	ctrl.Submit("hello") // 起一个会阻塞的回合 → Running() 变 true
