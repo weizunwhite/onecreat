@@ -101,6 +101,19 @@ type Options struct {
 	// before an MCP flash/monitor tool runs, so the tool doesn't hit a busy port.
 	// It must NOT block or veto the call — vetoing is the hook system's job.
 	PreToolUse func(ctx context.Context, name string, args json.RawMessage)
+	// ExtraPlugins are MCP servers supplied by the caller for this session on top
+	// of the configured ones — the ACP client's `session/new` servers. They start
+	// eagerly with the session: a host that named a server expects its tools on
+	// the first turn.
+	ExtraPlugins []plugin.Spec
+	// HostProvidesCodeIntel suppresses the two workspace services that spawn
+	// long-lived subprocesses of their own — CodeGraph's daemon and the LSP
+	// manager — because the host already provides them. An editor driving
+	// OneCreat over ACP has its own language servers and index; starting a second
+	// set inside the agent costs memory and CPU for capabilities the host already
+	// has. Everything else (memory, skills, hooks, jobs, prompt policy) is
+	// assembled identically.
+	HostProvidesCodeIntel bool
 	// Workspace is the project directory this runtime works in. Everything
 	// workspace-scoped — project config, .mcp.json, memory, skills, the file
 	// tools' relative-path root, bash's working directory, CodeGraph and plugin
@@ -251,6 +264,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	eagerSpecs := PluginSpecs(eagerEntries)
 	lazySpecs := PluginSpecs(lazyEntries)
 	bgSpecs := PluginSpecs(bgEntries)
+	// Caller-supplied servers join the eager tier: the host named them for this
+	// session, so their tools must exist on the first turn.
+	eagerSpecs = append(eagerSpecs, opts.ExtraPlugins...)
 
 	// CodeGraph is a built-in MCP server fetched on first use. When it resolves,
 	// inject it as one more stdio plugin pinned to the project root (it is
@@ -263,7 +279,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	//
 	// Codegraph stays eager regardless of user tier — symbol-graph tools land
 	// in the system prompt, so the agent must see them on first turn.
-	if cfg.Codegraph.Enabled {
+	if cfg.Codegraph.Enabled && !opts.HostProvidesCodeIntel {
 		bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
 		switch {
 		case ok:
@@ -346,7 +362,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// CodeGraph 的 MCP 前端进程会 fork 出一个 detached、按工作区共享、带 5 分钟 idle 超时的
 	// 守护进程,杀前端进程杀不到它 → 主程序退出后会残留最多 5 分钟。关插件后按 pidfile 把它
 	// 一并停掉,保证退出即净(Wails 与 Web 两种壳都受益)。见 codegraph.StopDaemon。
-	if cfg.Codegraph.Enabled {
+	if cfg.Codegraph.Enabled && !opts.HostProvidesCodeIntel {
 		prev := cleanup
 		daemonRoot := root
 		cleanup = func() { prev(); codegraph.StopDaemon(daemonRoot) }
@@ -356,7 +372,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// registering them is cheap even when no server is installed (a query then
 	// returns an install hint). The manager is session-scoped; chain its shutdown
 	// into the controller's cleanup so servers stop with the session, not the turn.
-	if cfg.LSP.Enabled {
+	if cfg.LSP.Enabled && !opts.HostProvidesCodeIntel {
 		lspMgr := lsp.NewManager(root, LSPSpecs(cfg.LSP))
 		for _, t := range lsp.Tools(lspMgr) {
 			reg.Add(t)

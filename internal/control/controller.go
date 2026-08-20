@@ -1337,6 +1337,17 @@ func (c *Controller) Commands() []command.Command { return c.commands }
 // Skills returns the discoverable skills (for the slash menu and `/skill`).
 func (c *Controller) Skills() []skill.Skill { return c.skills }
 
+// ToolNames lists the tools this session can call. It makes the composition
+// root's decisions observable — which optional services (LSP, CodeGraph, plugin
+// tiers) were actually wired into this session — without exposing the mutable
+// registry itself.
+func (c *Controller) ToolNames() []string {
+	if c.reg == nil {
+		return nil
+	}
+	return c.reg.Names()
+}
+
 // HookRunner returns the session's hook runner (nil-safe; may hold zero hooks),
 // so a frontend can list the active hooks via `/hooks`.
 func (c *Controller) HookRunner() *hook.Runner { return c.hooks }

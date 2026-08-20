@@ -2,11 +2,15 @@ package boot
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
+	"reasonix/internal/plugin"
 	"reasonix/internal/workspace"
 )
 
@@ -181,4 +185,132 @@ func samePathTest(got, want string) bool {
 		return p
 	}
 	return resolve(got) == resolve(want)
+}
+
+// TestHostProvidesCodeIntelSkipsWorkspaceDaemons pins the one option that
+// changes which services a session starts. An editor host (ACP) already runs its
+// own language servers and symbol index; starting a second CodeGraph daemon and
+// LSP manager inside the agent costs memory and CPU for capabilities the host
+// already has.
+//
+// It is asserted through the tool surface: the LSP tools are registered only
+// when the manager is built.
+func TestHostProvidesCodeIntelSkipsWorkspaceDaemons(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "onecreat.toml", `
+default_model = "test-model"
+
+[codegraph]
+enabled = false
+
+[lsp]
+enabled = true
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+	t.Chdir(dir)
+	ws, err := workspace.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withLSP, err := Build(context.Background(), Options{Workspace: ws})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer withLSP.Close()
+
+	withoutLSP, err := Build(context.Background(), Options{Workspace: ws, HostProvidesCodeIntel: true})
+	if err != nil {
+		t.Fatalf("Build(HostProvidesCodeIntel): %v", err)
+	}
+	defer withoutLSP.Close()
+
+	if !hasLSPTool(t, withLSP) {
+		t.Fatal("lsp.enabled=true should register LSP tools")
+	}
+	if hasLSPTool(t, withoutLSP) {
+		t.Fatal("HostProvidesCodeIntel should suppress the LSP manager — the host provides it")
+	}
+}
+
+// hasLSPTool reports whether any LSP tool made it into the session's tool set.
+func hasLSPTool(t *testing.T, ctrl *control.Controller) bool {
+	t.Helper()
+	for _, name := range ctrl.ToolNames() {
+		if strings.HasPrefix(name, "lsp_") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestExtraPluginsStartWithTheSession proves the other new option: MCP servers a
+// host declares for one session (the ACP client's `session/new` servers) start
+// eagerly alongside the configured ones, so their tools exist on the first turn.
+func TestExtraPluginsStartWithTheSession(t *testing.T) {
+	isolateConfigHome(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "onecreat.toml", `
+default_model = "test-model"
+
+[codegraph]
+enabled = false
+
+[lsp]
+enabled = false
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+	ws, err := workspace.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ctrl, err := Build(ctx, Options{
+		Workspace: ws,
+		ExtraPlugins: []plugin.Spec{{
+			Name:    "hostmock",
+			Command: os.Args[0],
+			Args:    []string{"-test.run=TestHelperProcess", "--"},
+			Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	names := ctrl.Host().ServerNames()
+	found := false
+	for _, n := range names {
+		if n == "hostmock" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("caller-supplied MCP server missing from Host.ServerNames() = %v", names)
+	}
+	if got := ctrl.Host().Failures(); len(got) != 0 {
+		t.Fatalf("Host.Failures() = %+v, want empty", got)
+	}
 }

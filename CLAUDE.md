@@ -55,7 +55,7 @@ Run the agent: `reasonix setup` (config wizard → `./onecreat.toml`), then `rea
 
 - `internal/cli` — the bubbletea chat TUI (`reasonix chat`) and headless `run`. Dispatch is `internal/cli/cli.go` (`run`/`chat`/`serve`/`setup`/`acp`/`mcp`/`codegraph`/`doctor`).
 - `internal/serve` — HTTP + SSE server (`reasonix serve`).
-- `internal/acp` — Agent Client Protocol (editor integrations).
+- `internal/acp` — Agent Client Protocol (editor integrations). Its `internal/cli/acp.go` factory owns **no** assembly: every session is one `boot.Build` call, with the two genuinely per-session inputs passed as options (`Workspace` from the client's cwd, `ExtraPlugins` from `session/new`) plus `HostProvidesCodeIntel` so the agent doesn't start a second CodeGraph daemon and LSP manager inside an editor that already runs its own. `internal/cli/acp_assembly_test.go` fails if the transport starts importing runtime building blocks again.
 - `desktop/` — Wails app; `desktop/app.go` is the bound surface the React frontend calls.
 
 The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream model → execute tool calls → repeat) over an **`internal/agent.Session`** (the message log). Tools come from `internal/tool` (registry); providers from `internal/provider` (registry).
