@@ -184,8 +184,11 @@ func New(opts Options) *Controller {
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.ckpt.Rebind(opts.SessionPath)
 	if c.executor != nil {
-		c.executor.SetPreEditHook(c.ckpt.Snapshot)
-		c.executor.SetMemoryQueue(c.memory)
+		// 两条属于产品策略、由装配层接上的缝(见 internal/toolpolicy):写工具执行前
+		// 把文件原内容快照进 checkpoint;记忆工具把「本轮生效」的注记排进下一轮。
+		pol := c.executor.Policy()
+		pol.PreEdit = c.ckpt.Snapshot
+		pol.Memory = c.memory
 		// 压缩(自动或手动)会原地重写日志、改变消息下标 → 失效 checkpoint 边界(B1)。
 		c.executor.SetOnCompact(c.ckpt.Invalidate)
 	}
