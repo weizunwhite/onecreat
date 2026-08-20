@@ -193,6 +193,9 @@ func (a *App) rebuild() error {
 	active, _ := a.tabs.View("")
 	old, model := active.ctrl, active.model
 	targetTab, targetSink, targetWS := active.id, active.sink, active.ws
+	// 跨重建持住该标签的项目(同 SetModel):改设置不该把项目的语言服务器和 CodeGraph
+	// 守护进程停掉再重启。
+	defer a.holdWorkspace(targetWS).Release()
 
 	var carried []provider.Message
 	if old != nil {
@@ -211,7 +214,7 @@ func (a *App) rebuild() error {
 	// PreToolUse 与其它四个 boot.Build 调用点(app.go buildTab/SwitchWorkspace/SetModel/
 	// rebuildTabByID)保持一致:重建后仍带串口自动释放回调,否则改任意设置后 AI 烧录不再让出
 	// 常驻串口监视器,撞 busy(e78fe02c 在此路径的回归)。
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse, Factory: a.factory})
 	if err != nil {
 		a.tabUpdate(targetTab, func(rt *tabRuntime) {
 			rt.ctrl = nil

@@ -94,7 +94,12 @@ The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream mod
 
 `internal/runtime` names the four lifetimes explicitly: **Process → Workspace → Session → Turn**. A Workspace is *shared* by every session on the same root (refcounted via `OpenWorkspace`/`Release`); Sessions and Turns are never shared. Closing a scope closes its children first, then its own resources in reverse registration order; `Defer` is a method on the scope you hold, so a resource can only be attached to a lifetime you actually have. Cancellation flows **downward only** — a cancelled Turn never touches its Session.
 
-> **Not wired yet.** `boot.Build` still chains MCP / CodeGraph / LSP into one session-scoped `cleanup`, so closing one tab still stops a CodeGraph daemon a sibling tab shares. Landing the real wiring is Plan 04 (single composition root) and Plan 05 (resource lifetimes). Don't treat the scope package as evidence that the sharing bug is fixed.
+**Resource lifetimes are wired to those scopes.** `boot.Factory` (`internal/boot/factory.go`) owns the process- and workspace-scoped half: `OpenWorkspace` refcounts a project's shared services by root and registers their teardown on the **workspace** scope, so the LSP manager and the CodeGraph daemon survive any one session. `boot.Build` opens a **session** scope under that workspace and hangs the session's own resources (the MCP plugin host) there. Closing a tab therefore stops that tab's MCP subprocesses and nothing a sibling on the same project is using.
+
+- A `Factory` is **explicit, never global**: pass it in `boot.Options.Factory`. Nil means "give this session a private one", which is right for a single-workspace process (CLI, headless, ACP) and reproduces the pre-Plan-05 behaviour.
+- The desktop creates one in `NewApp` and **every** `boot.Build` call site must pass it (`TestEveryBuildSharesTheFactory` fails otherwise — a missed site silently un-shares that tab).
+- The three rebuild paths (`SetModel`, `rebuildTabByID`, settings `rebuild`) close the old controller before building the new one, so they must hold a reference across the swap via `App.holdWorkspace` / `Factory.Hold`; without it the refcount touches zero and the project's services are stopped and immediately restarted (`TestRebuildPathsHoldTheWorkspace`).
+- What is deliberately **not** workspace-scoped: the MCP host and jobs (session-owned), the skill/memory indexes (per-build snapshots — caching them would serve stale `AGENTS.md`), and the CodeGraph *binary path* (background auto-install must become visible next session, not "once every tab closes"). `runtime.Turn` is still unwired — turn-level ownership lands with Plans 07/08.
 
 ### Config & memory
 

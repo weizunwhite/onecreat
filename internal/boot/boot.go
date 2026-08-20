@@ -114,6 +114,16 @@ type Options struct {
 	// has. Everything else (memory, skills, hooks, jobs, prompt policy) is
 	// assembled identically.
 	HostProvidesCodeIntel bool
+	// Factory owns the process- and workspace-scoped services (the LSP manager and
+	// the CodeGraph daemon) so several sessions on one project share them. A nil
+	// Factory gives this session a private one, closed with it — which is exactly
+	// the old behaviour, and the right one for a frontend that runs a single
+	// workspace per process (the CLI, a headless run, an ACP session).
+	//
+	// A frontend that can hold several sessions on one project at once (the
+	// desktop) must pass a shared Factory, otherwise closing one tab stops the
+	// language servers and symbol daemon its sibling is using.
+	Factory *Factory
 	// Workspace is the project directory this runtime works in. Everything
 	// workspace-scoped — project config, .mcp.json, memory, skills, the file
 	// tools' relative-path root, bash's working directory, CodeGraph and plugin
@@ -219,6 +229,46 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// was supplied does it fall back to the process working directory.
 	procCwd, _ := os.Getwd()
 	root := ws.RootOr(procCwd)
+
+	// Take a hold on this project's shared services. With a caller-supplied
+	// Factory the hold is refcounted, so several sessions on one project share
+	// the LSP servers and the CodeGraph daemon and the last one out turns them
+	// off. Without one, this session gets a private factory closed alongside it —
+	// the pre-Plan-05 behaviour, and the right one for a single-workspace process.
+	factory := opts.Factory
+	var ownFactory *Factory
+	if factory == nil {
+		ownFactory = NewFactory(ctx)
+		factory = ownFactory
+	}
+	wsHandle := factory.OpenWorkspace(ws, WorkspaceSpec{Config: cfg, Root: root, HostProvidesCodeIntel: opts.HostProvidesCodeIntel})
+	wsSvc := wsHandle.Services()
+	// This runtime's session scope, under that workspace. Everything owned by the
+	// conversation rather than the project — the MCP plugin host below — is
+	// registered on it, so ending the session releases exactly those and leaves
+	// the project's shared services running for its siblings.
+	sess := wsHandle.Scope().NewSession("")
+
+	// Until control.New takes over the cleanup chain, any error return has to
+	// release what has already been acquired itself — otherwise a failed build
+	// pins the workspace open and leaks the eager MCP subprocesses.
+	//
+	// 在 control.New 成功接管 cleanup 之前的任何错误返回,都必须释放已经拿到的资源
+	// (session 作用域上的 MCP 子进程、workspace hold)。否则它们泄漏 —— desktop 用
+	// 永不取消的 ctx 调 Build,失败的 SetModel / 标签重建每次都漏一份(M1)。
+	// 控制器接管后置 success=true,由 Controller.Close() 负责调 cleanup。
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		sess.Close()
+		wsHandle.Release()
+		if ownFactory != nil {
+			ownFactory.Close()
+		}
+	}()
+
 	skillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), Stderr: opts.Stderr})
 	skills := skillStore.List()
 	sysPrompt = skill.ApplyIndex(sysPrompt, skills)
@@ -236,7 +286,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	addBuiltins(reg, ws, cfg.Tools.Enabled, cfg.WriteRoots(), bashSpec, searchSpec, stderr)
 	// Always construct a host, even with no plugins configured, so the controller's
 	// host pointer is stable for the session and `/mcp add` can hot-add into it.
+	//
+	// The host is session-scoped: `/mcp add` hot-adds into *this* session's host
+	// and a session may carry client-supplied overlays, so it must not be shared
+	// with a sibling on the same project. Registering the shutdown on the session
+	// scope here — at the point of ownership, through a closure because the eager
+	// tier swaps the host below — means no error path can slip out without it.
 	pluginHost := plugin.NewHost()
+	sess.Defer("mcp-host", func() { pluginHost.Close() })
 
 	// Partition configured plugins by tier so eager/lazy/background can each
 	// take the path that fits them. User entries default to lazy — they don't
@@ -357,40 +414,26 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg})
 	}
 
-	cleanup := pluginHost.Close
-
-	// CodeGraph 的 MCP 前端进程会 fork 出一个 detached、按工作区共享、带 5 分钟 idle 超时的
-	// 守护进程,杀前端进程杀不到它 → 主程序退出后会残留最多 5 分钟。关插件后按 pidfile 把它
-	// 一并停掉,保证退出即净(Wails 与 Web 两种壳都受益)。见 codegraph.StopDaemon。
-	if cfg.Codegraph.Enabled && !opts.HostProvidesCodeIntel {
-		prev := cleanup
-		daemonRoot := root
-		cleanup = func() { prev(); codegraph.StopDaemon(daemonRoot) }
+	// Closing the session releases what the conversation owns (its MCP host); the
+	// workspace hold is released after that — the project's own services (LSP
+	// servers, the CodeGraph daemon) go away only when the last session on it
+	// does, not when this one ends.
+	cleanup := func() {
+		sess.Close()
+		wsHandle.Release()
+		if ownFactory != nil {
+			ownFactory.Close()
+		}
 	}
 
-	// LSP tools resolve their servers on PATH and spawn lazily on first query, so
-	// registering them is cheap even when no server is installed (a query then
-	// returns an install hint). The manager is session-scoped; chain its shutdown
-	// into the controller's cleanup so servers stop with the session, not the turn.
-	if cfg.LSP.Enabled && !opts.HostProvidesCodeIntel {
-		lspMgr := lsp.NewManager(root, LSPSpecs(cfg.LSP))
-		for _, t := range lsp.Tools(lspMgr) {
+	// LSP tools query the workspace's shared manager (servers resolve on PATH and
+	// spawn lazily on first use). The manager itself belongs to the workspace, so
+	// it is not torn down here: two tabs on one project share the running servers.
+	if wsSvc.lsp != nil && !opts.HostProvidesCodeIntel {
+		for _, t := range lsp.Tools(wsSvc.lsp) {
 			reg.Add(t)
 		}
-		prev := cleanup
-		cleanup = func() { prev(); lspMgr.Close() }
 	}
-
-	// 在 control.New 成功接管 cleanup 之前的任何错误返回,都必须释放已经启动的资源
-	// (eager MCP 子进程、LSP manager)。否则它们泄漏 —— desktop 用永不取消的 ctx 调
-	// Build,失败的 SetModel / 标签重建每次都漏一组子进程(M1)。控制器接管后置 success=true,
-	// 由 Controller.Close() 负责调 cleanup。
-	success := false
-	defer func() {
-		if !success {
-			cleanup()
-		}
-	}()
 
 	maxSteps := cfg.Agent.MaxSteps
 	if opts.MaxSteps > 0 {

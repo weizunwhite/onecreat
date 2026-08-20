@@ -61,6 +61,16 @@ type App struct {
 	// 沿用旧签名、不带 tabID 的前端入口在这一层解析成活动 id 再委托下去。
 	tabs *tabManager
 
+	// factory 持有「进程级 / 工作区级」资源(每个项目共享的 LSP manager 与 CodeGraph
+	// 守护进程),由所有标签共用。它必须共享:同一个项目开两个标签时,关掉其中一个
+	// 不能停掉另一个还在用的语言服务器和符号守护进程(Plan 05 / A06)。
+	//
+	// 在 NewApp 里就建好(而不是 startup),这样任何 goroutine 读它时都已经写完,
+	// 不需要再加一把锁;它的生命周期由 shutdown 里的 Close 结束,不依赖 ctx 取消。
+	// 单元测试里的裸 &App{} 不设它 —— nil 表示「每个 controller 自带一份私有的」,
+	// 即 Plan 05 之前的行为。
+	factory *boot.Factory
+
 	// mu 只保护下面这几个 App 自身的字段(MCP 视图与当前选中的项目文件夹)。
 	// 标签运行时由 tabs 自己的锁保护 —— 两把锁互不嵌套。
 	mu          sync.RWMutex
@@ -134,6 +144,7 @@ func NewApp() *App {
 	a := &App{
 		disabledMCP: map[string]ServerView{},
 		tabs:        newTabManager(),
+		factory:     boot.NewFactory(context.Background()),
 		saving:      map[string]bool{},
 		saveAgain:   map[string]bool{},
 	}
@@ -262,7 +273,7 @@ func (a *App) buildTab(tabID string) {
 		}
 	}
 
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse, Factory: a.factory})
 	if err != nil {
 		// 标签已在 build 期间被关闭时 Update 找不到它:什么都不写、不发 ready(A6)。
 		if !a.tabs.Update(tabID, func(rt *tabRuntime, _ bool) {
@@ -384,6 +395,11 @@ func (a *App) shutdown(context.Context) {
 		_ = ctrl.Snapshot()
 		ctrl.Close()
 	}
+	// 每个 controller 关闭时释放它自己那份工作区引用;最后一个走掉时工作区随之关闭。
+	// 这里再关一次工厂,兜住「没有任何标签、或某个标签没建起来」时仍开着的进程级作用域。
+	if a.factory != nil {
+		a.factory.Close()
+	}
 }
 
 // --- bound command surface (frontend → controller) ---
@@ -393,6 +409,20 @@ func (a *App) shutdown(context.Context) {
 // ctrlForTab 按标签 id 取该标签的 controller。空 id 解析为活动标签,兼容尚未带
 // tabID 的旧路径。用于审批/问答/门控等「必须打到事件来源标签」的方法(A2/A8)。
 func (a *App) ctrlForTab(tabID string) *control.Controller { return a.tabs.Ctrl(tabID) }
+
+// holdWorkspace 在「换掉某个标签的 controller」期间持住它的项目引用。
+//
+// 重建路径(SetModel / rebuildTabByID / 设置变更)都是先 Close 旧 controller、再 Build
+// 新的:中间那一小段时间里没有任何会话引用这个工作区,引用计数会 1→0→1 —— 项目的
+// 语言服务器和 CodeGraph 守护进程被停掉再立刻重启。持有一份显式引用就把意图写清楚了:
+// 「我在换这个项目上的会话,项目本身别关」。裸 &App{}(无 factory)返回 nil,Release
+// 对 nil 是空操作。
+func (a *App) holdWorkspace(ws workspace.Context) *boot.WorkspaceHandle {
+	if a == nil || a.factory == nil {
+		return nil
+	}
+	return a.factory.Hold(ws)
+}
 
 // activeCtrl 是活动标签的 controller(未就绪 / 无标签时为 nil)。不带 tabID 的旧
 // 前端入口都经它解析,这是「活动标签」在应用层唯一的落点。
@@ -887,7 +917,7 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 			model = e.Name + "/" + e.Model
 		}
 	}
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse, Factory: a.factory})
 	if err != nil {
 		// 装配失败:什么都没提交,当前会话原样保留(不再需要回滚进程 cwd)。
 		return "", err
@@ -2960,6 +2990,8 @@ func (a *App) SetModel(name string) error {
 	if name == curModel {
 		return nil
 	}
+	// 跨重建持住该标签的项目,免得工作区在两个 controller 之间被关掉再重开。
+	defer a.holdWorkspace(targetWS).Release()
 
 	var carried []provider.Message
 	if ctrl != nil {
@@ -2968,7 +3000,7 @@ func (a *App) SetModel(name string) error {
 		ctrl.Close()
 	}
 
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse})
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse, Factory: a.factory})
 	if err != nil {
 		return err
 	}
@@ -3028,6 +3060,8 @@ func (a *App) rebuildTabByID(tabID string) {
 	if model == "" {
 		return // 还没 build 过(极早期登录):startup 的 applyGatewayEnvFromSession 已兜底
 	}
+	// 跨重建持住该标签的项目(同 SetModel)。
+	defer a.holdWorkspace(targetWS).Release()
 
 	var carried []provider.Message
 	if ctrl != nil {
@@ -3035,7 +3069,7 @@ func (a *App) rebuildTabByID(tabID string) {
 		carried = ctrl.History()
 		ctrl.Close()
 	}
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse})
+	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse, Factory: a.factory})
 	if err != nil {
 		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
 	}
