@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 
+	"reasonix/internal/account"
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
@@ -30,6 +31,9 @@ import (
 type tabRuntimeService struct {
 	tabs    *tabManager
 	factory *boot.Factory
+	// gateway 是平台账号(与 App 共享同一个对象):每次 boot.Build 都传给会话,
+	// 续期后的新 token 无需重建即可生效。
+	gateway *account.Gateway
 	shell   func() Shell
 	// ctxFn 取 Wails / Web 壳的根 context。它在 startup 里才装上,所以按函数取而不是
 	// 构造时固定。
@@ -43,8 +47,8 @@ type tabRuntimeService struct {
 	ws workspace.Context
 }
 
-func newTabRuntimeService(tabs *tabManager, factory *boot.Factory, shell func() Shell, ctx func() context.Context, preTool func(context.Context, string, json.RawMessage)) *tabRuntimeService {
-	return &tabRuntimeService{tabs: tabs, factory: factory, shell: shell, ctxFn: ctx, preTool: preTool}
+func newTabRuntimeService(tabs *tabManager, factory *boot.Factory, gw *account.Gateway, shell func() Shell, ctx func() context.Context, preTool func(context.Context, string, json.RawMessage)) *tabRuntimeService {
+	return &tabRuntimeService{tabs: tabs, factory: factory, gateway: gw, shell: shell, ctxFn: ctx, preTool: preTool}
 }
 
 func (r *tabRuntimeService) sh() Shell {
@@ -123,7 +127,7 @@ func (r *tabRuntimeService) BuildTab(tabID string) {
 		}
 	}
 
-	ctrl, err := boot.Build(r.ctx(), boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: r.preTool, Factory: r.factory})
+	ctrl, err := boot.Build(r.ctx(), boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: r.preTool, Factory: r.factory, Gateway: r.gateway})
 	if err != nil {
 		// 标签已在 build 期间被关闭时 Update 找不到它:什么都不写、不发 ready(A6)。
 		if !r.tabs.Update(tabID, func(rt *tabRuntime, _ bool) {
@@ -325,7 +329,7 @@ func (r *tabRuntimeService) SwitchWorkspace(dir string) (string, error) {
 			model = e.Name + "/" + e.Model
 		}
 	}
-	ctrl, err := boot.Build(r.ctx(), boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: r.preTool, Factory: r.factory})
+	ctrl, err := boot.Build(r.ctx(), boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: r.preTool, Factory: r.factory, Gateway: r.gateway})
 	if err != nil {
 		// 装配失败:什么都没提交,当前会话原样保留(不再需要回滚进程 cwd)。
 		return "", err
@@ -365,7 +369,7 @@ func (r *tabRuntimeService) SetModel(name string) error {
 	}
 	// 网关模式下模型由平台统一分配,拒绝本地切模型(H4 兜底;前端 ModelSwitcher 在网关模式
 	// 已不暴露真实模型,这里防直接调 IPC 绕过)。档位切换走 SetOnecreatTier,不经这里。
-	if gatewayActive() {
+	if platformAccountEnabled() && r.gateway.Active() {
 		return errGatewayManaged
 	}
 	// 固定「发起切换时的活动标签」+ 它自己的 sink:boot.Build 是秒级操作,期间用户可能
@@ -389,7 +393,7 @@ func (r *tabRuntimeService) SetModel(name string) error {
 		ctrl.Close()
 	}
 
-	newCtrl, err := boot.Build(r.ctx(), boot.Options{Model: name, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: r.preTool, Factory: r.factory})
+	newCtrl, err := boot.Build(r.ctx(), boot.Options{Model: name, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: r.preTool, Factory: r.factory, Gateway: r.gateway})
 	if err != nil {
 		return err
 	}
@@ -458,7 +462,7 @@ func (r *tabRuntimeService) RebuildTab(tabID string) {
 		carried = ctrl.History()
 		ctrl.Close()
 	}
-	newCtrl, err := boot.Build(r.ctx(), boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: r.preTool, Factory: r.factory})
+	newCtrl, err := boot.Build(r.ctx(), boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: r.preTool, Factory: r.factory, Gateway: r.gateway})
 	if err != nil {
 		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
 	}

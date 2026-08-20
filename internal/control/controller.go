@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"reasonix/internal/account"
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
 	"reasonix/internal/checkpoint"
@@ -88,6 +89,12 @@ type Controller struct {
 	// reg is kept for ToolNames (a read-only status readout).
 	reg *tool.Registry
 
+	// gateway is the platform account this session signs its model requests with
+	// (nil / inactive = signed out, talking to a configured provider directly).
+	// It is held, not read from the environment: a token refresh updates the same
+	// object every live session shares (Plan 09 / A12).
+	gateway *account.Gateway
+
 	// ckpt owns snapshot-based rewind: the per-session checkpoint store, the
 	// monotonic turn counter and the turn→message-index boundaries (see
 	// checkpoints.go). wsRoot is this session's workspace root — the checkpoint
@@ -132,6 +139,10 @@ type Options struct {
 	// context; both are needed for hot-adding MCP servers via AddMCPServer.
 	Registry  *tool.Registry
 	PluginCtx context.Context
+	// Gateway is the platform account this session signs model requests with.
+	// nil means signed out / not a platform deployment.
+	Gateway *account.Gateway
+
 	// WorkspaceRoot is this session's project root: checkpoint restores are
 	// confined to it ("" = no confinement) and workspace-scoped subprocesses are
 	// pinned to it. boot.Build fills it from its workspace.Context, so a frontend
@@ -178,6 +189,7 @@ func New(opts Options) *Controller {
 		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
 		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.Executor),
 		turn:          newTurnState(sink, opts.Executor),
+		gateway:       opts.Gateway,
 		wsRoot:        opts.WorkspaceRoot,
 		ckpt:          newCheckpointService(opts.WorkspaceRoot),
 	}
@@ -757,3 +769,8 @@ func (c *Controller) PlanMode() bool { return c.turn.PlanMode() }
 
 // SetCoachMode sets the session's coaching persona ("" clears it).
 func (c *Controller) SetCoachMode(preamble string) { c.turn.SetCoach(preamble) }
+
+// Gateway is the platform account this session runs under (nil when the caller
+// supplied none). Frontends use it to ask whether the account manages the model
+// choice, instead of sniffing the process environment.
+func (c *Controller) Gateway() *account.Gateway { return c.gateway }

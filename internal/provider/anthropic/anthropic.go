@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/account"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 )
@@ -70,9 +71,13 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: network: %w", err)
 	}
+	creds := cfg.Credentials
+	if creds == nil {
+		creds = account.EnvCredential{Var: keyEnv}
+	}
 	return &client{
 		name:     name,
-		apiKey:   cfg.APIKey,
+		creds:    creds,
 		keyEnv:   keyEnv,
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		model:    cfg.Model,
@@ -82,14 +87,25 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}, nil
 }
 
+// authKey asks the credential source for this request's key.
+func (c *client) authKey(ctx context.Context) string {
+	if c.creds == nil {
+		return ""
+	}
+	key, _ := c.creds.Token(ctx)
+	return key
+}
+
 func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 	spec, _ := cfg.Extra["proxy_spec"].(netclient.ProxySpec)
 	return netclient.NewHTTPClient(spec, 0, netclient.TransportOptions{})
 }
 
 type client struct {
-	name     string
-	apiKey   string
+	name string
+	// creds is asked for a key on every request, so a rotated key reaches an
+	// already-running session (see internal/account).
+	creds    account.CredentialSource
 	keyEnv   string // api_key_env name, surfaced in auth errors
 	baseURL  string
 	model    string
@@ -139,7 +155,7 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		httpReq.Header.Set("x-api-key", c.apiKey)
+		httpReq.Header.Set("x-api-key", c.authKey(ctx))
 		httpReq.Header.Set("anthropic-version", anthropicVersion)
 
 		resp, err := c.http.Do(httpReq)

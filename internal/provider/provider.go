@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reasonix/internal/account"
 	"sort"
 
 	"reasonix/internal/nilutil"
@@ -228,10 +229,20 @@ type Provider interface {
 
 // Config is a resolved provider instance configuration.
 type Config struct {
-	Name    string         // instance name, e.g. "deepseek"
-	BaseURL string         // OpenAI-compatible endpoint
-	Model   string         // model id
-	APIKey  string         // resolved from api_key_env
+	Name    string // instance name, e.g. "deepseek"
+	BaseURL string // OpenAI-compatible endpoint
+	Model   string // model id
+	// Credentials yields the bearer token for each request. It is asked per call,
+	// not resolved once, so a token refreshed underneath a running session takes
+	// effect on the next request without rebuilding anything — that is the whole
+	// reason the platform account is an object and not an environment variable
+	// (see internal/account).
+	Credentials account.CredentialSource
+	// Gateway marks a client that talks to the OneCreat platform gateway rather
+	// than a vendor endpoint. In that mode the real provider and model are a
+	// billing-and-routing secret, so error text must never carry the upstream
+	// body verbatim.
+	Gateway bool
 	Extra   map[string]any // kind-specific options
 }
 

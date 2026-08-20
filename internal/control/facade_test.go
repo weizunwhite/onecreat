@@ -56,7 +56,7 @@ func TestControllerHoldsNoDomainLock(t *testing.T) {
 		"systemPrompt": true, "commands": true, "skills": true, "hooks": true,
 		"cleanup": true, "autoPlan": true, "classifier": true, "startedOnce": true,
 		"balanceURL": true, "balanceKey": true, "balanceClient": true,
-		"jobs": true, "reg": true, "wsRoot": true,
+		"jobs": true, "reg": true, "wsRoot": true, "gateway": true,
 		// the services
 		"approvals": true, "session": true, "memory": true, "mcp": true,
 		"ckpt": true, "turn": true,

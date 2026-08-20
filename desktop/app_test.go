@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"reasonix/internal/account"
 	"strings"
 	"testing"
 	"time"
@@ -154,8 +155,8 @@ func TestGatewayModeHidesModelManagementSurfaces(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv(accountModeEnv, "platform")
-	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
 	app := NewApp()
+	app.gateway.SetSession("https://t.example.com/api/onecreat/v1", "tok", "tier-1")
 	app.tabUpdate("", func(rt *tabRuntime) {
 		rt.ctrl = control.New(control.Options{Label: "deepseek-flash/tier-1"})
 		rt.model = "deepseek-flash/deepseek-v4-flash"
@@ -184,11 +185,13 @@ type blockingRunner struct {
 	release chan struct{}
 }
 
+// clearGatewayEnv 保证进程环境里没有残留的网关变量。它只影响 account.FromEnv 的
+// 【导入】(NewApp 启动时读一次),不再是运行期状态源 —— 那是 app.gateway 这个对象。
 func clearGatewayEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv(gatewayEnvURL, "")
-	t.Setenv(gatewayEnvToken, "")
-	t.Setenv(gatewayEnvTier, "")
+	t.Setenv(account.EnvURL, "")
+	t.Setenv(account.EnvToken, "")
+	t.Setenv(account.EnvTier, "")
 }
 
 func (r *blockingRunner) Run(ctx context.Context, _ string) error {

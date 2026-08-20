@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reasonix/internal/account"
 	"strconv"
 	"strings"
 	"testing"
@@ -532,11 +533,11 @@ func envInt(name string, fallback int) int {
 func newAgent(t *testing.T, url string, reg *tool.Registry, contextWindow, recentKeep int) (*Agent, *collectSink) {
 	t.Helper()
 	prov, err := openai.New(provider.Config{
-		Name:    "deepseek",
-		BaseURL: url,
-		Model:   "deepseek-reasoner",
-		APIKey:  "test",
-		Extra:   map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
+		Name:        "deepseek",
+		BaseURL:     url,
+		Model:       "deepseek-reasoner",
+		Credentials: account.StaticCredential("test"),
+		Extra:       map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
 	})
 	if err != nil {
 		t.Fatalf("provider New: %v", err)

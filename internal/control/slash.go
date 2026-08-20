@@ -2,7 +2,6 @@ package control
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"reasonix/internal/config"
@@ -279,7 +278,7 @@ func (c *Controller) managementNotice(trimmed string) bool {
 }
 
 func (c *Controller) modelListText() string {
-	if strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL")) != "" {
+	if c.gateway.Active() {
 		return "AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。"
 	}
 	cfg, err := config.Load()

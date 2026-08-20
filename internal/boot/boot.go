@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/account"
 	"reasonix/internal/agent"
 	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
@@ -124,6 +125,12 @@ type Options struct {
 	// desktop) must pass a shared Factory, otherwise closing one tab stops the
 	// language servers and symbol daemon its sibling is using.
 	Factory *Factory
+	// Gateway is the platform account this runtime signs its model requests with.
+	// nil means "import whatever the process was launched with" — the
+	// compatibility path for a CLI/ACP process, which has no account runtime of
+	// its own. The desktop passes its own live Gateway so a token refresh reaches
+	// every already-built session without rebuilding anything.
+	Gateway *account.Gateway
 	// Workspace is the project directory this runtime works in. Everything
 	// workspace-scoped — project config, .mcp.json, memory, skills, the file
 	// tools' relative-path root, bash's working directory, CodeGraph and plugin
@@ -147,6 +154,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		stderr = os.Stderr
 	}
 	ws := opts.Workspace
+	// The platform account for this runtime. A frontend that owns one (the
+	// desktop) passes it in, so a token refresh reaches every session it built;
+	// anything else imports whatever the process was launched with, once.
+	gw := opts.Gateway
+	if gw == nil {
+		gw = account.FromEnv()
+	}
 	cfg, err := config.LoadIn(ws)
 	if err != nil {
 		return nil, err
@@ -159,9 +173,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
 	}
-	// onecreat 网关模式:桌面端登录后会设 ONECREAT_GATEWAY_URL/_TOKEN,把模型请求改走
-	// 平台 AI 网关(用登录 token 鉴权、平台统一拿上游 key 计费),而非客户端直连厂商。
-	applyOnecreatGateway(entry)
+	// onecreat 网关模式:登录后把模型请求改走平台 AI 网关(用登录 token 鉴权、平台统一
+	// 拿上游 key 计费),而非客户端直连厂商。账号状态来自显式的 *account.Gateway,不再
+	// 从进程环境变量里读(Plan 09 / A12)。
+	applyOnecreatGateway(entry, gw)
 	if opts.RequireKey {
 		// 校验改写后的 entry(网关模式下已换成 ONECREAT_GATEWAY_TOKEN),不能再 cfg.Validate
 		// 重新解析——ResolveModel 返回副本,重解会拿回未改写的原始 entry,在网关模式下点名底层
@@ -196,7 +211,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return nil, err
 	}
 
-	execProv, err := NewProviderWithProxy(entry, proxySpec)
+	execProv, err := newProviderFor(entry, proxySpec, gw)
 	if err != nil {
 		return nil, err
 	}
@@ -507,7 +522,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// cfg.ResolveModel 解析的是未被 applyOnecreatGateway 改写的原始 entry(直连厂商),会
 		// 绕过平台档位计量,或在无 key 时以泄露底层厂商名的 401 失败。与 planner/classifier
 		// 同理,网关模式统一回退到网关路由的主 executor provider。
-		if modelRef := subagentModelRef(cfg, sk); modelRef != "" && !onecreatGatewayActive() {
+		if modelRef := subagentModelRef(cfg, sk); modelRef != "" && !onecreatGatewayActive(gw) {
 			if me, ok := cfg.ResolveModel(modelRef); ok {
 				if p, err := NewProviderWithProxy(me, proxySpec); err == nil {
 					prov, price, ctxWin = p, me.Price, me.ContextWindow
@@ -583,7 +598,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// onecreat 网关模式下禁用客户端双模型/分类器:平台统一控制模型(档位),客户端再配一个
 	// planner / classifier 没有意义 —— 它们不走网关(applyOnecreatGateway 只改写主 provider),
 	// 会(1)在阶段标记/顶栏 label 里泄露真实模型名,(2)直连厂商绕过网关计量(或无 key 失败)。
-	gatewayActive := onecreatGatewayActive()
+	gatewayActive := onecreatGatewayActive(gw)
 
 	// Two-model collaboration: a distinct planner_model wraps the executor in a
 	// Coordinator with its own session, kept separate for cache stability.
@@ -636,6 +651,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Registry:      reg,
 		PluginCtx:     ctx,
 		WorkspaceRoot: root,
+		Gateway:       gw,
 		AutoPlan:      cfg.Agent.AutoPlan,
 	}
 	if classifier != nil {
@@ -690,36 +706,33 @@ func subagentModelKeys(name string) []string {
 }
 
 // onecreatGatewayActive 报告当前是否处于 onecreat 网关模式(桌面端登录后会设这个 env)。
-func onecreatGatewayActive() bool {
-	return strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL")) != ""
-}
+func onecreatGatewayActive(gw *account.Gateway) bool { return gw.Active() }
 
 // applyOnecreatGateway 在「onecreat 网关模式」下改写已解析的 provider entry:BaseURL 指向
 // 平台 AI 网关、API key 取登录 token、关掉直连余额查询。仅当 ONECREAT_GATEWAY_URL 存在且该
 // provider 是 openai 兼容类型时生效 —— 只有桌面端登录后才会设这两个 env,命令行/其他前端不
 // 设则完全无副作用(零耦合)。对外 provider 名也统一成 onecreat,避免错误提示泄露底层模型族。
-func applyOnecreatGateway(e *config.ProviderEntry) {
-	gw := strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL"))
-	if gw == "" || e == nil || e.Kind != "openai" {
+func applyOnecreatGateway(e *config.ProviderEntry, gw *account.Gateway) {
+	if !gw.Active() || e == nil || e.Kind != "openai" {
 		return
 	}
 	e.Name = "onecreat"
-	e.BaseURL = gw
-	e.APIKeyEnv = "ONECREAT_GATEWAY_TOKEN" // APIKey() 读这个 env 拿登录 token
-	e.BalanceURL = ""                      // 网关模式下不直连厂商查余额
+	e.BaseURL = gw.URL()
+	e.APIKeyEnv = account.EnvToken // 名字只用于报错话术;token 从 Gateway 拿,不读 env
+	e.BalanceURL = ""              // 网关模式下不直连厂商查余额
 	// 档位模式:把发给上游的 model 改成选中的档位 "tier-N",平台网关再映射到真实模型
 	//(对用户隐藏)。未设档位则保持原 model(过渡期:旧版客户端仍发旧模型名,网关兼容)。
-	if tier := strings.TrimSpace(os.Getenv("ONECREAT_TIER")); tier != "" {
+	if tier := gw.Tier(); tier != "" {
 		e.Model = tier
 	}
 }
 
 // ApplyOnecreatGateway / OnecreatGatewayActive 是上面两个内部函数的导出封装,供 ACP 等
 // 平行装配路径(不走 Build)复用同一网关入口逻辑,避免各自实现漂移导致计费旁路 / 泄露厂商。
-func ApplyOnecreatGateway(e *config.ProviderEntry) { applyOnecreatGateway(e) }
+func ApplyOnecreatGateway(e *config.ProviderEntry, gw *account.Gateway) { applyOnecreatGateway(e, gw) }
 
 // OnecreatGatewayActive 报告是否处于 onecreat 网关模式(见 onecreatGatewayActive)。
-func OnecreatGatewayActive() bool { return onecreatGatewayActive() }
+func OnecreatGatewayActive(gw *account.Gateway) bool { return onecreatGatewayActive(gw) }
 
 // NewProvider builds a provider.Provider from a configured entry. Exported so
 // custom assemblers (e.g. the ACP per-session factory) can reuse it without
@@ -731,11 +744,26 @@ func NewProvider(e *config.ProviderEntry) (provider.Provider, error) {
 // NewProviderWithProxy builds a provider.Provider with the configured ordinary
 // network proxy settings.
 func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (provider.Provider, error) {
+	return newProviderFor(e, proxy, nil)
+}
+
+// newProviderFor builds the provider for one entry. gw is the platform account,
+// non-nil and active only on the gateway path: it is both the credential source
+// (so a token refresh reaches this client on its next request) and the flag that
+// tells the client its upstream is the platform, whose model must never leak
+// through an error message.
+func newProviderFor(e *config.ProviderEntry, proxy netclient.ProxySpec, gw *account.Gateway) (provider.Provider, error) {
+	var creds account.CredentialSource = account.EnvCredential{Var: e.APIKeyEnv}
+	gateway := false
+	if gw.Active() {
+		creds, gateway = gw, true
+	}
 	return provider.New(e.Kind, provider.Config{
-		Name:    e.Name,
-		BaseURL: e.BaseURL,
-		Model:   e.Model,
-		APIKey:  e.APIKey(),
+		Name:        e.Name,
+		BaseURL:     e.BaseURL,
+		Model:       e.Model,
+		Credentials: creds,
+		Gateway:     gateway,
 		// Pass the key's env var so auth failures can name where to fix it, plus
 		// provider-kind-specific knobs (the anthropic provider reads thinking/effort;
 		// the openai one ignores them).

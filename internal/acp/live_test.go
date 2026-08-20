@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reasonix/internal/account"
 	"testing"
 	"time"
 
@@ -40,10 +41,10 @@ func TestLiveDeepSeekPrompt(t *testing.T) {
 		t.Skip("DEEPSEEK_API_KEY not set")
 	}
 	prov, err := provider.New("openai", provider.Config{
-		Name:    "deepseek",
-		BaseURL: "https://api.deepseek.com",
-		Model:   "deepseek-v4-flash",
-		APIKey:  key,
+		Name:        "deepseek",
+		BaseURL:     "https://api.deepseek.com",
+		Model:       "deepseek-v4-flash",
+		Credentials: account.StaticCredential(key),
 	})
 	if err != nil {
 		t.Fatalf("provider.New: %v", err)

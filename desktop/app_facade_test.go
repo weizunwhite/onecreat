@@ -34,7 +34,7 @@ func appFile(t *testing.T) (*token.FileSet, *ast.File) {
 func TestAppHoldsNoDomainState(t *testing.T) {
 	_, file := appFile(t)
 	allowed := map[string]bool{
-		"ctx": true, "shell": true, "tabs": true, "factory": true,
+		"ctx": true, "shell": true, "tabs": true, "factory": true, "gateway": true,
 		"hw": true, "mcp": true, "files": true, "memory": true,
 		"sessions": true, "rt": true, "serial": true,
 	}

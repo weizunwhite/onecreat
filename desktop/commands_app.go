@@ -31,7 +31,7 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "new", Description: i18n.M.CmdNew, Kind: "builtin"},
 		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin"},
 	}
-	if !gatewayActive() {
+	if !a.gatewayActive() {
 		out = append(out,
 			CommandInfo{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin"},
 			CommandInfo{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin"},
@@ -87,7 +87,7 @@ type SlashArgsResult struct {
 // /skill, /hooks) for the composer — the same logic the chat TUI uses. Empty
 // Items means the input has no structured arguments to complete.
 func (a *App) SlashArgs(input string) SlashArgsResult {
-	if gatewayActive() && isGatewayManagedSlash(strings.TrimSpace(input)) {
+	if a.gatewayActive() && isGatewayManagedSlash(strings.TrimSpace(input)) {
 		return SlashArgsResult{Items: []SlashArgItem{}}
 	}
 	v, _ := a.tabs.View("")
@@ -99,7 +99,7 @@ func (a *App) SlashArgs(input string) SlashArgsResult {
 		Skills:       ctrl.Skills(),
 		CurrentModel: model,
 	}
-	if !gatewayActive() {
+	if !a.gatewayActive() {
 		for _, m := range a.Models() {
 			data.ModelRefs = append(data.ModelRefs, m.Ref)
 		}

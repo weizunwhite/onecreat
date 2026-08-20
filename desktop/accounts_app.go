@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reasonix/internal/account"
 	"strings"
 	"sync"
 	"time"
@@ -91,20 +92,13 @@ func platformBaseURL() string {
 	return "https://t.weizunxy.com"
 }
 
-// 「网关模式」用的两个进程环境变量。boot.go 的 applyOnecreatGateway 看到 URL 非空,就把模型
-// 请求改走平台 AI 网关、用 TOKEN 当 key(B 端客户不必自带 DeepSeek key,用量统一走平台计费)。
-const (
-	gatewayEnvURL   = "ONECREAT_GATEWAY_URL"
-	gatewayEnvToken = "ONECREAT_GATEWAY_TOKEN"
-	gatewayEnvTier  = "ONECREAT_TIER" // 选中档位 "tier-1/2/3";boot 用它覆盖网关 provider 的 model
-)
-
 // gatewayActive 报告当前是否处于「onecreat 网关模式」(已登录、AI 走平台网关)。判据是
-// applyGatewayEnvFromSession 设的网关 URL env 是否存在。此模式下 provider / 模型 / 密钥由平台
-// 统一分配,客户端不得再自行改 —— 否则可加一个自带 key 的非网关 provider 完全绕开网关与计量
-// (H4)。前端已隐藏相关设置入口,这是后端兜底(防 devtools / 直接调 IPC 绕过)。
-func gatewayActive() bool {
-	return platformAccountEnabled() && strings.TrimSpace(os.Getenv(gatewayEnvURL)) != ""
+// App 持有的账号对象是否有会话 —— 不再是进程环境变量(Plan 09 / A12:账号状态不走 env
+// 总线)。此模式下 provider / 模型 / 密钥由平台统一分配,客户端不得再自行改 —— 否则可加一个
+// 自带 key 的非网关 provider 完全绕开网关与计量(H4)。前端已隐藏相关设置入口,这是后端
+// 兜底(防 devtools / 直接调 IPC 绕过)。
+func (a *App) gatewayActive() bool {
+	return platformAccountEnabled() && a.gateway.Active()
 }
 
 // errGatewayManaged 是网关模式下拒绝本地改 provider/模型/key 时返回的统一错误。
@@ -150,34 +144,29 @@ func saveSessionFileLocked(p persistedSession) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-func clearGatewayEnvVars() {
-	_ = os.Unsetenv(gatewayEnvURL)
-	_ = os.Unsetenv(gatewayEnvToken)
-	_ = os.Unsetenv(gatewayEnvTier)
-}
-
-// applyGatewayEnvFromSession 按当前会话设/清网关环境变量:已登录 → 指向平台 AI 网关 +
-// 写入 token;未登录 → 清空(回到 config 里的直连 provider)。每次 boot.Build 之前都要保证
-// 它已被调用过(startup 里调一次),登录/登出后再调一次并重建 controller 让其立即生效。
-func applyGatewayEnvFromSession() {
+// applyGatewaySession 按持久化的会话更新账号对象:已登录 → 指向平台 AI 网关 + 当前 token
+// + 选中档位;未登录 → 清空(回到 config 里的直连 provider)。
+//
+// 过去这里是 os.Setenv 三个环境变量,而 boot / provider / 斜杠路由各自 os.Getenv 读回去 ——
+// 环境被当成了应用状态总线。现在写的是一个对象,所有已建好的会话共享它:续期后的下一次
+// 请求就用新 token,不必重建任何东西(Plan 09 / A12)。
+func applyGatewaySession(gw *account.Gateway) {
 	if !platformAccountEnabled() {
-		clearGatewayEnvVars()
+		gw.Clear()
 		return
 	}
 	sessionFileMu.Lock()
 	p, ok := loadSessionFileLocked()
 	sessionFileMu.Unlock()
 	if !ok {
-		clearGatewayEnvVars()
+		gw.Clear()
 		return
 	}
-	_ = os.Setenv(gatewayEnvURL, platformBaseURL()+"/api/onecreat/v1")
-	_ = os.Setenv(gatewayEnvToken, p.Token)
 	tier := p.SelectedTier
 	if tier < 1 || tier > 3 {
 		tier = 1
 	}
-	_ = os.Setenv(gatewayEnvTier, fmt.Sprintf("tier-%d", tier))
+	gw.SetSession(platformBaseURL()+"/api/onecreat/v1", p.Token, fmt.Sprintf("tier-%d", tier))
 }
 
 // accountAuthenticate 调 teacher 平台 /api/onecreat/login(手机号+密码)拿 token + 功能权限。
@@ -239,9 +228,9 @@ var refreshMu sync.Mutex
 
 // ensureFreshToken 在网关 access token 快过期时,用 refresh_token 静默换新——用户无需重新登录。
 // 阈值 20 分钟;refresh_token 缺失(未登录 / 老会话)或网络/令牌失效时静默保持原状(到期会有
-// 「请重新登录」提示兜底)。成功后刷新 ONECREAT_GATEWAY_TOKEN env;provider 请求时读 env,
+// 「请重新登录」提示兜底)。成功后更新账号对象;provider 每次请求都问它要 token,
 // 新 token 立即对所有标签生效,无需重建。
-func ensureFreshToken() {
+func ensureFreshToken(gw *account.Gateway) {
 	if !platformAccountEnabled() {
 		return
 	}
@@ -293,7 +282,7 @@ func ensureFreshToken() {
 	}
 	sessionFileMu.Unlock()
 	if stillIn {
-		applyGatewayEnvFromSession() // 把新 token 写进 ONECREAT_GATEWAY_TOKEN
+		gw.SetToken(r.Token) // 下一次请求就用新 token,不动 URL / 档位
 	}
 }
 
@@ -314,7 +303,7 @@ func (a *App) AccountLogin(account, password string) AccountLoginResult {
 	}
 	// 登录后启用网关:设 env + 重建「所有」标签的 controller,让 AI 立即改走平台网关(用本次
 	// token 鉴权),无需重启 app。重建所有 tab(非仅活动 tab):否则后台 tab 仍走直连 / 旧态。
-	applyGatewayEnvFromSession()
+	applyGatewaySession(a.gateway)
 	a.rebuildAllTabs()
 	return AccountLoginResult{OK: true}
 }
@@ -328,7 +317,7 @@ func (a *App) AccountLogout() {
 	sessionFileMu.Unlock()
 	// 清网关 env + 重建「所有」标签:登出后撤销的 token 不能再被任何后台 tab 使用(否则
 	// 后台 tab 仍持旧 token 继续打计费端点)。
-	applyGatewayEnvFromSession()
+	applyGatewaySession(a.gateway)
 	a.rebuildAllTabs()
 }
 
@@ -384,7 +373,7 @@ func (a *App) SetOnecreatTier(index int) error {
 	}
 	// 切档后重建「所有」标签:tier 在 boot.Build 时被烤进每个 tab 的 provider,只重建活动 tab
 	// 会让后台 tab 继续按旧档计费(H2)。
-	applyGatewayEnvFromSession()
+	applyGatewaySession(a.gateway)
 	a.rebuildAllTabs()
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reasonix/internal/account"
 	"strings"
 	"testing"
 	"time"
@@ -35,11 +36,11 @@ func TestRealDeepSeekCacheProbe(t *testing.T) {
 	}
 
 	p, err := New(provider.Config{
-		Name:    "deepseek",
-		BaseURL: "https://api.deepseek.com",
-		Model:   "deepseek-v4-flash",
-		APIKey:  key,
-		Extra:   map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
+		Name:        "deepseek",
+		BaseURL:     "https://api.deepseek.com",
+		Model:       "deepseek-v4-flash",
+		Credentials: account.StaticCredential(key),
+		Extra:       map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

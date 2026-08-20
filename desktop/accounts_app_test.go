@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reasonix/internal/account"
 	"strings"
 	"testing"
 	"time"
@@ -127,17 +128,16 @@ func TestLocalAccountModeIgnoresPersistedPlatformSession(t *testing.T) {
 	sessionFileMu.Lock()
 	_ = saveSessionFileLocked(persistedSession{Account: "old", Token: "tok", SelectedTier: 2})
 	sessionFileMu.Unlock()
-	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
-	t.Setenv(gatewayEnvToken, "tok")
-	t.Setenv(gatewayEnvTier, "tier-2")
+	a := newBareApp(nil, nil)
+	a.gateway.SetSession("https://t.example.com/api/onecreat/v1", "tok", "tier-2")
 
-	applyGatewayEnvFromSession()
+	applyGatewaySession(a.gateway)
 
-	if gatewayActive() {
+	if a.gatewayActive() {
 		t.Fatal("默认本地 API 模式不应激活网关")
 	}
-	if os.Getenv(gatewayEnvURL) != "" || os.Getenv(gatewayEnvToken) != "" || os.Getenv(gatewayEnvTier) != "" {
-		t.Fatalf("默认本地 API 模式应清空网关 env,url=%q token=%q tier=%q", os.Getenv(gatewayEnvURL), os.Getenv(gatewayEnvToken), os.Getenv(gatewayEnvTier))
+	if a.gateway.Active() || a.gateway.Tier() != "" {
+		t.Fatalf("默认本地 API 模式应清空账号会话,url=%q tier=%q", a.gateway.URL(), a.gateway.Tier())
 	}
 	s := (newBareApp(nil, nil)).AccountSessionInfo()
 	if s.LoggedIn {
@@ -188,14 +188,13 @@ func TestDefaultAccountModeFallback(t *testing.T) {
 func TestGatewayModeBlocksProviderMutations(t *testing.T) {
 	seedTempConfigDir(t)
 	// 未登录:守卫不激活。
-	t.Setenv(gatewayEnvURL, "")
-	if gatewayActive() {
-		t.Fatal("无网关 env 时 gatewayActive 应为 false")
+	if newBareApp(nil, nil).gatewayActive() {
+		t.Fatal("无账号会话时 gatewayActive 应为 false")
 	}
 	// 网关模式(登录):provider / 模型 / key 改动全部被拒。
 	enablePlatformAccountMode(t)
-	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
 	a := newBareApp(context.Background(), nil)
+	a.gateway.SetSession("https://t.example.com/api/onecreat/v1", "tok", "tier-1")
 	checks := map[string]error{
 		"SaveProvider":    a.SaveProvider(ProviderView{Name: "evil", Kind: "anthropic"}),
 		"SetProviderKey":  a.SetProviderKey("ANTHROPIC_API_KEY", "sk-x"),
@@ -212,7 +211,7 @@ func TestGatewayModeBlocksProviderMutations(t *testing.T) {
 }
 
 // 自动续期:access token 快过期(<20min)时用 refresh_token 静默换新,不动 SelectedTier,
-// 并把新 token 写进 ONECREAT_GATEWAY_TOKEN env。
+// 并把新 token 写进账号对象 —— 已建好的会话下一次请求就用它,不必重建。
 func TestEnsureFreshTokenRefreshes(t *testing.T) {
 	seedTempConfigDir(t)
 	enablePlatformAccountMode(t)
@@ -225,14 +224,13 @@ func TestEnsureFreshTokenRefreshes(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("ONECREAT_PLATFORM_URL", srv.URL)
-	t.Setenv(gatewayEnvURL, "")
-	t.Setenv(gatewayEnvToken, "")
-
 	sessionFileMu.Lock()
 	_ = saveSessionFileLocked(persistedSession{Token: "OLD", RefreshToken: "RT1", ExpiresAt: time.Now().Unix() + 5*60, SelectedTier: 2})
 	sessionFileMu.Unlock()
 
-	ensureFreshToken()
+	gw := &account.Gateway{}
+	gw.SetSession("https://t.example.com/api/onecreat/v1", "OLD", "tier-2")
+	ensureFreshToken(gw)
 
 	sessionFileMu.Lock()
 	p, ok := loadSessionFileLocked()
@@ -249,8 +247,11 @@ func TestEnsureFreshTokenRefreshes(t *testing.T) {
 	if p.SelectedTier != 2 {
 		t.Fatalf("续期不应动 SelectedTier: %d", p.SelectedTier)
 	}
-	if os.Getenv(gatewayEnvToken) != "NEW" {
-		t.Fatalf("env token 未更新为新值: %q", os.Getenv(gatewayEnvToken))
+	if tok, _ := gw.Token(context.Background()); tok != "NEW" {
+		t.Fatalf("账号对象里的 token 未更新为新值: %q", tok)
+	}
+	if gw.Tier() != "tier-2" || gw.URL() == "" {
+		t.Fatalf("续期只应换 token,不动 URL / 档位:url=%q tier=%q", gw.URL(), gw.Tier())
 	}
 }
 
@@ -277,7 +278,7 @@ func TestEnsureFreshTokenSkips(t *testing.T) {
 			_ = saveSessionFileLocked(tc.sess)
 			sessionFileMu.Unlock()
 
-			ensureFreshToken()
+			ensureFreshToken(&account.Gateway{})
 			if called {
 				t.Fatal("不该调用 refresh 端点")
 			}
@@ -291,21 +292,19 @@ func TestEnsureFreshTokenSkips(t *testing.T) {
 	}
 }
 
-// M4:applyGatewayEnvFromSession 按会话设/清网关 env —— 登出清空、登录按档位写 tier-N。
-func TestApplyGatewayEnvFromSession(t *testing.T) {
+// M4:applyGatewaySession 按会话设/清账号对象 —— 登出清空、登录按档位写 tier-N。
+func TestApplyGatewaySession(t *testing.T) {
 	seedTempConfigDir(t)
-	t.Setenv(gatewayEnvURL, "")
-	t.Setenv(gatewayEnvToken, "")
-	t.Setenv(gatewayEnvTier, "")
+	gw := &account.Gateway{}
 
-	// 默认 local-first:即便磁盘上还残留旧平台会话,也必须清空网关 env。
+	// 默认 local-first:即便磁盘上还残留旧平台会话,也必须清空账号对象。
 	sessionFileMu.Lock()
 	_ = saveSessionFileLocked(persistedSession{Token: "old", SelectedTier: 2})
 	sessionFileMu.Unlock()
-	t.Setenv(gatewayEnvToken, "stale")
-	applyGatewayEnvFromSession()
-	if v := os.Getenv(gatewayEnvToken); v != "" {
-		t.Fatalf("本地 API 模式应清空 token env,得到 %q", v)
+	gw.SetSession("https://stale.example.com", "stale", "tier-3")
+	applyGatewaySession(gw)
+	if gw.Active() {
+		t.Fatalf("本地 API 模式应清空账号会话,url=%q", gw.URL())
 	}
 
 	enablePlatformAccountMode(t)
@@ -315,25 +314,25 @@ func TestApplyGatewayEnvFromSession(t *testing.T) {
 	}
 	sessionFileMu.Unlock()
 
-	// 未登录(无会话文件):清空 token env。
-	t.Setenv(gatewayEnvToken, "stale")
-	applyGatewayEnvFromSession()
-	if v := os.Getenv(gatewayEnvToken); v != "" {
-		t.Fatalf("未登录应清空 token env,得到 %q", v)
+	// 未登录(无会话文件):清空。
+	gw.SetSession("https://stale.example.com", "stale", "tier-3")
+	applyGatewaySession(gw)
+	if gw.Active() {
+		t.Fatalf("未登录应清空账号会话,url=%q", gw.URL())
 	}
 
 	// 登录 tier 2:写网关 url + token + tier-2。
 	sessionFileMu.Lock()
 	_ = saveSessionFileLocked(persistedSession{Token: "tok", SelectedTier: 2})
 	sessionFileMu.Unlock()
-	applyGatewayEnvFromSession()
-	if v := os.Getenv(gatewayEnvToken); v != "tok" {
-		t.Fatalf("token env=%q,想要 tok", v)
+	applyGatewaySession(gw)
+	if tok, _ := gw.Token(context.Background()); tok != "tok" {
+		t.Fatalf("token=%q,想要 tok", tok)
 	}
-	if v := os.Getenv(gatewayEnvTier); v != "tier-2" {
-		t.Fatalf("tier env=%q,想要 tier-2", v)
+	if gw.Tier() != "tier-2" {
+		t.Fatalf("tier=%q,想要 tier-2", gw.Tier())
 	}
-	if v := os.Getenv(gatewayEnvURL); !strings.HasSuffix(v, "/api/onecreat/v1") {
-		t.Fatalf("url env=%q,应以 /api/onecreat/v1 结尾", v)
+	if !strings.HasSuffix(gw.URL(), "/api/onecreat/v1") {
+		t.Fatalf("url=%q,应以 /api/onecreat/v1 结尾", gw.URL())
 	}
 }

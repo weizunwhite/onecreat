@@ -33,7 +33,7 @@ type EffortInfo struct {
 // providers are skipped. Result is non-nil: the frontend reads .length, so a nil
 // slice (JSON null) would crash the switcher on an empty list.
 func (a *App) Models() []ModelInfo {
-	if gatewayActive() {
+	if a.gatewayActive() {
 		return []ModelInfo{}
 	}
 	active, _ := a.tabs.View("")

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/account"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -51,6 +52,11 @@ type App struct {
 	// 单元测试(newBareApp)不设它 —— nil 表示「每个 controller 自带一份私有的」,
 	// 即 Plan 05 之前的行为。
 	factory *boot.Factory
+
+	// gateway 是平台账号运行时:登录后的网关 URL / token / 档位。所有标签共享同一个
+	// 对象,token 续期只改它,已建好的会话下一次请求就用上新 token —— 不再靠
+	// os.Setenv 三个环境变量当状态总线(Plan 09 / A12)。
+	gateway *account.Gateway
 
 	// 领域服务。App 从 Plan 06 起只是它们的 transport facade:除了 ctx / shell /
 	// tabs / factory 这几样装配层的东西,它自己不再持有任何领域状态,也不再有锁 ——
@@ -104,12 +110,17 @@ func NewApp() *App {
 // 依赖用函数注入而不是直接传值:shell 在此之前一行才装上,ctx 要等 startup,
 // 而 workspaceRoot / activeCtrl 本来就是「每次调用现算」的。
 func (a *App) wireServices() {
+	if a.gateway == nil {
+		// 兼容:进程若带着 ONECREAT_GATEWAY_* 启动(旧版脚本 / 打包器 / 测试),导入一次;
+		// 之后这个对象就是唯一真源,env 不再被读回(Plan 09 / A12)。
+		a.gateway = account.FromEnv()
+	}
 	a.serial = newSerialService(a.sh)
 	a.mcp = newMCPService(a.activeCtrl)
 	a.files = newFileService(a.workspaceRoot)
 	a.memory = newMemoryService(a.activeCtrl)
 	a.sessions = newSessionService(a.tabs)
-	a.rt = newTabRuntimeService(a.tabs, a.factory, a.sh, func() context.Context { return a.ctx }, a.serialReleaseForToolUse)
+	a.rt = newTabRuntimeService(a.tabs, a.factory, a.gateway, a.sh, func() context.Context { return a.ctx }, a.serialReleaseForToolUse)
 }
 
 // startup runs once the webview process is up, before the frontend can issue any
@@ -175,9 +186,9 @@ func (a *App) buildController() {
 	// 默认 local-first:清掉任何旧网关 env,让首个 controller 使用本地 provider/API key。
 	// 只有显式 ONECREAT_ACCOUNT_MODE=platform 时才续期并改走平台 AI 网关。
 	if platformAccountEnabled() {
-		ensureFreshToken()
+		ensureFreshToken(a.gateway)
 	}
-	applyGatewayEnvFromSession()
+	applyGatewaySession(a.gateway)
 
 	a.buildTab("main")
 
@@ -197,7 +208,7 @@ func (a *App) tokenRefreshLoop() {
 		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
-			ensureFreshToken()
+			ensureFreshToken(a.gateway)
 		}
 	}
 }
@@ -288,7 +299,7 @@ func (a *App) activeCtrl() *control.Controller { return a.tabs.Ctrl("") }
 // resolved by the controller. Output arrives asynchronously on eventChannel.
 func (a *App) Submit(input string) {
 	trimmed := strings.TrimSpace(input)
-	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+	if a.gatewayActive() && isGatewayManagedSlash(trimmed) {
 		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
 		return
 	}
@@ -306,7 +317,7 @@ func (a *App) Submit(input string) {
 // string for the saved desktop transcript. The model still receives input.
 func (a *App) SubmitDisplay(display, input string) {
 	trimmed := strings.TrimSpace(input)
-	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+	if a.gatewayActive() && isGatewayManagedSlash(trimmed) {
 		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
 		return
 	}
@@ -593,7 +604,7 @@ type Meta struct {
 func (a *App) Meta() Meta {
 	v, _ := a.tabs.View("")
 	label, startupErr, ready, ctrl := v.label, v.startupErr, v.ready, v.ctrl
-	if gatewayActive() {
+	if a.gatewayActive() {
 		label = "OneCreat 智能档位"
 	}
 	cwd := a.workspaceRoot()

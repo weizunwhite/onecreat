@@ -214,7 +214,7 @@ func (a *App) rebuild() error {
 	// PreToolUse 与其它四个 boot.Build 调用点(app.go buildTab/SwitchWorkspace/SetModel/
 	// rebuildTabByID)保持一致:重建后仍带串口自动释放回调,否则改任意设置后 AI 烧录不再让出
 	// 常驻串口监视器,撞 busy(e78fe02c 在此路径的回归)。
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse, Factory: a.factory})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse, Factory: a.factory, Gateway: a.gateway})
 	if err != nil {
 		a.tabUpdate(targetTab, func(rt *tabRuntime) {
 			rt.ctrl = nil
@@ -278,7 +278,7 @@ func withFreshSystemPrompt(messages []provider.Message, system string) []provide
 
 // SetDefaultModel sets the config default and switches the live model to it.
 func (a *App) SetDefaultModel(ref string) error {
-	if gatewayActive() {
+	if a.gatewayActive() {
 		return errGatewayManaged
 	}
 	// 乐观地先把活动标签的 model 改成 ref,写配置失败再回滚。
@@ -302,7 +302,7 @@ func (a *App) SetDefaultModel(ref string) error {
 
 // SetPlannerModel sets (or, with "", clears) the two-model planner.
 func (a *App) SetPlannerModel(ref string) error {
-	if gatewayActive() {
+	if a.gatewayActive() {
 		return errGatewayManaged
 	}
 	return a.applyConfigChange(func(c *config.Config) error {
@@ -319,7 +319,7 @@ func (a *App) SetPlannerModel(ref string) error {
 // SaveProvider adds or updates a provider. A single model fills `model`; several
 // fill `models` (with `default`). The shared key/endpoint live on the entry.
 func (a *App) SaveProvider(p ProviderView) error {
-	if gatewayActive() {
+	if a.gatewayActive() {
 		return errGatewayManaged
 	}
 	return a.applyConfigChange(func(c *config.Config) error {
@@ -340,7 +340,7 @@ func (a *App) SaveProvider(p ProviderView) error {
 
 // DeleteProvider removes a provider (refused for the current default_model).
 func (a *App) DeleteProvider(name string) error {
-	if gatewayActive() {
+	if a.gatewayActive() {
 		return errGatewayManaged
 	}
 	return a.applyConfigChange(func(c *config.Config) error { return c.RemoveProvider(name) })
@@ -349,7 +349,7 @@ func (a *App) DeleteProvider(name string) error {
 // SetProviderKey writes a secret to ./.env under the given env-var name (the one a
 // provider's api_key_env points at) and rebuilds so it resolves immediately.
 func (a *App) SetProviderKey(apiKeyEnv, value string) error {
-	if gatewayActive() {
+	if a.gatewayActive() {
 		return errGatewayManaged
 	}
 	if strings.TrimSpace(apiKeyEnv) == "" {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 
+	"reasonix/internal/account"
 	"reasonix/internal/acp"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
@@ -50,7 +51,10 @@ func acpCommand(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, fmt.Errorf("unknown model %q", modelName))
 		return 1
 	}
-	boot.ApplyOnecreatGateway(entry)
+	// ACP 是被编辑器拉起的子进程,没有自己的账号运行时:它继承启动时的环境变量一次
+	// (env 在这里是【传输格式】,不是状态总线),之后这个对象就是唯一真源。
+	gw := account.FromEnv()
+	boot.ApplyOnecreatGateway(entry, gw)
 	if err := entry.Validate(modelName); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
@@ -62,7 +66,7 @@ func acpCommand(args []string, version string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	factory := &acpFactory{cfg: cfg, model: modelName}
+	factory := &acpFactory{cfg: cfg, model: modelName, gateway: gw}
 	info := acp.AgentInfo{Name: "reasonix", Version: version}
 	if err := acp.Serve(ctx, os.Stdin, os.Stdout, factory, info); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
@@ -84,6 +88,9 @@ func acpCommand(args []string, version string) int {
 type acpFactory struct {
 	cfg   *config.Config
 	model string
+	// gateway 是本进程的账号(启动时从 env 导入一次)。每个 session 都拿同一个对象,
+	// 而不是各自去读环境变量。
+	gateway *account.Gateway
 }
 
 // NewSession assembles the per-session controller through boot.Build. Two
@@ -111,6 +118,7 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 		Model:                 f.model,
 		Sink:                  p.Sink,
 		Workspace:             ws,
+		Gateway:               f.gateway,
 		ExtraPlugins:          p.MCPServers,
 		HostProvidesCodeIntel: true,
 		// RequireKey stays false: the key was validated once at startup (above),

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reasonix/internal/account"
 	"strings"
 	"testing"
 
@@ -56,11 +57,11 @@ func TestStreamAuthError(t *testing.T) {
 	defer srv.Close()
 
 	p, err := New(provider.Config{
-		Name:    "deepseek",
-		BaseURL: srv.URL,
-		Model:   "deepseek-v4",
-		APIKey:  "bad",
-		Extra:   map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
+		Name:        "deepseek",
+		BaseURL:     srv.URL,
+		Model:       "deepseek-v4",
+		Credentials: account.StaticCredential("bad"),
+		Extra:       map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -89,11 +90,12 @@ func TestStreamGatewayAuthErrorUsesPlatformMessage(t *testing.T) {
 	defer srv.Close()
 
 	p, err := New(provider.Config{
-		Name:    "onecreat",
-		BaseURL: srv.URL,
-		Model:   "tier-1",
-		APIKey:  "expired",
-		Extra:   map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
+		Name:        "onecreat",
+		BaseURL:     srv.URL,
+		Model:       "tier-1",
+		Credentials: account.StaticCredential("expired"),
+		Gateway:     true,
+		Extra:       map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -120,8 +122,9 @@ func TestStreamGatewayHTTPErrorRedactsUpstreamBody(t *testing.T) {
 	defer srv.Close()
 
 	p, err := New(provider.Config{
-		Name: "onecreat", BaseURL: srv.URL, Model: "tier-1", APIKey: "tok",
-		Extra: map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
+		Name: "onecreat", BaseURL: srv.URL, Model: "tier-1", Credentials: account.StaticCredential("tok"),
+		Gateway: true,
+		Extra:   map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -150,7 +153,7 @@ func TestStreamNonGatewayHTTPErrorPassesThroughBody(t *testing.T) {
 	defer srv.Close()
 
 	p, err := New(provider.Config{
-		Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4-pro", APIKey: "tok",
+		Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4-pro", Credentials: account.StaticCredential("tok"),
 		Extra: map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
 	})
 	if err != nil {
@@ -177,8 +180,9 @@ func TestStreamGatewayMidStreamErrorRedacted(t *testing.T) {
 	defer srv.Close()
 
 	p, err := New(provider.Config{
-		Name: "onecreat", BaseURL: srv.URL, Model: "tier-1", APIKey: "tok",
-		Extra: map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
+		Name: "onecreat", BaseURL: srv.URL, Model: "tier-1", Credentials: account.StaticCredential("tok"),
+		Gateway: true,
+		Extra:   map[string]any{"api_key_env": "ONECREAT_GATEWAY_TOKEN"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -232,7 +236,7 @@ func TestReadStreamLargeFrameNoErrTooLong(t *testing.T) {
 	defer srv.Close()
 
 	p, err := New(provider.Config{
-		Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "tok",
+		Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", Credentials: account.StaticCredential("tok"),
 		Extra: map[string]any{"api_key_env": "DEEPSEEK_API_KEY"},
 	})
 	if err != nil {
@@ -342,7 +346,7 @@ func TestStreamRepairsDanglingToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := New(provider.Config{Name: "deepseek-flash", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k"})
+	p, err := New(provider.Config{Name: "deepseek-flash", BaseURL: srv.URL, Model: "deepseek-v4", Credentials: account.StaticCredential("k")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -608,7 +612,7 @@ func TestStreamSynthesizesMissingToolCallIDs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := New(provider.Config{Name: "local", BaseURL: srv.URL, Model: "qwen", APIKey: "k"})
+	p, err := New(provider.Config{Name: "local", BaseURL: srv.URL, Model: "qwen", Credentials: account.StaticCredential("k")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
