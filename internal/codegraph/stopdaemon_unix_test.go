@@ -1,9 +1,10 @@
 //go:build !windows
 
+package codegraph
+
 // 这里的守护进程存活探测用 syscall.Kill(pid, 0),Windows 上没有这个符号:整包会在
 // 跑到 t.Skip 之前就编译失败(Windows CI 的 vet/test 基线缺口)。用 build tag 表达
 // 「本文件只在 Unix 编译」,跨平台的那半个用例留在 stopdaemon_test.go 里照常跑。
-package codegraph
 
 import (
 	"os"
