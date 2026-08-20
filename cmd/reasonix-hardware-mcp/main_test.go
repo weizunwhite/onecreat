@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+func jsonPathFragment(path string) string {
+	b, _ := json.Marshal(filepath.FromSlash(path))
+	return strings.Trim(string(b), `"`)
+}
+
 func TestJSONRPCToolsListIncludesHardwareTools(t *testing.T) {
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
@@ -374,7 +379,6 @@ func TestScaffoldAllSupportedPlatformsCreateTeachingFiles(t *testing.T) {
 					if !strings.Contains(string(body), want) {
 						t.Fatalf("%s missing %q:\n%s", rel, want, body)
 					}
-				}
 			}
 		})
 	}
@@ -402,7 +406,7 @@ func TestProjectContextAddsMissingFilesWithoutOverwritingExistingReadme(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"projectName": "legacy_snake"`, `"platform": "platformio"`, `"board": "esp32dev"`, `"status": "skipped"`, "docs/board_profile.md", "docs/failure_patterns.md", "hardware_manifest.json"} {
+	for _, want := range []string{`"projectName": "legacy_snake"`, `"platform": "platformio"`, `"board": "esp32dev"`, `"status": "skipped"`, jsonPathFragment("docs/board_profile.md"), jsonPathFragment("docs/failure_patterns.md"), "hardware_manifest.json"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("context output missing %q:\n%s", want, out)
 		}
@@ -1115,7 +1119,11 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 
 func TestESPIDFMCPConfigUsesWorkspaceEnvForEIM(t *testing.T) {
 	fakeBin := t.TempDir()
-	fakeEIM := filepath.Join(fakeBin, "eim")
+	fakeName := "eim"
+	if runtime.GOOS == "windows" {
+		fakeName = "eim.exe"
+	}
+	fakeEIM := filepath.Join(fakeBin, fakeName)
 	if err := os.WriteFile(fakeEIM, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1131,7 +1139,7 @@ func TestESPIDFMCPConfigUsesWorkspaceEnvForEIM(t *testing.T) {
 		t.Fatalf("runESPIDFMCPConfig() error = %v", err)
 	}
 	for _, want := range []string{
-		fakeEIM,
+		jsonPathFragment(fakeEIM),
 		`IDF_MCP_WORKSPACE_FOLDER`,
 		`idf.py mcp-server`,
 	} {
@@ -1388,7 +1396,7 @@ func TestProjectRepairDryRunPlatformIORootINO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"dryRun": true`, `"applied": false`, "src/main.cpp", ".onecreat-backup", "include/index_html.h"} {
+	for _, want := range []string{`"dryRun": true`, `"applied": false`, jsonPathFragment("src/main.cpp"), ".onecreat-backup", jsonPathFragment("include/index_html.h")} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("repair dry-run output missing %q:\n%s", want, out)
 		}
