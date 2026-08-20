@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+func jsonPathFragment(path string) string {
+	b, _ := json.Marshal(filepath.FromSlash(path))
+	return strings.Trim(string(b), `"`)
+}
+
 func TestJSONRPCToolsListIncludesHardwareTools(t *testing.T) {
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
@@ -402,7 +407,7 @@ func TestProjectContextAddsMissingFilesWithoutOverwritingExistingReadme(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"projectName": "legacy_snake"`, `"platform": "platformio"`, `"board": "esp32dev"`, `"status": "skipped"`, "docs/board_profile.md", "docs/failure_patterns.md", "hardware_manifest.json"} {
+	for _, want := range []string{`"projectName": "legacy_snake"`, `"platform": "platformio"`, `"board": "esp32dev"`, `"status": "skipped"`, jsonPathFragment("docs/board_profile.md"), jsonPathFragment("docs/failure_patterns.md"), "hardware_manifest.json"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("context output missing %q:\n%s", want, out)
 		}
@@ -770,9 +775,9 @@ func TestKeepStdinOpenPreventsEOFExit(t *testing.T) {
 	}
 }
 
-func findDeployStep(steps []deviceVerifyPlanStep) *deviceVerifyPlanStep {
+func findDeployStep(steps []deviceVerifyPlanStep, tool string) *deviceVerifyPlanStep {
 	for i := range steps {
-		if steps[i].Tool == "ssh_deploy_run" {
+		if steps[i].Tool == tool {
 			return &steps[i]
 		}
 	}
@@ -1115,7 +1120,11 @@ func TestEvidenceStatusDistinguishesLocalAndHardwareVerification(t *testing.T) {
 
 func TestESPIDFMCPConfigUsesWorkspaceEnvForEIM(t *testing.T) {
 	fakeBin := t.TempDir()
-	fakeEIM := filepath.Join(fakeBin, "eim")
+	fakeName := "eim"
+	if runtime.GOOS == "windows" {
+		fakeName = "eim.exe"
+	}
+	fakeEIM := filepath.Join(fakeBin, fakeName)
 	if err := os.WriteFile(fakeEIM, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1131,7 +1140,7 @@ func TestESPIDFMCPConfigUsesWorkspaceEnvForEIM(t *testing.T) {
 		t.Fatalf("runESPIDFMCPConfig() error = %v", err)
 	}
 	for _, want := range []string{
-		fakeEIM,
+		jsonPathFragment(fakeEIM),
 		`IDF_MCP_WORKSPACE_FOLDER`,
 		`idf.py mcp-server`,
 	} {
@@ -1388,7 +1397,7 @@ func TestProjectRepairDryRunPlatformIORootINO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"dryRun": true`, `"applied": false`, "src/main.cpp", ".onecreat-backup", "include/index_html.h"} {
+	for _, want := range []string{`"dryRun": true`, `"applied": false`, jsonPathFragment("src/main.cpp"), ".onecreat-backup", jsonPathFragment("include/index_html.h")} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("repair dry-run output missing %q:\n%s", want, out)
 		}
@@ -1664,7 +1673,7 @@ func TestSSHCommonArgsDefaultsAreNonInteractive(t *testing.T) {
 	for _, want := range []string{
 		"-o BatchMode=yes",
 		"-o StrictHostKeyChecking=accept-new",
-		"-o UserKnownHostsFile=", // 不写 ~/.ssh(沙箱会拒),固定走临时目录
+		"-o UserKnownHostsFile=",
 		"-o ConnectTimeout=8",
 		"-o ServerAliveInterval=5",
 		"-o ServerAliveCountMax=1",
@@ -1673,7 +1682,6 @@ func TestSSHCommonArgsDefaultsAreNonInteractive(t *testing.T) {
 			t.Fatalf("sshCommonArgs missing %q: %s", want, got)
 		}
 	}
-	// 密码认证模式(batch=false)绝不能带 BatchMode,否则 sshpass 也救不了
 	pw := strings.Join(sshCommonArgs(0, "", false), " ")
 	if strings.Contains(pw, "BatchMode") {
 		t.Fatalf("password mode must not set BatchMode: %s", pw)
@@ -1724,8 +1732,6 @@ func TestArduinoMonitorTimeoutWithoutOutputIsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("runArduinoMonitor should fail when it times out without serial output:\n%s", out)
 	}
-	// 跑满采样窗口仍无串口输出 -> 返回明确的“没采到输出”硬件侧排查指引(而不是干瘪的
-	// timeout);命令头要带上,方便排查。stdin 撑住后 monitor 不再秒退,这是超时分支。
 	if !strings.Contains(err.Error(), "串口没采到输出") || !strings.Contains(out, "$ arduino-cli monitor") {
 		t.Fatalf("unexpected monitor timeout result: err=%v out=%s", err, out)
 	}
@@ -1743,8 +1749,6 @@ func TestArduinoMonitorNoOutputIsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("runArduinoMonitor should fail when monitor exits without serial output:\n%s", out)
 	}
-	// 没采到输出的指引必须:点明串口无输出、明确劝阻 bash 瞎试(screen 等)、
-	// 且仍保留原始命令行供排查。
 	msg := err.Error()
 	if !strings.Contains(msg, "串口") || !strings.Contains(msg, "screen") || !strings.Contains(msg, "不要") {
 		t.Fatalf("no-output guidance should warn against bash retries: %v", msg)
