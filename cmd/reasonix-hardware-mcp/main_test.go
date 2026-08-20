@@ -379,6 +379,7 @@ func TestScaffoldAllSupportedPlatformsCreateTeachingFiles(t *testing.T) {
 					if !strings.Contains(string(body), want) {
 						t.Fatalf("%s missing %q:\n%s", rel, want, body)
 					}
+				}
 			}
 		})
 	}
