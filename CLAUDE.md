@@ -60,6 +60,8 @@ Run the agent: `reasonix setup` (config wizard → `./onecreat.toml`), then `rea
 
 The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream model → execute tool calls → repeat) over an **`internal/agent.Session`** (the message log). Tools come from `internal/tool` (registry); providers from `internal/provider` (registry).
 
+**`control.Controller` is a compat facade over six services**, each owning its own state *and its own lock*: `approvalBroker` (`approval.go` — approval/ask prompts, session grants, YOLO/bypass, the just-approved-plan window), `checkpointService` (`checkpoints.go` — store, monotonic turn counter, turn→message-index boundaries), `sessionStore` (`session_store.go` — session dir, active file, per-turn autosave; it owns the *file*, never the message log), `mcpService` (`mcp.go` — plugin host, live tool registry, hot-add context), `memoryService` (`memory.go` — snapshot + the notes queued to ride the next turn), and `turnState` (`turn_state.go` — running/busy mutual exclusion, cancel, turn counter, plan mode, coaching persona). The Controller itself holds **no mutex**; `internal/control/facade_test.go` fails if one reappears on the struct or if `controller.go` grows past 950 lines. Add domain state to a service, not to the Controller.
+
 **Events flow outward through a sink.** The Agent/Controller emit `internal/event.Event`s to an `event.Sink`; each frontend implements the sink to render the stream (TUI redraw, SSE frame, Wails `EventsEmit`). Frontends call *in* via Controller methods (`Submit`, `Approve`, `Rewind`, …) and observe *out* via the sink. There is no direct frontend→model path.
 
 ### Registry extensibility (no `switch model`)
