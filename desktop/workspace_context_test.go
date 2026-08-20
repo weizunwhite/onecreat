@@ -57,25 +57,27 @@ func TestTabsHoldIndependentWorkspaces(t *testing.T) {
 
 	app := newTestApp(t, a)
 	background := &tabRuntime{id: "bg", kind: "chat", ws: testWorkspace(t, a)}
-	app.tabs["bg"] = background
+	app.tabs.Register(background)
 
 	// The user opens project B and creates a tab there.
 	app.mu.Lock()
 	app.ws = testWorkspace(t, b)
 	app.mu.Unlock()
 	foreground := &tabRuntime{id: "fg", kind: "chat", ws: app.workspace()}
-	app.tabs["fg"] = foreground
+	app.tabs.Register(foreground)
 
 	// …then selects project C.
 	app.mu.Lock()
 	app.ws = testWorkspace(t, c)
 	app.mu.Unlock()
 
-	if !samePath(background.ws.Root(), a) {
-		t.Errorf("background tab root = %q, want %q — it followed the active selection", background.ws.Root(), a)
+	bgView, _ := app.tabs.View("bg")
+	fgView, _ := app.tabs.View("fg")
+	if !samePath(bgView.ws.Root(), a) {
+		t.Errorf("background tab root = %q, want %q — it followed the active selection", bgView.ws.Root(), a)
 	}
-	if !samePath(foreground.ws.Root(), b) {
-		t.Errorf("second tab root = %q, want %q", foreground.ws.Root(), b)
+	if !samePath(fgView.ws.Root(), b) {
+		t.Errorf("second tab root = %q, want %q", fgView.ws.Root(), b)
 	}
 	if !samePath(app.workspaceRoot(), c) {
 		t.Errorf("selected workspace = %q, want %q", app.workspaceRoot(), c)

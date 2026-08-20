@@ -31,9 +31,8 @@ func TestSwitchWorkspaceRejectsWhileRunning(t *testing.T) {
 	ctrl := control.New(control.Options{Runner: runner})
 	defer ctrl.Close()
 
-	a := &App{ctx: context.Background()}
-	a.ctrl = ctrl
-	a.tabs = map[string]*tabRuntime{"t": {}} // tabCount==1,让 tabCount 守卫先放行
+	a := &App{ctx: context.Background(), tabs: newTabManager()}
+	a.tabs.Register(&tabRuntime{id: "t", ctrl: ctrl})
 
 	ctrl.Submit("hello") // 起一个会阻塞的回合 → Running() 变 true
 	select {
@@ -105,22 +104,24 @@ func TestSetEffortRebuildsController(t *testing.T) {
 
 	app := NewApp()
 	app.ctx = context.Background()
-	app.model = "deepseek-flash/deepseek-v4-flash"
 	old := control.New(control.Options{Label: "old-controller"})
-	app.ctrl = old
+	app.tabUpdate("", func(rt *tabRuntime) {
+		rt.model = "deepseek-flash/deepseek-v4-flash"
+		rt.ctrl = old
+	})
 	defer func() {
-		if app.ctrl != nil {
-			app.ctrl.Close()
+		if ctrl := app.activeCtrl(); ctrl != nil {
+			ctrl.Close()
 		}
 	}()
 
 	if err := app.SetEffort("max"); err != nil {
 		t.Fatalf("SetEffort(max): %v", err)
 	}
-	if app.ctrl == nil {
+	if app.activeCtrl() == nil {
 		t.Fatal("SetEffort should leave a rebuilt controller")
 	}
-	if app.ctrl == old {
+	if app.activeCtrl() == old {
 		t.Fatal("SetEffort should rebuild the active controller so the provider sees the new effort")
 	}
 	if got := app.Effort().Current; got != "max" {
@@ -135,8 +136,9 @@ func TestSetEffortRejectsRunningTurn(t *testing.T) {
 
 	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
 	app := NewApp()
-	app.ctrl = control.New(control.Options{Runner: runner})
-	app.ctrl.Submit("work")
+	running := control.New(control.Options{Runner: runner})
+	app.tabUpdate("", func(rt *tabRuntime) { rt.ctrl = running })
+	running.Submit("work")
 	<-runner.started
 
 	err := app.SetEffort("max")
@@ -145,7 +147,7 @@ func TestSetEffortRejectsRunningTurn(t *testing.T) {
 	}
 
 	close(runner.release)
-	waitNotRunning(t, app.ctrl)
+	waitNotRunning(t, running)
 }
 
 func TestGatewayModeHidesModelManagementSurfaces(t *testing.T) {
@@ -154,9 +156,11 @@ func TestGatewayModeHidesModelManagementSurfaces(t *testing.T) {
 	t.Setenv(accountModeEnv, "platform")
 	t.Setenv(gatewayEnvURL, "https://t.example.com/api/onecreat/v1")
 	app := NewApp()
-	app.ctrl = control.New(control.Options{Label: "deepseek-flash/tier-1"})
-	app.model = "deepseek-flash/deepseek-v4-flash"
-	app.label = "deepseek-flash/tier-1"
+	app.tabUpdate("", func(rt *tabRuntime) {
+		rt.ctrl = control.New(control.Options{Label: "deepseek-flash/tier-1"})
+		rt.model = "deepseek-flash/deepseek-v4-flash"
+		rt.label = "deepseek-flash/tier-1"
+	})
 
 	if got := app.SlashArgs("/model "); len(got.Items) != 0 {
 		t.Fatalf("网关模式 /model 补全不应暴露真实模型: %+v", got.Items)

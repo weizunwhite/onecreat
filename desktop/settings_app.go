@@ -103,9 +103,7 @@ func (a *App) Settings() SettingsView {
 	if bash == "" {
 		bash = "enforce"
 	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	v := SettingsView{
 		DefaultModel: cfg.DefaultModel,
 		PlannerModel: cfg.Agent.PlannerModel,
@@ -191,20 +189,10 @@ func (a *App) rebuild() error {
 	}
 	// 固定「发起设置变更时的活动标签」,并取它自己的 sink;build 完成后即使用户已切走,
 	// 也只回写这个标签,不会把新 controller 误装进别的标签(对照 SetModel 的 A5 修复)。
-	a.mu.RLock()
-	old := a.ctrl
-	model := a.model
-	targetTab := a.activeTab
-	targetSink := a.sink
 	// 重建沿用该标签自己的 workspace:改设置不该把标签的项目根挪回进程 cwd。
-	targetWS := a.ws
-	if rt := a.tabs[targetTab]; rt != nil {
-		if rt.sink != nil {
-			targetSink = rt.sink
-		}
-		targetWS = rt.ws
-	}
-	a.mu.RUnlock()
+	active, _ := a.tabs.View("")
+	old, model := active.ctrl, active.model
+	targetTab, targetSink, targetWS := active.id, active.sink, active.ws
 
 	var carried []provider.Message
 	if old != nil {
@@ -225,35 +213,18 @@ func (a *App) rebuild() error {
 	// 常驻串口监视器,撞 busy(e78fe02c 在此路径的回归)。
 	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, Workspace: targetWS, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
-		a.mu.Lock()
-		if rt := a.tabs[targetTab]; rt != nil {
+		a.tabUpdate(targetTab, func(rt *tabRuntime) {
 			rt.ctrl = nil
 			rt.startupErr = err.Error()
-		}
-		if a.activeTab == targetTab {
-			a.ctrl = nil
-			a.startupErr = err.Error()
-		}
-		a.mu.Unlock()
+		})
 		return err
 	}
-	a.mu.Lock()
-	adopted := false
-	if rt := a.tabs[targetTab]; rt != nil {
+	adopted := a.tabUpdate(targetTab, func(rt *tabRuntime) {
 		rt.ctrl = ctrl
 		rt.model = model
 		rt.label = ctrl.Label()
 		rt.startupErr = ""
-		adopted = true
-	}
-	if a.activeTab == targetTab {
-		a.ctrl = ctrl
-		a.model = model
-		a.label = ctrl.Label()
-		a.startupErr = ""
-		adopted = true
-	}
-	a.mu.Unlock()
+	})
 	if !adopted {
 		// 发起设置变更的标签在秒级 boot.Build 期间被关闭:没有任何标签引用新 controller,
 		// 必须 Close 它,否则 MCP 子进程 / LSP / goroutine 泄漏到进程退出(同 SetModel A5b)。
@@ -307,10 +278,12 @@ func (a *App) SetDefaultModel(ref string) error {
 	if gatewayActive() {
 		return errGatewayManaged
 	}
-	a.mu.Lock()
-	prev := a.model
-	a.model = ref
-	a.mu.Unlock()
+	// 乐观地先把活动标签的 model 改成 ref,写配置失败再回滚。
+	prev := ""
+	a.tabUpdate("", func(rt *tabRuntime) {
+		prev = rt.model
+		rt.model = ref
+	})
 	if err := a.applyConfigChange(func(c *config.Config) error {
 		if _, ok := c.ResolveModel(ref); !ok {
 			return fmt.Errorf("unknown model %q", ref)
@@ -318,9 +291,7 @@ func (a *App) SetDefaultModel(ref string) error {
 		c.DefaultModel = ref
 		return nil
 	}); err != nil {
-		a.mu.Lock()
-		a.model = prev
-		a.mu.Unlock()
+		a.tabUpdate("", func(rt *tabRuntime) { rt.model = prev })
 		return err
 	}
 	return nil

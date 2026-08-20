@@ -39,15 +39,11 @@ func controllerWithContent(t *testing.T, path string) *control.Controller {
 // 能命中。替代旧的 &App{ctrl: ...} 直接构造。
 func newAutosaveTestApp(ctrl *control.Controller) *App {
 	a := &App{
-		tabs:      map[string]*tabRuntime{},
+		tabs:      newTabManager(),
 		saving:    map[string]bool{},
 		saveAgain: map[string]bool{},
 	}
-	a.sink = &eventSink{app: a, tabID: "main"}
-	a.tabs["main"] = &tabRuntime{id: "main", kind: "chat", sink: a.sink, ctrl: ctrl, ready: true}
-	a.tabOrder = []string{"main"}
-	a.activeTab = "main"
-	a.ctrl = ctrl
+	a.tabs.Register(&tabRuntime{id: "main", kind: "chat", sink: &eventSink{app: a, tabID: "main"}, ctrl: ctrl, ready: true})
 	return a
 }
 
@@ -70,7 +66,7 @@ func TestTurnDonePersistsSession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	a := newAutosaveTestApp(controllerWithContent(t, path))
 
-	a.sink.Emit(event.Event{Kind: event.TurnDone})
+	a.tabs.Sink("").Emit(event.Event{Kind: event.TurnDone})
 
 	waitForFile(t, path, "remember this turn")
 }
@@ -81,7 +77,7 @@ func TestNonTurnDoneDoesNotPersist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	a := newAutosaveTestApp(controllerWithContent(t, path))
 
-	a.sink.Emit(event.Event{Kind: event.Text, Text: "tok"})
+	a.tabs.Sink("").Emit(event.Event{Kind: event.Text, Text: "tok"})
 
 	time.Sleep(50 * time.Millisecond)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

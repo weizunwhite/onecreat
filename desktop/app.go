@@ -45,23 +45,25 @@ const eventChannel = "agent:event"
 // the shared internal/boot. Events flow the other way: the controller emits to an
 // eventSink that forwards each one to the frontend via the Shell(Wails 事件 / SSE)。
 type App struct {
-	ctx  context.Context
-	sink *eventSink
-	ctrl *control.Controller
+	ctx context.Context
 
 	// shell 是宿主外壳(见 shell.go):Wails 原生窗口或 Web 模式的 HTTP/SSE 服务。
 	// 事件推送、原生对话框、开外链、窗口操作全部经它,App 本身不认识 Wails。
 	// 单元测试里的裸 &App{} 不设它,统一由 a.sh() 兜底成 noopShell。
 	shell Shell
 
-	// mu protects ctrl, label, model, startupErr, and ready during the async
-	// boot sequence. startup() spawns a goroutine for boot.Build(); all methods
-	// that touch the controller acquire the lock.
+	// 多标签多任务(像 Codex / Claude Code):每个 tab 一个独立 controller + sink +
+	// session 文件 + workspace root,后台 tab 的 controller 照常在自己的 goroutine
+	// 里跑,事件发到独立通道 agent:event:<tabID> —— 所以多个任务可以「真并行」。
+	//
+	// tabs 是标签运行时的**唯一真源**:App 上不再镜像活动标签的
+	// ctrl/sink/model/label/ready/startupErr。「活动标签」只是 tabs 里的一个 id,
+	// 沿用旧签名、不带 tabID 的前端入口在这一层解析成活动 id 再委托下去。
+	tabs *tabManager
+
+	// mu 只保护下面这几个 App 自身的字段(MCP 视图与当前选中的项目文件夹)。
+	// 标签运行时由 tabs 自己的锁保护 —— 两把锁互不嵌套。
 	mu          sync.RWMutex
-	startupErr  string
-	label       string
-	model       string // active provider name (for the bottom model switcher)
-	ready       bool   // true once boot.Build completes (success or failure)
 	disabledMCP map[string]ServerView
 	mcpOrder    []string
 
@@ -69,16 +71,6 @@ type App struct {
 	// serial:data 实时推给前端,前端可调 SerialWrite 反向发送(滑块/发送框)。
 	serialMu  sync.Mutex
 	serialSes *serialSession
-
-	// 多标签多任务(像 Codex / Claude Code):每个 tab 一个独立 controller + sink +
-	// session 文件,后台 tab 的 controller 照常在自己的 goroutine 里跑,事件发到
-	// 独立通道 agent:event:<tabID> —— 所以多个任务可以「真并行」。
-	// ctrl/sink/label/model/ready/startupErr 这几个字段始终镜像「当前活动 tab」,
-	// 既有的 52 处 a.ctrl 读取无需改动;SetActiveTab 在切换时重指镜像。
-	tabs      map[string]*tabRuntime
-	tabOrder  []string // 标签顺序(新建追加到末尾)
-	activeTab string
-	tabSeq    int // 生成新 tab id 的自增计数
 
 	// ws 是「当前选中的项目文件夹」:新建标签在这里开,原生对话框以它为起点,
 	// UI 的文件浏览/知识库/硬件面板按它解析相对路径。它不是 tabs 的镜像 —— 每个
@@ -100,33 +92,6 @@ type App struct {
 	hwOpMu       sync.Mutex
 	hwInstalling bool
 	hwFlashing   bool
-}
-
-// tabRuntime 是一个独立任务标签的后端运行时:自己的 controller、事件 sink、
-// session(session 路径存在 ctrl 里)。kind 仅供前端决定显示对话还是硬件视图,
-// 后端不据此分支(硬件视图也只是往同一个 controller 注入提示词)。
-type tabRuntime struct {
-	id   string
-	kind string // "chat" | "hardware"
-	// ws 是这个标签实际工作的项目根目录。它是该标签运行时的真源:controller、
-	// 工具、bash、MCP 全部按它解析,与进程 cwd 无关,所以两个标签可以同时开在
-	// 不同项目上。
-	ws         workspace.Context
-	sink       *eventSink
-	ctrl       *control.Controller
-	label      string
-	model      string
-	ready      bool
-	startupErr string
-	// closed 在 CloseTab 时置位:buildTab 完成时若发现已关闭,就 Close 掉刚建好的
-	// controller 并不发 ready,避免「关标签时 build 未完成 → controller 泄漏」(A6)。
-	closed bool
-	// 期望的运行时门控状态(plan/YOLO/coach persona)。这些是 per-controller 运行时
-	// 状态,但门控开关是全局 UI 态;存到标签上,使其在 controller 异步装配完成、或切回
-	// 标签时都能被重新施加,而不是打到 nil controller 被静默吞(A8)。
-	wantPlan   bool
-	wantBypass bool
-	coachWant  string
 }
 
 // TabMeta 是给前端的标签快照。
@@ -168,14 +133,15 @@ func (a *App) workspaceRoot() string {
 func NewApp() *App {
 	a := &App{
 		disabledMCP: map[string]ServerView{},
-		tabs:        map[string]*tabRuntime{},
+		tabs:        newTabManager(),
 		saving:      map[string]bool{},
 		saveAgain:   map[string]bool{},
 	}
 	// 按构建标签选宿主实现:!web → wailsShell,web → webShell。
 	a.shell = newShell(a)
-	// 主标签的 sink(tabID "main");同时作为「活动 tab 镜像」的初始 sink。
-	a.sink = &eventSink{app: a, tabID: "main"}
+	// 主标签在这里就注册进 tabs 并设为活动:标签运行时只有这一份,不再有「App 上的
+	// 活动镜像」。它的 controller 由 buildController 异步装配,期间 Ready=false。
+	a.tabs.Register(&tabRuntime{id: "main", kind: "chat", sink: &eventSink{app: a, tabID: "main"}})
 	return a
 }
 
@@ -189,7 +155,12 @@ func NewApp() *App {
 // crashing the window.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.sink.ctx = ctx
+	// 主标签的 sink 在 NewApp 里就建好了(那时还没有 Wails ctx),这里补上。
+	a.tabs.Update("main", func(rt *tabRuntime, _ bool) {
+		if rt.sink != nil {
+			rt.sink.ctx = ctx
+		}
+	})
 	a.showMainWindow(ctx)
 	go func() {
 		time.Sleep(500 * time.Millisecond)
@@ -230,14 +201,11 @@ func (a *App) buildController() {
 		i18n.DetectLanguage(cfg.Language)
 	}
 
-	// 注册初始的「主标签」,沿用 NewApp 建好的 a.sink(tabID "main"),并设为活动。
 	a.mu.Lock()
 	a.ws = ws
-	rt := &tabRuntime{id: "main", kind: "chat", sink: a.sink, ws: ws}
-	a.tabs["main"] = rt
-	a.tabOrder = append(a.tabOrder, "main")
-	a.activeTab = "main"
 	a.mu.Unlock()
+	// 主标签在 NewApp 里已注册;这里只补上它的项目根。
+	a.tabs.Update("main", func(rt *tabRuntime, _ bool) { rt.ws = ws })
 
 	// 默认 local-first:清掉任何旧网关 env,让首个 controller 使用本地 provider/API key。
 	// 只有显式 ONECREAT_ACCOUNT_MODE=platform 时才续期并改走平台 AI 网关。
@@ -246,7 +214,7 @@ func (a *App) buildController() {
 	}
 	applyGatewayEnvFromSession()
 
-	a.buildTab(rt)
+	a.buildTab("main")
 
 	if platformAccountEnabled() {
 		// 后台定时续期:长时间开着 app 也不会因 access token 过期而掉线。
@@ -269,13 +237,21 @@ func (a *App) tokenRefreshLoop() {
 	}
 }
 
-// buildTab 在一个标签运行时里装配一个独立 controller(boot.Build 可能较慢,所以由
-// CreateTab 放到 goroutine 里调)。装配完成后:写回该 tab 的运行时;若它正是当前活动
-// tab,则同步「活动镜像」字段;最后发 agent:ready:<tabID> 通知前端该标签可用。
-func (a *App) buildTab(rt *tabRuntime) {
+// buildTab 为一个标签装配它自己的 controller(boot.Build 可能较慢,所以由 CreateTab
+// 放到 goroutine 里调)。装配完成后写回该标签的运行时,并发 agent:ready:<tabID>
+// 通知前端该标签可用。
+//
+// 全程按 tabID 路由、不碰任何「活动标签」状态:build 期间用户切走或再切回来都不影响
+// 结果落在哪个标签上(A5)。boot.Build 是秒级操作,绝不在 tabs 锁内调用。
+func (a *App) buildTab(tabID string) {
+	v, ok := a.tabs.View(tabID)
+	if !ok {
+		return
+	}
 	// 这个标签的项目文件夹 —— 不是进程 cwd。config、模型默认值、以及下面 boot.Build
 	// 装配出的工具/bash/MCP 全部按它解析,所以两个标签可以同时开在不同项目上。
-	ws := rt.ws
+	ws := v.ws
+	sink := v.sink
 
 	// 解析该文件夹的默认模型为规范的 "provider/model"。
 	model := ""
@@ -286,48 +262,38 @@ func (a *App) buildTab(rt *tabRuntime) {
 		}
 	}
 
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse})
+	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, Workspace: ws, PreToolUse: a.serialReleaseForToolUse})
 	if err != nil {
-		a.mu.Lock()
-		if rt.closed { // 标签已在 build 期间被关闭:什么都不写、不发 ready(A6)
-			a.mu.Unlock()
+		// 标签已在 build 期间被关闭时 Update 找不到它:什么都不写、不发 ready(A6)。
+		if !a.tabs.Update(tabID, func(rt *tabRuntime, _ bool) {
+			rt.startupErr = err.Error()
+			rt.ready = true
+		}) {
 			return
 		}
-		rt.startupErr = err.Error()
-		rt.ready = true
-		if a.activeTab == rt.id {
-			a.startupErr = rt.startupErr
-			a.ready = true
-		}
-		a.mu.Unlock()
-		a.sh().Emit("agent:ready:"+rt.id, nil)
+		a.sh().Emit("agent:ready:"+tabID, nil)
 		return
 	}
 
-	a.mu.Lock()
-	if rt.closed {
+	// 「是否被采纳」必须在同一次加锁里定下来:分两次读会与 CloseTab 撞出
+	// 「两边都以为该由自己 Close」的双重 Close。CloseTab 从注册表删除标签,所以
+	// Update 找得到 ⟺ 标签还活着 ⟺ 这个 controller 归它。
+	var wantPlan, wantBypass bool
+	var coachWant string
+	adopted := a.tabs.Update(tabID, func(rt *tabRuntime, _ bool) {
+		rt.ctrl = ctrl
+		rt.model = model
+		rt.label = ctrl.Label()
+		rt.ready = true
+		rt.startupErr = ""
+		wantPlan, wantBypass, coachWant = rt.wantPlan, rt.wantBypass, rt.coachWant
+	})
+	if !adopted {
 		// 标签在 build 期间被关闭:关掉刚建好的 controller(含 MCP 子进程 / session /
 		// goroutine),不发 ready —— 否则这个 controller 永远没人 Close(A6)。
-		a.mu.Unlock()
 		ctrl.Close()
 		return
 	}
-	rt.ctrl = ctrl
-	rt.model = model
-	rt.label = ctrl.Label()
-	rt.ready = true
-	wantPlan := rt.wantPlan
-	wantBypass := rt.wantBypass
-	coachWant := rt.coachWant
-	if a.activeTab == rt.id {
-		a.ctrl = ctrl
-		a.sink = rt.sink
-		a.model = model
-		a.label = ctrl.Label()
-		a.ready = true
-		a.startupErr = ""
-	}
-	a.mu.Unlock()
 
 	// Desktop is interactive: route "ask" gate decisions to the frontend as
 	// approval_request events, answered via Approve.
@@ -352,7 +318,7 @@ func (a *App) buildTab(rt *tabRuntime) {
 	}
 
 	// Notify the frontend this tab is ready — it re-fetches Meta/Context/History.
-	a.sh().Emit("agent:ready:"+rt.id, nil)
+	a.sh().Emit("agent:ready:"+tabID, nil)
 }
 
 // CreateTab 新建一个独立任务标签并设为活动;controller 异步装配(期间 Ready=false,
@@ -365,97 +331,45 @@ func (a *App) CreateTab(kind string) (TabMeta, error) {
 	if kind == "" {
 		kind = "chat"
 	}
-	a.mu.Lock()
-	a.tabSeq++
-	id := fmt.Sprintf("tab%d", a.tabSeq)
+	id := a.tabs.NextID()
 	// 新标签开在【当前选中的】项目上,并把这个 root 固定进标签自己的运行时:
 	// 之后用户换项目只影响新标签和活动标签,这个标签继续读写它开的那个目录。
-	rt := &tabRuntime{id: id, kind: kind, ws: a.ws, sink: &eventSink{ctx: a.ctx, app: a, tabID: id}}
-	a.tabs[id] = rt
-	a.tabOrder = append(a.tabOrder, id)
-	// 新建即设为活动(用户刚开它就是要用),活动镜像先指向未就绪的新 tab。
-	a.activeTab = id
-	a.ctrl = nil
-	a.sink = rt.sink
-	a.label = ""
-	a.model = ""
-	a.ready = false
-	a.startupErr = ""
-	a.mu.Unlock()
+	// Register 同时把它设为活动(用户刚开它就是要用)——「活动」只是一个 id,
+	// 没有需要一并重指的镜像状态。
+	a.tabs.Register(&tabRuntime{
+		id: id, kind: kind, ws: a.workspace(),
+		sink: &eventSink{ctx: a.ctx, app: a, tabID: id},
+	})
 
-	go a.buildTab(rt)
+	go a.buildTab(id)
 	return TabMeta{ID: id, Kind: kind, Ready: false, Active: true}, nil
 }
 
-// SetActiveTab 把「活动镜像」重指到目标标签:既有的会话类方法(读 a.ctrl)随之作用
-// 到该标签。前端在切换标签、以及对某标签发指令前调用它。未知 id 是空操作。
-func (a *App) SetActiveTab(id string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	rt := a.tabs[id]
-	if rt == nil {
-		return
-	}
-	a.activeTab = id
-	a.ctrl = rt.ctrl
-	a.sink = rt.sink
-	a.label = rt.label
-	a.model = rt.model
-	a.ready = rt.ready
-	a.startupErr = rt.startupErr
-}
+// SetActiveTab 把「活动标签」指向目标标签:不带 tabID 的既有会话类方法随之作用到
+// 该标签。前端在切换标签、以及对某标签发指令前调用它。未知 id 是空操作。
+//
+// 切换只改一个 id —— 没有 controller / sink / model 需要跟着重指,所以也就不存在
+// 「漏同步某个镜像字段」这类 bug。
+func (a *App) SetActiveTab(id string) { a.tabs.SetActive(id) }
 
-// CloseTab 关闭一个标签:快照并关掉它的 controller,从注册表移除;若关的是活动标签,
+// CloseTab 关闭一个标签:从注册表移除,快照并关掉它的 controller;若关的是活动标签,
 // 自动切到末尾的另一个标签。
 func (a *App) CloseTab(id string) {
-	a.mu.Lock()
-	rt := a.tabs[id]
-	if rt == nil {
-		a.mu.Unlock()
+	v, _, ok := a.tabs.Close(id)
+	if !ok {
 		return
 	}
-	// 标记关闭:若此刻 buildTab 还在跑(rt.ctrl==nil),它完成时会看到 closed=true,
-	// 自行 Close 掉刚建好的 controller 并不发 ready,避免 controller 泄漏(A6)。
-	rt.closed = true
-	delete(a.tabs, id)
-	for i, x := range a.tabOrder {
-		if x == id {
-			a.tabOrder = append(a.tabOrder[:i], a.tabOrder[i+1:]...)
-			break
-		}
-	}
-	if a.activeTab == id {
-		a.activeTab = ""
-		a.ctrl, a.sink, a.label, a.model, a.ready, a.startupErr = nil, nil, "", "", false, ""
-		if len(a.tabOrder) > 0 {
-			next := a.tabOrder[len(a.tabOrder)-1]
-			if nt := a.tabs[next]; nt != nil {
-				a.activeTab = next
-				a.ctrl, a.sink, a.label, a.model, a.ready, a.startupErr = nt.ctrl, nt.sink, nt.label, nt.model, nt.ready, nt.startupErr
-			}
-		}
-	}
-	a.mu.Unlock()
-	if rt.ctrl != nil {
-		_ = rt.ctrl.Snapshot()
-		rt.ctrl.Close()
+	// Snapshot/Close 是慢操作,在 tabs 锁外做。若此刻 buildTab 还在跑
+	// (ctrl==nil),Close 已经置了 closed=true,buildTab 完成时会自行 Close 掉刚
+	// 建好的 controller 并不发 ready,避免 controller 泄漏(A6)。
+	if v.ctrl != nil {
+		_ = v.ctrl.Snapshot()
+		v.ctrl.Close()
 	}
 }
 
 // ListTabs 返回所有标签快照(按打开顺序),供前端渲染标签栏。
-func (a *App) ListTabs() []TabMeta {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	out := make([]TabMeta, 0, len(a.tabOrder))
-	for _, id := range a.tabOrder {
-		rt := a.tabs[id]
-		if rt == nil {
-			continue
-		}
-		out = append(out, TabMeta{ID: id, Kind: rt.kind, Label: rt.label, Ready: rt.ready, StartupErr: rt.startupErr, Active: id == a.activeTab})
-	}
-	return out
-}
+func (a *App) ListTabs() []TabMeta { return a.tabs.List() }
 
 // shutdown snapshots the conversation and stops plugin subprocesses on close.
 // 遍历所有标签(不只活动镜像):多标签并行时,后台标签进行中的最后一轮也要落盘,
@@ -466,15 +380,7 @@ func (a *App) ListTabs() []TabMeta {
 func (a *App) Quit() { a.sh().Quit() }
 
 func (a *App) shutdown(context.Context) {
-	a.mu.RLock()
-	ctrls := make([]*control.Controller, 0, len(a.tabs))
-	for _, rt := range a.tabs {
-		if rt != nil && rt.ctrl != nil {
-			ctrls = append(ctrls, rt.ctrl)
-		}
-	}
-	a.mu.RUnlock()
-	for _, ctrl := range ctrls {
+	for _, ctrl := range a.tabs.Controllers() {
 		_ = ctrl.Snapshot()
 		ctrl.Close()
 	}
@@ -484,19 +390,13 @@ func (a *App) shutdown(context.Context) {
 // Each method guards on a nil controller so a pre-startup or failed-build call is
 // a no-op, never a panic.
 
-// ctrlForTab 按标签 id 取该标签的 controller(加锁)。空 id 回退到活动镜像,兼容尚未
-// 带 tabID 的旧路径。用于审批/问答/门控等「必须打到事件来源标签」的方法(A2/A8)。
-func (a *App) ctrlForTab(tabID string) *control.Controller {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if tabID == "" {
-		return a.ctrl
-	}
-	if rt := a.tabs[tabID]; rt != nil {
-		return rt.ctrl
-	}
-	return nil
-}
+// ctrlForTab 按标签 id 取该标签的 controller。空 id 解析为活动标签,兼容尚未带
+// tabID 的旧路径。用于审批/问答/门控等「必须打到事件来源标签」的方法(A2/A8)。
+func (a *App) ctrlForTab(tabID string) *control.Controller { return a.tabs.Ctrl(tabID) }
+
+// activeCtrl 是活动标签的 controller(未就绪 / 无标签时为 nil)。不带 tabID 的旧
+// 前端入口都经它解析,这是「活动标签」在应用层唯一的落点。
+func (a *App) activeCtrl() *control.Controller { return a.tabs.Ctrl("") }
 
 func isGatewayManagedSlash(trimmed string) bool {
 	return trimmed == "/model" || strings.HasPrefix(trimmed, "/model ") ||
@@ -515,9 +415,7 @@ func (a *App) Submit(input string) {
 		a.runEffortCommand(trimmed)
 		return
 	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl != nil {
 		ctrl.Submit(input)
 	}
@@ -533,9 +431,7 @@ func (a *App) SubmitDisplay(display, input string) {
 	}
 	// 取一次 ctrl 局部变量后全程用它,消除「检查与 Submit 之间 controller 被换/Close」
 	// 的 TOCTOU 数据竞争(A9)。SubmitDisplay 是知识库增强与硬件面板提交的主路径,频繁调用。
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return
 	}
@@ -552,9 +448,7 @@ func (a *App) SubmitDisplay(display, input string) {
 
 // Cancel aborts the in-flight turn.
 func (a *App) Cancel() {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl != nil {
 		ctrl.Cancel()
 	}
@@ -569,26 +463,21 @@ func (a *App) Approve(tabID, id string, allow, session bool) {
 	}
 }
 
-// tabRTLocked 解析目标标签运行时(空 tabID=活动标签);调用方须持有 a.mu。
-func (a *App) tabRTLocked(tabID string) *tabRuntime {
-	if tabID == "" {
-		tabID = a.activeTab
-	}
-	return a.tabs[tabID]
+// tabUpdate 在 tabs 锁内改一个标签的运行时(空 tabID=活动标签),并回报该标签是否
+// 存在。门控类方法用它记录 want 状态,再在锁外施加到 controller。
+func (a *App) tabUpdate(tabID string, fn func(rt *tabRuntime)) bool {
+	return a.tabs.Update(tabID, func(rt *tabRuntime, _ bool) { fn(rt) })
 }
 
 // SetPlanMode toggles read-only plan mode for one tab. 记录到标签的 want 状态(即使
 // controller 还在异步装配也不丢),并施加到已就绪的 controller——避免「pill 显示只读、
 // 实际可写」的安全错觉(A8)。
 func (a *App) SetPlanMode(tabID string, on bool) {
-	a.mu.Lock()
-	rt := a.tabRTLocked(tabID)
 	var ctrl *control.Controller
-	if rt != nil {
+	a.tabUpdate(tabID, func(rt *tabRuntime) {
 		rt.wantPlan = on
 		ctrl = rt.ctrl
-	}
-	a.mu.Unlock()
+	})
 	if ctrl != nil {
 		ctrl.SetPlanMode(on)
 	}
@@ -597,14 +486,11 @@ func (a *App) SetPlanMode(tabID string, on bool) {
 // SetCoachMode 设置某标签的「协作模式」persona(空串=默认无 persona)。preamble 随每个
 // turn 注入(见 Compose),按 tabID 路由并记录 want 状态(A8)。
 func (a *App) SetCoachMode(tabID, preamble string) {
-	a.mu.Lock()
-	rt := a.tabRTLocked(tabID)
 	var ctrl *control.Controller
-	if rt != nil {
+	a.tabUpdate(tabID, func(rt *tabRuntime) {
 		rt.coachWant = strings.TrimSpace(preamble)
 		ctrl = rt.ctrl
-	}
-	a.mu.Unlock()
+	})
 	if ctrl != nil {
 		ctrl.SetCoachMode(preamble)
 	}
@@ -657,9 +543,7 @@ func (a *App) PendingPrompts(tabID string) PendingPrompts {
 // Compact runs a plain compaction pass (the "compact now" button). Focus-guided
 // compaction goes through Submit("/compact <focus>") instead.
 func (a *App) Compact() error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -668,9 +552,7 @@ func (a *App) Compact() error {
 
 // NewSession snapshots the current conversation and rotates to a fresh one.
 func (a *App) NewSession() error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -687,9 +569,7 @@ type CheckpointMeta struct {
 
 // Checkpoints lists the session's rewind points, oldest first, for the rewind UI.
 func (a *App) Checkpoints() []CheckpointMeta {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return []CheckpointMeta{}
 	}
@@ -705,9 +585,7 @@ func (a *App) Checkpoints() []CheckpointMeta {
 // "conversation", or "both" (anything else is treated as "both"). The frontend
 // re-reads History after this resolves.
 func (a *App) Rewind(turn int, scope string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -725,9 +603,7 @@ func (a *App) Rewind(turn int, scope string) error {
 // (preserving the current one), keeping code intact, and switches to the branch.
 // The frontend re-reads History after this resolves.
 func (a *App) Fork(turn int) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -739,9 +615,7 @@ func (a *App) Fork(turn int) error {
 // of turn into one summary (Claude Code's "summarize from/up to here"), keeping
 // code intact. The frontend re-reads History after this resolves.
 func (a *App) SummarizeFrom(turn int) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -749,9 +623,7 @@ func (a *App) SummarizeFrom(turn int) error {
 }
 
 func (a *App) SummarizeUpTo(turn int) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -790,9 +662,7 @@ func (a *App) ListSessions() []SessionMeta {
 	titles := loadSessionTitles(dir)
 	cwds := loadSessionCwds(dir)
 	kinds := loadSessionKinds(dir)
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	cur := ""
 	if ctrl != nil {
 		cur = ctrl.SessionPath()
@@ -819,9 +689,7 @@ func (a *App) ListSessions() []SessionMeta {
 // 进入某垂直定制流程时调用(如硬件面板跑编译/烧录/生成代码)——硬件视图是切 mainView、
 // 不换 tab,所以只能由前端显式标记,后端无法从 tab 类型推断(Phase 1 收尾)。
 func (a *App) MarkSessionKind(kind string) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return
 	}
@@ -836,15 +704,16 @@ func (a *App) sessionPathsInUse(exclude string) map[string]string {
 		id   string
 		ctrl *control.Controller
 	}
-	a.mu.RLock()
-	pairs := make([]pair, 0, len(a.tabs))
-	for id, rt := range a.tabs {
-		if id == exclude || rt == nil || rt.ctrl == nil {
+	tabs := a.tabs.List()
+	pairs := make([]pair, 0, len(tabs))
+	for _, t := range tabs {
+		if t.ID == exclude {
 			continue
 		}
-		pairs = append(pairs, pair{id, rt.ctrl})
+		if ctrl := a.tabs.Ctrl(t.ID); ctrl != nil {
+			pairs = append(pairs, pair{t.ID, ctrl})
+		}
 	}
-	a.mu.RUnlock()
 	out := map[string]string{}
 	for _, p := range pairs {
 		if sp := p.ctrl.SessionPath(); sp != "" {
@@ -858,9 +727,7 @@ func (a *App) sessionPathsInUse(exclude string) map[string]string {
 // tab is currently writing to — the active one (auto-save would recreate it) and
 // any background tab's session too, so a background task can't be deleted mid-run (A4).
 func (a *App) DeleteSession(path string) error {
-	a.mu.RLock()
-	active := a.activeTab
-	a.mu.RUnlock()
+	active := a.tabs.ActiveID()
 	if tab := a.sessionPathsInUse("")[path]; tab != "" {
 		if tab == active {
 			return errActiveSession
@@ -881,10 +748,8 @@ func (a *App) RenameSession(path, title string) error {
 // working folder are unchanged (same controller); only the transcript is swapped.
 // Returns the resumed messages for the frontend to render.
 func (a *App) ResumeSession(path string) ([]HistoryMessage, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	active := a.activeTab
-	a.mu.RUnlock()
+	v, _ := a.tabs.View("")
+	ctrl, active := v.ctrl, v.id
 	if ctrl == nil {
 		return []HistoryMessage{}, nil
 	}
@@ -994,13 +859,11 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,
-	// 锁外裸读是数据竞争(M3)。
-	a.mu.RLock()
-	cur := a.ws
-	sink := a.sink
-	activeCtrl := a.ctrl // 活动标签 controller,用于运行态守卫(D3)
-	a.mu.RUnlock()
+	cur := a.workspace()
+	// 活动标签的快照(sink 用于新 controller,ctrl 用于运行态守卫 D3)。tabs 在自己
+	// 的锁内取,不会与 CreateTab/SetActiveTab/CloseTab/buildTab 竞态(M3)。
+	activeTab, _ := a.tabs.View("")
+	sink, activeCtrl, targetTab := activeTab.sink, activeTab.ctrl, activeTab.id
 	if ws.Root() == cur.Root() {
 		saveWorkspace(dir)
 		return dir, nil
@@ -1032,25 +895,21 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	saveWorkspace(dir) // remember it so the next launch reopens here
 	// Commit the switch: save and tear down the old session, then swap in the new
 	// project's controller with a fresh session file.
-	a.mu.Lock()
-	if a.ctrl != nil {
-		_ = a.ctrl.Snapshot()
-		a.ctrl.Close()
+	if activeCtrl != nil {
+		_ = activeCtrl.Snapshot()
+		activeCtrl.Close()
 	}
+	a.mu.Lock()
 	a.ws = ws
-	a.ctrl = ctrl
-	a.model = model
-	a.label = ctrl.Label()
-	a.startupErr = ""
-	// 同步活动 tab 的运行时(SwitchWorkspace 只重建当前活动 tab 的 controller)。
-	if rt := a.tabs[a.activeTab]; rt != nil {
+	a.mu.Unlock()
+	// 只写发起切换的那个标签(SwitchWorkspace 只重建它的 controller)。
+	a.tabUpdate(targetTab, func(rt *tabRuntime) {
 		rt.ws = ws
 		rt.ctrl = ctrl
 		rt.model = model
 		rt.label = ctrl.Label()
 		rt.startupErr = ""
-	}
-	a.mu.Unlock()
+	})
 	ctrl.EnableInteractiveApproval()
 	if d := ctrl.SessionDir(); d != "" {
 		ctrl.SetSessionPath(agent.NewSessionPath(d, ctrl.Label()))
@@ -1068,9 +927,7 @@ type HistoryMessage struct {
 
 // History returns the session's message log.
 func (a *App) History() []HistoryMessage {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -1110,9 +967,7 @@ type ContextInfo struct {
 
 // ContextUsage returns the latest context-window gauge numbers.
 func (a *App) ContextUsage() ContextInfo {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return ContextInfo{}
 	}
@@ -1135,9 +990,7 @@ type BalanceInfo struct {
 // controller is down, or the fetch fails — so the status bar simply shows nothing
 // rather than an error.
 func (a *App) Balance() BalanceInfo {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return BalanceInfo{}
 	}
@@ -1165,9 +1018,7 @@ type JobView struct {
 // on demand (mount, turn end, and on each notice the frontend receives).
 func (a *App) Jobs() []JobView {
 	out := []JobView{}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return out
 	}
@@ -1194,12 +1045,8 @@ type Meta struct {
 // subscribes to. Bypass/PlanMode/Running 读自活动标签 controller 的真实状态——切回
 // 标签时前端据此恢复 pill 与 spinner,而不是凭全局 UI 态猜测(A3/A8)。
 func (a *App) Meta() Meta {
-	a.mu.RLock()
-	label := a.label
-	startupErr := a.startupErr
-	ready := a.ready
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	v, _ := a.tabs.View("")
+	label, startupErr, ready, ctrl := v.label, v.startupErr, v.ready, v.ctrl
 	if gatewayActive() {
 		label = "OneCreat 智能档位"
 	}
@@ -1220,14 +1067,11 @@ func (a *App) Meta() Meta {
 // (writers and bash run without asking). Deny rules still apply. Runtime-only —
 // not written to config, so it resets on relaunch.
 func (a *App) SetBypass(tabID string, on bool) {
-	a.mu.Lock()
-	rt := a.tabRTLocked(tabID)
 	var ctrl *control.Controller
-	if rt != nil {
+	a.tabUpdate(tabID, func(rt *tabRuntime) {
 		rt.wantBypass = on
 		ctrl = rt.ctrl
-	}
-	a.mu.Unlock()
+	})
 	if ctrl != nil {
 		ctrl.SetBypass(on)
 	}
@@ -1262,9 +1106,7 @@ func (a *App) Commands() []CommandInfo {
 		CommandInfo{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
 		CommandInfo{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
 	)
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return out
 	}
@@ -1310,10 +1152,8 @@ func (a *App) SlashArgs(input string) SlashArgsResult {
 	if gatewayActive() && isGatewayManagedSlash(strings.TrimSpace(input)) {
 		return SlashArgsResult{Items: []SlashArgItem{}}
 	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	model := a.model
-	a.mu.RUnlock()
+	v, _ := a.tabs.View("")
+	ctrl, model := v.ctrl, v.model
 	if ctrl == nil {
 		return SlashArgsResult{}
 	}
@@ -1388,8 +1228,8 @@ type SkillRootView struct {
 // for the MCP & Skills drawer. Non-nil slices so the frontend can map over them.
 func (a *App) Capabilities() CapabilitiesView {
 	out := CapabilitiesView{Servers: []ServerView{}, Skills: []SkillView{}, SkillRoots: []SkillRootView{}}
+	ctrl := a.activeCtrl()
 	a.mu.RLock()
-	ctrl := a.ctrl
 	disabled := make(map[string]ServerView, len(a.disabledMCP))
 	for name, s := range a.disabledMCP {
 		disabled[name] = s
@@ -1753,9 +1593,7 @@ type HardwareDeviceView struct {
 // AddMCPServer connects a server live and persists it to config (Customize → MCP →
 // Add). Returns the number of tools it exposed.
 func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return 0, fmt.Errorf("no active session")
 	}
@@ -1777,9 +1615,7 @@ func (a *App) HardwareMCP() HardwareMCPView {
 	if err != nil {
 		view.Error = err.Error()
 	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return view
 	}
@@ -2763,9 +2599,7 @@ func (a *App) AddHardwareMCPServer() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return 0, fmt.Errorf("no active session")
 	}
@@ -2780,9 +2614,7 @@ func (a *App) AddHardwareMCPServer() (int, error) {
 
 // RemoveMCPServer disconnects a live server and drops it from config (the row's ✕).
 func (a *App) RemoveMCPServer(name string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
@@ -2799,9 +2631,7 @@ func (a *App) RemoveMCPServer(name string) error {
 // RetryMCPServer reconnects a configured server that failed or was disconnected,
 // without touching config (the failed row's retry button).
 func (a *App) RetryMCPServer(name string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
@@ -2813,9 +2643,7 @@ func (a *App) RetryMCPServer(name string) error {
 // for this session, off disconnects it (config untouched either way — like Claude
 // Code's per-conversation enable/disable, it resets on the next session start).
 func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
@@ -3088,9 +2916,8 @@ func (a *App) Models() []ModelInfo {
 	if gatewayActive() {
 		return []ModelInfo{}
 	}
-	a.mu.RLock()
-	curModel := a.model
-	a.mu.RUnlock()
+	active, _ := a.tabs.View("")
+	curModel := active.model
 	cfg, err := config.Load()
 	if err != nil {
 		return nil
@@ -3125,21 +2952,11 @@ func (a *App) SetModel(name string) error {
 	// 固定「发起切换时的活动标签」+ 它自己的 sink:boot.Build 是秒级操作,期间用户可能
 	// 切走 activeTab。build 完成后只回写这个标签,并用它的 sink 绑定新 controller,避免
 	// 新 controller 装进错误标签、事件串到别的标签通道(A5)。
-	a.mu.RLock()
-	curModel := a.model
-	ctrl := a.ctrl
-	targetTab := a.activeTab
-	targetSink := a.sink
-	// 重建必须沿用【该标签自己的】workspace:换模型不该把标签的项目根偷偷挪回
-	// 进程 cwd(那正是 Plan 01 要根除的隐式状态)。
-	targetWS := a.ws
-	if rt := a.tabs[targetTab]; rt != nil {
-		if rt.sink != nil {
-			targetSink = rt.sink
-		}
-		targetWS = rt.ws
-	}
-	a.mu.RUnlock()
+	// 重建沿用【该标签自己的】workspace:换模型不该把标签的项目根偷偷挪回进程 cwd
+	// (那正是 Plan 01 要根除的隐式状态)。
+	active, _ := a.tabs.View("")
+	curModel, ctrl := active.model, active.ctrl
+	targetTab, targetSink, targetWS := active.id, active.sink, active.ws
 	if name == curModel {
 		return nil
 	}
@@ -3155,23 +2972,13 @@ func (a *App) SetModel(name string) error {
 	if err != nil {
 		return err
 	}
-	a.mu.Lock()
-	adopted := false
-	// 同步发起标签的运行时(SetModel 只作用于发起切换的那个 tab)。
-	if rt := a.tabs[targetTab]; rt != nil {
+	// 只写发起切换的那个标签(SetModel 只作用于它)。用户在 build 期间切走也不影响:
+	// 结果按 id 落回原标签,不再有「活动镜像」需要一并考虑(A5)。
+	adopted := a.tabUpdate(targetTab, func(rt *tabRuntime) {
 		rt.ctrl = newCtrl
 		rt.model = name
 		rt.label = newCtrl.Label()
-		adopted = true
-	}
-	// 仅当发起标签仍是当前活动标签时,才更新活动镜像;否则用户已切走,别覆盖现活动镜像。
-	if a.activeTab == targetTab {
-		a.ctrl = newCtrl
-		a.model = name
-		a.label = newCtrl.Label()
-		adopted = true
-	}
-	a.mu.Unlock()
+	})
 	if !adopted {
 		// 发起标签在秒级 boot.Build 期间被 CloseTab 关掉了:没有任何标签引用新
 		// controller,必须 Close 它,否则它的 MCP 子进程 / LSP / goroutine 会泄漏到
@@ -3202,23 +3009,22 @@ func (a *App) rebuildTabByID(tabID string) {
 	if a.ctx == nil {
 		return
 	}
-	a.mu.RLock()
-	rt := a.tabs[tabID]
-	if rt == nil {
-		a.mu.RUnlock()
+	v, ok := a.tabs.View(tabID)
+	if !ok {
 		return
 	}
-	ctrl := rt.ctrl
-	model := rt.model
-	targetWS := rt.ws // 重建沿用该标签自己的项目根,不回落到进程 cwd
-	targetSink := rt.sink
+	ctrl := v.ctrl
+	model := v.model
+	targetWS := v.ws // 重建沿用该标签自己的项目根,不回落到进程 cwd
+	targetSink := v.sink
 	if targetSink == nil {
-		targetSink = a.sink
+		targetSink = a.tabs.Sink("")
 	}
 	if model == "" {
-		model = a.model // 该 tab 尚未记录 model 时退回活动镜像
+		// 该 tab 尚未记录 model 时退回活动标签的。
+		active, _ := a.tabs.View("")
+		model = active.model
 	}
-	a.mu.RUnlock()
 	if model == "" {
 		return // 还没 build 过(极早期登录):startup 的 applyGatewayEnvFromSession 已兜底
 	}
@@ -3233,19 +3039,10 @@ func (a *App) rebuildTabByID(tabID string) {
 	if err != nil {
 		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
 	}
-	a.mu.Lock()
-	adopted := false
-	if rt := a.tabs[tabID]; rt != nil {
+	adopted := a.tabUpdate(tabID, func(rt *tabRuntime) {
 		rt.ctrl = newCtrl
 		rt.label = newCtrl.Label()
-		adopted = true
-	}
-	if a.activeTab == tabID {
-		a.ctrl = newCtrl
-		a.label = newCtrl.Label()
-		adopted = true
-	}
-	a.mu.Unlock()
+	})
 	if !adopted {
 		// 目标标签在秒级 boot.Build 期间被关闭:没有任何标签引用新 controller,必须
 		// Close 它,否则 MCP 子进程 / LSP / goroutine 会泄漏到进程退出。
@@ -3276,15 +3073,7 @@ func (a *App) rebuildTabByID(tabID string) {
 // 会全量重建每个 tab 的 controller,Close 掉运行中 tab 会丢在途流式回合。锁内捕获各 tab 的
 // ctrl,锁外调 Running()(与 SetEffort 同款,避免在 a.mu 下调 controller 方法)。
 func (a *App) anyTabRunning() bool {
-	a.mu.RLock()
-	ctrls := make([]*control.Controller, 0, len(a.tabs))
-	for _, rt := range a.tabs {
-		if rt != nil && rt.ctrl != nil {
-			ctrls = append(ctrls, rt.ctrl)
-		}
-	}
-	a.mu.RUnlock()
-	for _, ctrl := range ctrls {
+	for _, ctrl := range a.tabs.Controllers() {
 		if ctrl.Running() {
 			return true
 		}
@@ -3296,14 +3085,8 @@ func (a *App) rebuildAllTabs() {
 	if a.ctx == nil {
 		return
 	}
-	a.mu.RLock()
-	ids := make([]string, 0, len(a.tabs))
-	for id := range a.tabs {
-		ids = append(ids, id)
-	}
-	a.mu.RUnlock()
-	for _, id := range ids {
-		a.rebuildTabByID(id)
+	for _, t := range a.tabs.List() {
+		a.rebuildTabByID(t.ID)
 	}
 }
 
@@ -3388,9 +3171,7 @@ func (a *App) Effort() EffortInfo {
 }
 
 func (a *App) SetEffort(level string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl != nil && ctrl.Running() {
 		return fmt.Errorf("finish or cancel the current turn before changing effort")
 	}
@@ -3695,12 +3476,9 @@ func (a *App) RevealWorkspacePath(rel string) error {
 }
 
 func (a *App) notice(text string) {
-	// a.sink 在 buildTab/CreateTab/SetActiveTab/CloseTab 里都在 a.mu 下被改写,故这里必须
-	// 持锁读(M3:/effort 命令经 Submit→runEffortCommand 调到这里,与 tab 生命周期方法
-	// 并发会构成对 a.sink 指针的数据竞态)。
-	a.mu.RLock()
-	sink := a.sink
-	a.mu.RUnlock()
+	// 活动标签的 sink 由 tabs 在自己的锁内解析(M3:/effort 命令经 Submit→
+	// runEffortCommand 调到这里,与 tab 生命周期方法并发,裸读指针是数据竞态)。
+	sink := a.tabs.Sink("")
 	if sink != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
 	}
@@ -3747,9 +3525,8 @@ func (a *App) currentProviderEntry() (*config.ProviderEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.mu.RLock()
-	ref := a.model
-	a.mu.RUnlock()
+	v, _ := a.tabs.View("")
+	ref := v.model
 	if strings.TrimSpace(ref) == "" {
 		ref = cfg.DefaultModel
 	}
@@ -3822,9 +3599,7 @@ func (a *App) Memory() MemoryView {
 	// Always return non-nil slices: a nil Go slice marshals to JSON `null`, which
 	// would crash the panel's `view.facts.length` / `.map`.
 	view := MemoryView{Docs: []MemoryDoc{}, Facts: []MemoryFact{}, Scopes: []MemoryScope{}}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return view
 	}
@@ -3854,9 +3629,7 @@ func (a *App) Memory() MemoryView {
 // panel's explicit "remember" action, equivalent to typing "#<note>". An unknown
 // scope falls back to project. Returns the file written.
 func (a *App) Remember(scope, note string) (string, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return "", nil
 	}
@@ -3866,9 +3639,7 @@ func (a *App) Remember(scope, note string) (string, error) {
 // Forget deletes a saved auto-memory by name — the panel's delete action for a
 // fact the model owns. A no-op when no controller is attached.
 func (a *App) Forget(name string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -3878,9 +3649,7 @@ func (a *App) Forget(name string) error {
 // SaveDoc overwrites a memory doc with the panel editor's contents. The controller
 // validates path against the recognized memory files. Returns the file written.
 func (a *App) SaveDoc(path, body string) (string, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return "", nil
 	}
@@ -3943,12 +3712,7 @@ func (a *App) scheduleSnapshot(tabID string) {
 
 func (a *App) snapshotLoop(tabID string) {
 	for {
-		a.mu.RLock()
-		var ctrl *control.Controller
-		if rt := a.tabs[tabID]; rt != nil {
-			ctrl = rt.ctrl
-		}
-		a.mu.RUnlock()
+		ctrl := a.tabs.Ctrl(tabID)
 		if ctrl != nil {
 			if err := ctrl.Snapshot(); err != nil {
 				slog.Warn("desktop: per-turn snapshot", "err", err)

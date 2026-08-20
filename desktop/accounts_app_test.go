@@ -88,8 +88,8 @@ func TestSetOnecreatTierRejectsWhileTabRunning(t *testing.T) {
 	}
 	defer close(runner.release)
 
-	a := &App{}
-	a.tabs = map[string]*tabRuntime{"bg": {ctrl: ctrl}}
+	a := &App{tabs: newTabManager()}
+	a.tabs.Register(&tabRuntime{id: "bg", ctrl: ctrl})
 
 	if err := a.SetOnecreatTier(2); err == nil || !strings.Contains(err.Error(), "有标签正在运行") {
 		t.Fatalf("有标签在跑时切档应被拒绝,got err=%v", err)
