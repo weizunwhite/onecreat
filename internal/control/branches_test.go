@@ -63,9 +63,7 @@ func TestSubmitBranchHonorsNumericTurnTarget(t *testing.T) {
 	}
 	rootPath := c.SessionPath()
 
-	c.mu.Lock()
-	c.cpBound[1] = 3 // displayed turn 2 starts before "second prompt"
-	c.mu.Unlock()
+	c.ckpt.seedBound(1, 3) // displayed turn 2 starts before "second prompt"
 
 	c.Submit("/branch 2 experiment")
 	if c.SessionPath() == rootPath {

@@ -17,8 +17,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -28,7 +26,6 @@ import (
 	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
-	"reasonix/internal/diff"
 	"reasonix/internal/event"
 	"reasonix/internal/hook"
 	"reasonix/internal/jobs"
@@ -47,7 +44,11 @@ type Controller struct {
 	runner   agent.Runner
 	executor *agent.Agent
 	sink     event.Sink
-	policy   permission.Policy
+
+	// approvals owns every "stop and ask the human" interaction — tool-approval
+	// prompts, the `ask` tool's questions, session grants, YOLO/bypass and the
+	// just-approved-plan window (see approval.go). The Controller only forwards.
+	approvals *approvalBroker
 
 	label        string
 	systemPrompt string
@@ -81,27 +82,13 @@ type Controller struct {
 	reg       *tool.Registry
 	pluginCtx context.Context
 
-	// Checkpoints (snapshot-based rewind). cp is the per-session store rebound when
-	// the session path changes; wsRoot is this session's workspace root — it guards
-	// checkpoint restore writes, and is the project directory workspace-scoped
-	// subprocesses (CodeGraph) are pinned to. cpTurn is the monotonic turn counter
-	// (decoupled from the store so it never collides after a restructure);
-	// cpBound[turn] records len(Session.Messages) at that turn's start — the
-	// truncation boundary for a conversation rewind/fork.
-	// Boundaries are persisted in each checkpoint and rebuilt from the store on
-	// resume (so a reopened session can still rewind conversation / fork), but
-	// dropped after a summarize restructures the log so those operations report
-	// "unavailable" rather than mis-truncating; code rewind (file-based) is unaffected.
-	cp      *checkpoint.Store
-	wsRoot  string
-	cpTurn  int
-	cpBound map[int]int
-
-	// promptMu serialises approval prompts so at most one is outstanding at a
-	// time (parallel read-only tool calls don't normally gate, writers run
-	// serially — but this keeps the contract explicit). Held across the blocking
-	// wait, so it must never be taken by the Approve command path.
-	promptMu sync.Mutex
+	// ckpt owns snapshot-based rewind: the per-session checkpoint store, the
+	// monotonic turn counter and the turn→message-index boundaries (see
+	// checkpoints.go). wsRoot is this session's workspace root — the checkpoint
+	// service confines restore writes to it, and it is also the project directory
+	// workspace-scoped subprocesses (CodeGraph) are pinned to.
+	ckpt   *checkpointService
+	wsRoot string
 
 	// mu guards the run state and approval bookkeeping; every critical section
 	// under it is short and non-blocking.
@@ -122,29 +109,8 @@ type Controller struct {
 	// 预览里被自动剥掉,不污染会话标题。
 	coachPreamble string
 	sessionPath   string
-	approvals     map[string]chan approvalReply
-	asks          map[string]chan []event.AskAnswer
-	// pendingApprovals/pendingAsks 保存「已发出、尚未应答」的提示原始载荷,供切回标签时
-	// 重放(桌面多标签:后台标签的审批事件在它无人订阅时发出,切回来需要补发)(A2)。
-	pendingApprovals map[string]event.Approval
-	pendingAsks      map[string]event.Ask
-	granted          map[string]bool
-	nextID           int
 	// turn counts model turns this session, passed to hooks in their payload.
 	turn int
-	// autoApprove auto-allows writer tool calls without prompting. Set only while
-	// executing a just-approved plan: approving the plan is the go-ahead, so the
-	// model shouldn't re-prompt for every write of the work it just got cleared to
-	// do. Deny rules still bite (those never reach the approver). Reset when the
-	// execution turn returns.
-	autoApprove bool
-
-	// bypass is "YOLO" mode: while set, every approval prompt is auto-allowed for
-	// the rest of the session (writers and bash run without asking). It is a
-	// deliberate, session-scoped opt-in (the --dangerously-skip-permissions flag or
-	// a runtime toggle), never persisted. Deny rules are unaffected — they're
-	// resolved before the approver, so a denied tool is still blocked in YOLO mode.
-	bypass bool
 
 	// pendingMemory holds memory notes added mid-session (via "#" quick-add or a
 	// memory edit) that haven't yet been folded into a turn. Compose drains it
@@ -152,11 +118,6 @@ type Controller struct {
 	// a fresh memory takes effect this session without busting the prompt cache;
 	// it joins the prefix naturally on the next session.
 	pendingMemory []string
-}
-
-type approvalReply struct {
-	allow   bool
-	session bool
 }
 
 // Options carries the already-built pieces setup assembles. Lifecycle metadata
@@ -213,113 +174,40 @@ func New(opts Options) *Controller {
 		pluginCtx = context.Background()
 	}
 	c := &Controller{
-		runner:           opts.Runner,
-		executor:         opts.Executor,
-		sink:             sink,
-		policy:           opts.Policy,
-		label:            opts.Label,
-		systemPrompt:     opts.SystemPrompt,
-		sessionDir:       opts.SessionDir,
-		sessionPath:      opts.SessionPath,
-		host:             opts.Host,
-		commands:         opts.Commands,
-		skills:           opts.Skills,
-		hooks:            opts.Hooks,
-		mem:              opts.Memory,
-		cleanup:          opts.Cleanup,
-		autoPlan:         normalizeAutoPlan(opts.AutoPlan),
-		classifier:       classifier,
-		balanceURL:       opts.BalanceURL,
-		balanceKey:       opts.BalanceKey,
-		balanceClient:    opts.BalanceClient,
-		jobs:             opts.Jobs,
-		reg:              opts.Registry,
-		pluginCtx:        pluginCtx,
-		wsRoot:           opts.WorkspaceRoot,
-		approvals:        map[string]chan approvalReply{},
-		asks:             map[string]chan []event.AskAnswer{},
-		pendingApprovals: map[string]event.Approval{},
-		pendingAsks:      map[string]event.Ask{},
-		granted:          map[string]bool{},
+		runner:        opts.Runner,
+		executor:      opts.Executor,
+		sink:          sink,
+		approvals:     newApprovalBroker(sink, opts.Policy, opts.Hooks),
+		label:         opts.Label,
+		systemPrompt:  opts.SystemPrompt,
+		sessionDir:    opts.SessionDir,
+		sessionPath:   opts.SessionPath,
+		host:          opts.Host,
+		commands:      opts.Commands,
+		skills:        opts.Skills,
+		hooks:         opts.Hooks,
+		mem:           opts.Memory,
+		cleanup:       opts.Cleanup,
+		autoPlan:      normalizeAutoPlan(opts.AutoPlan),
+		classifier:    classifier,
+		balanceURL:    opts.BalanceURL,
+		balanceKey:    opts.BalanceKey,
+		balanceClient: opts.BalanceClient,
+		jobs:          opts.Jobs,
+		reg:           opts.Registry,
+		pluginCtx:     pluginCtx,
+		wsRoot:        opts.WorkspaceRoot,
+		ckpt:          newCheckpointService(opts.WorkspaceRoot),
 	}
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
-	c.rebindCheckpoints(opts.SessionPath)
+	c.ckpt.Rebind(opts.SessionPath)
 	if c.executor != nil {
-		c.executor.SetPreEditHook(func(ch diff.Change) {
-			if c.cp != nil {
-				c.cp.Snapshot(ch)
-			}
-		})
+		c.executor.SetPreEditHook(c.ckpt.Snapshot)
 		c.executor.SetMemoryQueue(c)
 		// 压缩(自动或手动)会原地重写日志、改变消息下标 → 失效 checkpoint 边界(B1)。
-		c.executor.SetOnCompact(c.InvalidateCheckpoints)
+		c.executor.SetOnCompact(c.ckpt.Invalidate)
 	}
 	return c
-}
-
-// InvalidateCheckpoints 清空 turn→消息下标的映射(cpBound)。任何压缩 / 摘要重写了日志
-// 后调用它,使「仅对话」rewind 与 fork 退化为「不可用」而不是用陈旧下标静默切错;新的
-// turn 会重建边界。cpTurn 保持单调,避免与磁盘上的 checkpoint 编号冲突(B1)。
-func (c *Controller) InvalidateCheckpoints() {
-	c.mu.Lock()
-	c.cpBound = map[int]int{}
-	turn := c.cpTurn // 只有 turn>=cpTurn(压缩后新起的)边界才可信;之前的 MsgIndex 都陈旧
-	cp := c.cp
-	c.mu.Unlock()
-	// 把"边界失效"持久化,让它跨 resume 生效:否则 rebindCheckpoints 会从磁盘 checkpoint 的
-	// 陈旧 MsgIndex 无条件重填 cpBound,resume 后对压缩前 turn 做对话 rewind 会静默截到错误位置。
-	if cp != nil {
-		cp.InvalidateBounds(turn)
-	}
-}
-
-// ckptDir derives a session's checkpoint directory from its file path
-// (…/<id>.jsonl → …/<id>.ckpt). Empty path → empty (in-memory checkpoints).
-func ckptDir(sessionPath string) string {
-	if sessionPath == "" {
-		return ""
-	}
-	return strings.TrimSuffix(sessionPath, ".jsonl") + ".ckpt"
-}
-
-// rebindCheckpoints points the store at the (possibly new) session, loading any
-// checkpoints already on disk, and resets the turn boundaries. Called on
-// construction and whenever the session path changes (NewSession/Resume/SetSessionPath).
-func (c *Controller) rebindCheckpoints(sessionPath string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cp = checkpoint.New(ckptDir(sessionPath), c.wsRoot)
-	c.cpTurn = c.cp.NextTurn() // continue numbering past any checkpoints on disk
-	c.cpBound = c.cp.Bounds()  // rebuilt from persisted checkpoints so a resumed
-	if c.cpBound == nil {      // session can still rewind conversation / fork
-		c.cpBound = map[int]int{}
-	}
-	// 丢弃被压缩失效的陈旧边界:压缩原地重写了日志,压缩前 turn 的 MsgIndex 已失真。这些
-	// checkpoint 的文件快照(代码 rewind)仍有效,只是对话边界不可信——所以只剔 MsgIndex,
-	// 不删 checkpoint。剔掉后这些 turn 的对话 rewind 会诚实报"不可用",而非静默切错位置。
-	if min := c.cp.MinValidBoundTurn(); min > 0 {
-		for t := range c.cpBound {
-			if t < min {
-				delete(c.cpBound, t)
-			}
-		}
-	}
-}
-
-// beginCheckpoint opens a checkpoint for the turn about to run, recording the
-// current message count as the conversation-rewind boundary. Called at the top of
-// runTurn, before the user message is appended.
-func (c *Controller) beginCheckpoint(input string) {
-	if c.cp == nil || c.executor == nil {
-		return
-	}
-	c.mu.Lock()
-	turn := c.cpTurn
-	c.cpTurn++
-	msgIndex := len(c.executor.Session().Messages)
-	c.cpBound[turn] = msgIndex
-	c.mu.Unlock()
-	c.cp.Begin(turn, input, msgIndex)
 }
 
 // --- commands (frontend → controller) ---
@@ -415,7 +303,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	defer c.snapshotActivityIfChanged(startMessages)
 	// Open a checkpoint for this turn before the user message is appended, so the
 	// recorded message boundary precedes it and pre-edit snapshots land here.
-	c.beginCheckpoint(input)
+	c.beginTurnCheckpoint(input)
 	// UserPromptSubmit / Stop hooks bracket the whole turn (incl. the plan
 	// research + approved-execution sub-turns below): a gating UserPromptSubmit
 	// aborts before any model call; Stop fires once when the turn returns.
@@ -444,7 +332,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	}
 	// The plan is already visible as the assistant's answer, so the request
 	// carries no subject — it's purely the gate.
-	allow, _, err := c.requestApproval(ctx, planApprovalTool, "")
+	allow, _, err := c.approvals.Request(ctx, planApprovalTool, "")
 	if err != nil {
 		return err
 	}
@@ -455,14 +343,8 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	c.seedPlanTodos(proposal)
 	// The plan is the go-ahead: don't re-prompt for each write of the approved
 	// work. Auto-approve writers for the duration of this execution turn only.
-	c.mu.Lock()
-	c.autoApprove = true
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		c.autoApprove = false
-		c.mu.Unlock()
-	}()
+	c.approvals.SetAutoApprove(true)
+	defer c.approvals.SetAutoApprove(false)
 	return c.runner.Run(ctx, planApprovedMessage)
 }
 
@@ -648,54 +530,6 @@ func (c *Controller) Running() bool {
 	return c.running
 }
 
-// Approve answers a pending ApprovalRequest by ID: allow runs the call, session
-// also remembers a grant for the rest of the session so the same tool+subject
-// isn't re-prompted. Unknown/expired IDs are ignored.
-func (c *Controller) Approve(id string, allow, session bool) {
-	c.mu.Lock()
-	reply := c.approvals[id]
-	delete(c.approvals, id)
-	delete(c.pendingApprovals, id)
-	c.mu.Unlock()
-	if reply != nil {
-		reply <- approvalReply{allow: allow, session: session} // buffered, never blocks
-	}
-}
-
-// PendingApprovals 返回当前已发出、尚未应答的审批请求(用于切回标签时重放),按 id 升序。
-func (c *Controller) PendingApprovals() []event.Approval {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]event.Approval, 0, len(c.pendingApprovals))
-	for _, a := range c.pendingApprovals {
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool { return idLess(out[i].ID, out[j].ID) })
-	return out
-}
-
-// PendingAsks 返回当前已发出、尚未应答的 ask 请求(用于切回标签时重放),按 id 升序。
-func (c *Controller) PendingAsks() []event.Ask {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]event.Ask, 0, len(c.pendingAsks))
-	for _, a := range c.pendingAsks {
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool { return idLess(out[i].ID, out[j].ID) })
-	return out
-}
-
-// idLess 按数值比较审批/ask 的字符串 id(它们是自增计数的十进制串),回退到字典序。
-func idLess(a, b string) bool {
-	ai, aerr := strconv.Atoi(a)
-	bi, berr := strconv.Atoi(b)
-	if aerr == nil && berr == nil {
-		return ai < bi
-	}
-	return a < b
-}
-
 // EnableInteractiveApproval swaps the executor's gate for one that routes "ask"
 // decisions to the frontend via ApprovalRequest events, and wires the controller
 // in as the executor's Asker so the `ask` tool can question the user. Interactive
@@ -703,51 +537,8 @@ func idLess(a, b string) bool {
 // a nil asker from setup.
 func (c *Controller) EnableInteractiveApproval() {
 	if c.executor != nil {
-		c.executor.SetGate(permission.NewGate(c.policy, gateApprover{c}))
+		c.executor.SetGate(c.approvals.Gate())
 		c.executor.SetAsker(c)
-	}
-}
-
-// Ask implements agent.Asker: it emits an AskRequest and blocks until
-// AnswerQuestion(ID, …) answers or ctx is cancelled. promptMu serialises it
-// against tool-approval prompts so at most one user prompt is outstanding.
-func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error) {
-	c.promptMu.Lock()
-	defer c.promptMu.Unlock()
-
-	c.mu.Lock()
-	c.nextID++
-	id := strconv.Itoa(c.nextID)
-	reply := make(chan []event.AskAnswer, 1)
-	c.asks[id] = reply
-	ask := event.Ask{ID: id, Questions: questions}
-	c.pendingAsks[id] = ask // 记录未应答的 ask,供切回标签时重放(A2)
-	c.mu.Unlock()
-
-	c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: ask})
-
-	select {
-	case ans := <-reply:
-		return ans, nil
-	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.asks, id)
-		delete(c.pendingAsks, id)
-		c.mu.Unlock()
-		return nil, ctx.Err()
-	}
-}
-
-// AnswerQuestion resolves a pending AskRequest by ID with the user's selections.
-// Unknown/expired IDs are ignored.
-func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
-	c.mu.Lock()
-	reply := c.asks[id]
-	delete(c.asks, id)
-	delete(c.pendingAsks, id)
-	c.mu.Unlock()
-	if reply != nil {
-		reply <- answers // buffered, never blocks
 	}
 }
 
@@ -841,7 +632,7 @@ func (c *Controller) NewSession() error {
 		c.mu.Unlock()
 	}
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
-	c.rebindCheckpoints(c.SessionPath())
+	c.ckpt.Rebind(c.SessionPath())
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.mu.Unlock()
@@ -858,20 +649,6 @@ const (
 	RewindBoth                            // both
 )
 
-// Checkpoints lists the session's rewind points (one per user turn), oldest first.
-func (c *Controller) Checkpoints() []checkpoint.Meta {
-	// Resume/SetSessionPath 会在 c.mu 下替换 c.cp;裸读指针与之构成数据竞争(桌面端
-	// "打开 rewind 抽屉" 与 "恢复历史会话" 是不同 goroutine)。照 InvalidateCheckpoints
-	// 的写法:锁内捕获 cp 后解锁再用(cp.List 自带内部锁,不必持 c.mu)。
-	c.mu.Lock()
-	cp := c.cp
-	c.mu.Unlock()
-	if cp == nil {
-		return nil
-	}
-	return cp.List()
-}
-
 // rewindFail emits the error as a Warn notice (so a frontend that swallows the
 // returned error — e.g. the desktop bridge's .catch — still shows the user why
 // the rewind did nothing) and returns it.
@@ -887,19 +664,17 @@ func (c *Controller) rewindFail(err error) error {
 // unavailable for turns inherited from a resumed session (code rewind still works).
 // Frontends re-render their transcript from History after the call.
 func (c *Controller) Rewind(turn int, scope RewindScope) error {
-	if c.cp == nil || c.executor == nil {
+	if !c.ckpt.Available() || c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
 	if !c.tryBeginExclusive() {
 		return c.rewindFail(fmt.Errorf("cannot rewind while another operation is running"))
 	}
 	defer c.endExclusive()
-	c.mu.Lock()
-	boundary, hasBound := c.cpBound[turn]
-	c.mu.Unlock()
+	boundary, hasBound := c.ckpt.Bound(turn)
 
 	if scope == RewindCode || scope == RewindBoth {
-		written, deleted, err := c.cp.RestoreCode(turn)
+		written, deleted, err := c.ckpt.RestoreCode(turn)
 		if err != nil {
 			return c.rewindFail(fmt.Errorf("rewind code: %w", err))
 		}
@@ -915,21 +690,7 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 		if !c.executor.Session().Truncate(boundary) {
 			return c.rewindFail(fmt.Errorf("无法回退到 turn %d:会话已被压缩或边界失效", turn))
 		}
-		c.mu.Lock()
-		c.cpTurn = turn // renumber future turns from here; later turns are gone
-		for k := range c.cpBound {
-			if k >= turn {
-				delete(c.cpBound, k)
-			}
-		}
-		cp := c.cp
-		c.mu.Unlock()
-		// 删掉被回退掉的 turn(>=turn)的废弃 checkpoint(内存 + 磁盘)。否则复用 turn 号后
-		// RestoreCode / Bounds 会取到废弃时间线的同号快照——按旧内容覆盖,甚至(废弃快照记录
-		// 的是"文件新建",Content==nil)静默删除当前时间线合法存在的文件。
-		if cp != nil {
-			cp.Prune(turn)
-		}
+		c.ckpt.TruncateFrom(turn)
 		if err := c.Snapshot(); err != nil {
 			slog.Warn("controller: snapshot after rewind", "err", err)
 		}
@@ -959,9 +720,7 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 		return "", c.rewindFail(fmt.Errorf("cannot fork while another operation is running"))
 	}
 	defer c.endExclusive()
-	c.mu.Lock()
-	boundary, hasBound := c.cpBound[turn]
-	c.mu.Unlock()
+	boundary, hasBound := c.ckpt.Bound(turn)
 	if !hasBound {
 		return "", c.rewindFail(fmt.Errorf("fork unavailable for turn %d (resumed session)", turn))
 	}
@@ -997,7 +756,7 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 	c.mu.Lock()
 	c.sessionPath = newPath
 	c.mu.Unlock()
-	c.rebindCheckpoints(newPath)
+	c.ckpt.Rebind(newPath)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("forked conversation at turn %d into a new session", turn)})
 	return newPath, nil
@@ -1045,7 +804,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	c.mu.Lock()
 	c.sessionPath = newPath
 	c.mu.Unlock()
-	c.rebindCheckpoints(newPath)
+	c.ckpt.Rebind(newPath)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
 	return newPath, nil
@@ -1089,7 +848,7 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	c.mu.Lock()
 	c.sessionPath = match.Path
 	c.mu.Unlock()
-	c.rebindCheckpoints(match.Path)
+	c.ckpt.Rebind(match.Path)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
 	return match, nil
@@ -1151,9 +910,7 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 		return c.rewindFail(fmt.Errorf("cannot summarize while another operation is running"))
 	}
 	defer c.endExclusive()
-	c.mu.Lock()
-	boundary, hasBound := c.cpBound[turn]
-	c.mu.Unlock()
+	boundary, hasBound := c.ckpt.Bound(turn)
 	if !hasBound {
 		return c.rewindFail(fmt.Errorf("summarize unavailable for turn %d (resumed session)", turn))
 	}
@@ -1186,7 +943,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.mu.Lock()
 	c.sessionPath = path
 	c.mu.Unlock()
-	c.rebindCheckpoints(path)
+	c.ckpt.Rebind(path)
 }
 
 // Snapshot writes the executor's conversation to the active session file. No-op
@@ -1252,7 +1009,7 @@ func (c *Controller) SetSessionPath(p string) {
 	c.mu.Lock()
 	c.sessionPath = p
 	c.mu.Unlock()
-	c.rebindCheckpoints(p)
+	c.ckpt.Rebind(p)
 }
 
 // SessionDir reports the directory new session files land in ("" disables
@@ -1599,22 +1356,6 @@ func (c *Controller) Jobs() []jobs.View {
 	return c.jobs.Running()
 }
 
-// SetBypass turns YOLO/bypass mode on or off for the session: while on, every
-// approval prompt is auto-allowed (writers and bash run without asking). Deny
-// rules still block. Runtime-only — never written to config.
-func (c *Controller) SetBypass(on bool) {
-	c.mu.Lock()
-	c.bypass = on
-	c.mu.Unlock()
-}
-
-// Bypass reports whether YOLO/bypass mode is on, for the status-bar indicator.
-func (c *Controller) Bypass() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.bypass
-}
-
 // --- memory ---
 //
 // c.mem is treated as an immutable snapshot guarded by c.mu: reads take the lock
@@ -1715,23 +1456,6 @@ func (c *Controller) refreshMemoryLocked() {
 }
 
 // --- approval bridge (agent gate → events) ---
-
-// gateApprover adapts the Controller to permission.Approver. It is distinct
-// from the public Approve command (different signature, different direction).
-type gateApprover struct{ c *Controller }
-
-func (g gateApprover) Approve(ctx context.Context, tool, subject string, args json.RawMessage) (bool, bool, error) {
-	// Auto-allow without prompting while executing a just-approved plan (the plan
-	// was the approval) or while YOLO/bypass mode is on. Deny rules already bit
-	// before this point, so they still block.
-	g.c.mu.Lock()
-	auto := g.c.autoApprove || g.c.bypass
-	g.c.mu.Unlock()
-	if auto {
-		return true, false, nil
-	}
-	return g.c.requestApproval(ctx, tool, subject)
-}
 
 type seedTodo struct {
 	Content string `json:"content"`
@@ -1859,65 +1583,49 @@ func listItem(line string) (content string, level int, ok bool) {
 	return s, 0, true
 }
 
-// requestApproval emits an ApprovalRequest and blocks until Approve(ID, …)
-// answers or ctx is cancelled. A prior session grant for the same tool+subject
-// short-circuits. promptMu serialises outstanding prompts.
-func (c *Controller) requestApproval(ctx context.Context, tool, subject string) (bool, bool, error) {
-	key := tool + "\x00" + subject
+// --- approvals / asks (forwarded to approvalBroker; see approval.go) ---
 
-	c.mu.Lock()
-	// YOLO/bypass and the just-approved-plan window auto-allow every approval
-	// without prompting; the plan gate routes through here too, so this is what
-	// stops a bypass session from blocking on plan approval. Deny rules bit upstream.
-	if c.bypass || c.autoApprove || c.granted[key] {
-		c.mu.Unlock()
-		return true, false, nil
+// Approve answers a pending approval prompt by id.
+func (c *Controller) Approve(id string, allow, session bool) { c.approvals.Resolve(id, allow, session) }
+
+// PendingApprovals 返回当前已发出、尚未应答的审批请求(用于切回标签时重放)。
+func (c *Controller) PendingApprovals() []event.Approval { return c.approvals.PendingApprovals() }
+
+// PendingAsks 返回当前已发出、尚未应答的 ask 请求(用于切回标签时重放)。
+func (c *Controller) PendingAsks() []event.Ask { return c.approvals.PendingAsks() }
+
+// Ask implements agent.Asker so the `ask` tool can question the user.
+func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error) {
+	return c.approvals.Ask(ctx, questions)
+}
+
+// AnswerQuestion resolves a pending AskRequest by ID with the user's selections.
+func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
+	c.approvals.AnswerQuestion(id, answers)
+}
+
+// SetBypass turns YOLO/bypass mode on or off for the session.
+func (c *Controller) SetBypass(on bool) { c.approvals.SetBypass(on) }
+
+// Bypass reports whether YOLO/bypass mode is on, for the status-bar indicator.
+func (c *Controller) Bypass() bool { return c.approvals.Bypass() }
+
+// --- checkpoints (forwarded to checkpointService; see checkpoints.go) ---
+
+// InvalidateCheckpoints drops the turn→message-index boundaries after something
+// rewrote the message log (compaction, summarize), so conversation rewind and
+// fork report "unavailable" instead of truncating to a stale index.
+func (c *Controller) InvalidateCheckpoints() { c.ckpt.Invalidate() }
+
+// Checkpoints lists the session's rewind points (one per user turn), oldest first.
+func (c *Controller) Checkpoints() []checkpoint.Meta { return c.ckpt.List() }
+
+// beginTurnCheckpoint opens a checkpoint for the turn about to run, recording the
+// current message count as the conversation-rewind boundary. Called at the top of
+// runTurn, before the user message is appended.
+func (c *Controller) beginTurnCheckpoint(input string) {
+	if c.executor == nil {
+		return
 	}
-	c.mu.Unlock()
-
-	c.promptMu.Lock()
-	defer c.promptMu.Unlock()
-
-	// Re-check the grant: a session grant may have landed while we queued behind
-	// another prompt for the same subject.
-	c.mu.Lock()
-	if c.granted[key] {
-		c.mu.Unlock()
-		return true, false, nil
-	}
-	c.nextID++
-	id := strconv.Itoa(c.nextID)
-	reply := make(chan approvalReply, 1)
-	c.approvals[id] = reply
-	approval := event.Approval{ID: id, Tool: tool, Subject: subject}
-	c.pendingApprovals[id] = approval // 记录未应答的审批,供切回标签时重放(A2)
-	c.mu.Unlock()
-
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: approval})
-	// The agent now needs the user's attention; a Notification hook can ping an
-	// external channel (desktop notice, phone) while the run blocks on the reply.
-	if subject != "" {
-		go c.hooks.Notification(ctx, "approval needed: "+tool+" "+subject)
-	} else {
-		go c.hooks.Notification(ctx, "approval needed: "+tool)
-	}
-
-	select {
-	case r := <-reply:
-		// Plan approvals are one-shot — never persist a session grant for them, or
-		// every future plan would auto-approve.
-		if r.allow && r.session && tool != planApprovalTool {
-			c.mu.Lock()
-			c.granted[key] = true
-			c.mu.Unlock()
-		}
-		// remember=false: session grants live here, not in the on-disk policy.
-		return r.allow, false, nil
-	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.approvals, id)
-		delete(c.pendingApprovals, id)
-		c.mu.Unlock()
-		return false, false, ctx.Err()
-	}
+	c.ckpt.Begin(input, len(c.executor.Session().Messages))
 }
