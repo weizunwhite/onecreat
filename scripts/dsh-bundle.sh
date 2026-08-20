@@ -119,6 +119,19 @@ if [ "$OS" = "$HOST_OS" ] && [ "$ARCH" = "$HOST_ARCH" ]; then
 	(cd "$RUNTIME/dsh" && pnpm install --prod --frozen-lockfile --node-linker=hoisted --ignore-scripts >/dev/null)
 	# 原生模块的 postinstall(node-pty / koffi / spawn helper)得跑,否则运行期缺 .node。
 	(cd "$RUNTIME/dsh" && pnpm rebuild >/dev/null 2>&1 || true)
+	# 闭包版本一致性闸门。dsh 是 developer preview,官方明说 rc 之间会破坏兼容,混着装
+	# 必炸。而升级时只改 package.json 再跑 `pnpm install` 是**不够**的:直接依赖会升,
+	# 传递依赖(尤其是被当 peer 解析的那批)会被 pnpm 判定"已满足"而留在旧 rc 上,
+	# 装出来是 rc.8 直接依赖 + rc.7 传递依赖的混合体,还能编译通过。2026-08-20 的
+	# rc.7→rc.8 升级就这么中过一次(正确做法:删掉 pnpm-lock.yaml 与 node_modules 重装)。
+	versions="$(find "$RUNTIME/dsh/node_modules/@deepseek-ai" -maxdepth 2 -name package.json -path '*/dsh-*/package.json' -exec sed -n 's/.*"version": "\(0\.1\.0-rc\.[0-9]*\)".*/\1/p' {} \; | sort -u)"
+	if [ "$(echo "$versions" | wc -l | tr -d ' ')" != 1 ]; then
+		echo "dsh-bundle: 依赖闭包里混了多个 dsh 版本,拒绝出包:" >&2
+		echo "$versions" | sed 's/^/    /' >&2
+		echo "  修:rm -rf dsh/node_modules dsh/pnpm-lock.yaml && pnpm -C dsh install,再重跑本脚本。" >&2
+		exit 1
+	fi
+	echo "==> dsh 闭包版本一致:$versions"
 else
 	echo "⚠️  跨平台包 (${OS}/${ARCH}) 跳过 node_modules 装配:原生模块只能在目标平台上装。" >&2
 	echo "    该平台的发行包不含 dsh sidecar,engine=\"dsh\" 在其上不可用(engine=native 照常)。" >&2

@@ -26,7 +26,7 @@ func fakeServer(t *testing.T, conn net.Conn) {
 		switch req.Method {
 		case MethodInitialize:
 			result, _ := json.Marshal(map[string]any{
-				"serverInfo": map[string]string{"name": WireServerName, "version": "0.1.0-rc.7"},
+				"serverInfo": map[string]string{"name": WireServerName, "version": "0.1.0-rc.8"},
 			})
 			_ = enc.Encode(rpcFrame{JSONRPC: jsonrpcVersion, ID: req.ID, Result: result})
 		case MethodSessionPrompt:

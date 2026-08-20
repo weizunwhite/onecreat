@@ -16,7 +16,7 @@ plus a third, non-Go component (`dsh/`) used only by the `dsh` engine:
 
 - **root** (`module reasonix`) — the kernel, CLI, and command binaries. Pure Go, `CGO_ENABLED=0`, single static binary.
 - **`desktop/`** (`module reasonix/desktop`) — the Wails GUI (CGO/WebKit). Nested on purpose so the kernel build never pulls in WebKit. Build/test it from inside `desktop/`.
-- **`dsh/`** (pnpm, ESM JS) — OneCreat 自带的 **DeepSeek Harness sidecar 组合包**(dsh 锁 `0.1.0-rc.7`)+ 两个自有插件(控制面 / 网关适配器)。只在 `engine = "dsh"` 时被 Go 拉起。改这里之前读 [`dsh/README.md`](dsh/README.md)。
+- **`dsh/`** (pnpm, ESM JS) — OneCreat 自带的 **DeepSeek Harness sidecar 组合包**(dsh 锁 `0.1.0-rc.8`)+ 两个自有插件(控制面 / 网关适配器)。只在 `engine = "dsh"` 时被 Go 拉起。改这里之前读 [`dsh/README.md`](dsh/README.md)。
 
 ## Commands
 
@@ -43,7 +43,7 @@ make release-web VERSION=vX.Y.Z   # 主分发形态:全平台 Web 发行包 -> d
 cd desktop && go test -tags web ./...   # web 标签下的测试也要绿
 
 # dsh sidecar 引擎(可选的底层 agent 引擎;默认仍是 native)
-pnpm -C dsh install                   # 首次:装 dsh 组合包依赖(锁 0.1.0-rc.7)
+pnpm -C dsh install                   # 首次:装 dsh 组合包依赖(锁 0.1.0-rc.8)
 pnpm -C dsh typecheck                 # 改了 dsh/plugins/*.js 之后必须绿
 reasonix run --engine dsh "<任务>"     # 单次用 dsh 引擎跑(不改配置)
 ONECREAT_ENGINE=dsh bin/onecreat-web  # Web/桌面端用 dsh 引擎(环境变量优先于配置)

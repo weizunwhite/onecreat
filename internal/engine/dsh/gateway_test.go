@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,22 @@ func TestScrubberLeavesTierAlone(t *testing.T) {
 	for _, tier := range []string{"tier-1", "tier-2", "tier-3"} {
 		if got := s.Text(tier); got != tier {
 			t.Fatalf("档位占位符被误擦: %q → %q", tier, got)
+		}
+	}
+}
+
+// dsh 0.1.0-rc.8 的 llm-deepseek 新增了两条面向用户的图片错误文案,都以厂商名开头。
+// OneCreat 现在不往 dsh 送图片(Go 侧只发 text 块),触不到;但将来接图就会漏。
+// 这条测试钉住"兜底名单确实盖得住它们",而不是等出事再补。
+func TestScrubberCoversRC8ImageErrors(t *testing.T) {
+	s := NewScrubber("OneCreat", "deepseek-official", "llm-deepseek", "DeepSeek", "deepseek",
+		"api.deepseek.com", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "https://t.example.com/api/onecreat/v1")
+	for _, raw := range []string{
+		`DeepSeek model "tier-3" does not accept image input.`,
+		"DeepSeek image conversion requires the durable attachment service.",
+	} {
+		if got := s.Text(raw); strings.Contains(strings.ToLower(got), "deepseek") {
+			t.Fatalf("rc.8 图片错误文案没被擦干净: %q", got)
 		}
 	}
 }

@@ -73,7 +73,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.DSH = DSHConfig{
 		BinPath:           "node",
 		Args:              []string{"lib/bin.js", "cordis.yml"},
-		Version:           "0.1.0-rc.7",
+		Version:           "0.1.0-rc.8",
 		StartupTimeoutSec: 30,
 		GatewayBaseURL:    "https://t.weizunxy.com/api/onecreat/v1",
 		GatewayTokenEnv:   "ONECREAT_GATEWAY_TOKEN",
@@ -155,7 +155,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if got.Engine != "dsh" {
 		t.Errorf("engine = %q, want dsh", got.Engine)
 	}
-	if got.DSH.BinPath != "node" || got.DSH.Version != "0.1.0-rc.7" || got.DSH.StartupTimeoutSec != 30 {
+	if got.DSH.BinPath != "node" || got.DSH.Version != "0.1.0-rc.8" || got.DSH.StartupTimeoutSec != 30 {
 		t.Errorf("dsh scalar fields not preserved: %+v", got.DSH)
 	}
 	if len(got.DSH.Args) != 2 || got.DSH.Args[0] != "lib/bin.js" || got.DSH.Args[1] != "cordis.yml" {

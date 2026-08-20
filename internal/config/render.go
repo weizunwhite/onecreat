@@ -337,7 +337,7 @@ func renderDSH(b *strings.Builder, c *Config) {
 	if d.Version != "" {
 		fmt.Fprintf(b, "version = %q\n", d.Version)
 	} else {
-		b.WriteString("# version = \"0.1.0-rc.7\"   # 锁死 dsh 精确版本(developer preview)\n")
+		b.WriteString("# version = \"0.1.0-rc.8\"   # 锁死 dsh 精确版本(developer preview)\n")
 	}
 	if d.StartupTimeoutSec != 0 {
 		fmt.Fprintf(b, "startup_timeout_sec = %d\n", d.StartupTimeoutSec)

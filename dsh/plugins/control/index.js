@@ -297,6 +297,12 @@ export function apply(ctx, config) {
   transport.onRequest(async (method, params) => {
     switch (method) {
       case 'initialize': {
+        // initialize 是"运行时已就绪"的边界。本插件可能先于同级的异步 Loader 条目
+        // 装配完成 —— 我们**恰恰**在本插件的 apply 里 ctx.plugin(McpClient) 挂硬件 MCP,
+        // 而 MCP 的首轮工具发现是异步的。不等它就应答 initialize,首轮会出现
+        // "硬件工具还没挂上"的窗口期。(对齐 dsh 0.1.0-rc.8 官方 sdk/server 的同名修复;
+        // 我们自己拥有 transport、自己分派 initialize,拿不到官方 apply() 里那几行。)
+        await ctx.get('loader')?.await()
         // 记下路由事实(resume 要用),再交给官方实现。
         route = {
           provider: String(params.provider ?? route.provider),
