@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"reasonix/internal/event"
@@ -207,5 +208,80 @@ func TestEncodeUsageCost(t *testing.T) {
 	})
 	if w.Usage == nil || w.Usage.CostUSD != 1.0 {
 		t.Fatalf("costUsd = %+v, want 1.0", w.Usage)
+	}
+}
+
+// TestStamperMakesLossDetectable is the envelope's reason to exist: a client can
+// only notice it missed frames if the stream numbers them. The sequence must be
+// gap-free and start at 1, so any jump the client sees is a real gap.
+func TestStamperMakesLossDetectable(t *testing.T) {
+	s := NewStamper("sess", "tab-2")
+	var last uint64
+	for i := 0; i < 5; i++ {
+		w := s.Wire(event.Event{Kind: event.Text, Text: "x"})
+		if w.Sequence != last+1 {
+			t.Fatalf("sequence jumped: %d after %d", w.Sequence, last)
+		}
+		last = w.Sequence
+		if w.SchemaVersion != SchemaVersion {
+			t.Errorf("schemaVersion = %d, want %d", w.SchemaVersion, SchemaVersion)
+		}
+		if w.SessionID != "sess" || w.TabID != "tab-2" {
+			t.Errorf("stream identity missing: %+v", w)
+		}
+		if w.EventID == "" || w.Timestamp == "" {
+			t.Errorf("envelope incomplete: %+v", w)
+		}
+	}
+}
+
+// TestStamperMarksQoSOnTheWire: the client is told which frames could have been
+// dropped, so it can judge whether a gap it detected mattered.
+func TestStamperMarksQoSOnTheWire(t *testing.T) {
+	s := NewStamper("", "")
+	if s.Wire(event.Event{Kind: event.Text}).Durable {
+		t.Error("a text delta must be marked ephemeral")
+	}
+	for _, k := range []event.Kind{event.ApprovalRequest, event.AskRequest, event.TurnDone, event.ToolResult, event.Message} {
+		if !s.Wire(event.Event{Kind: k}).Durable {
+			t.Errorf("kind %d must be marked durable on the wire", k)
+		}
+	}
+}
+
+// TestEncodeLeavesTheEnvelopeEmpty pins the split: Encode produces the payload
+// and nothing else, so the payload contract above compares what it claims to.
+func TestEncodeLeavesTheEnvelopeEmpty(t *testing.T) {
+	w := Encode(event.Event{Kind: event.TurnDone})
+	if w.SchemaVersion != 0 || w.Sequence != 0 || w.EventID != "" || w.Timestamp != "" || w.Durable {
+		t.Fatalf("Encode filled envelope fields; that is a Stamper's job: %+v", w)
+	}
+}
+
+// TestConcurrentStamping: one stream, several emitters (the desktop's tabs share
+// nothing, but a hub's publishers may not be serialised).
+func TestConcurrentStamping(t *testing.T) {
+	s := NewStamper("sess", "")
+	const n = 200
+	seqs := make(chan uint64, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seqs <- s.Wire(event.Event{Kind: event.Text}).Sequence
+		}()
+	}
+	wg.Wait()
+	close(seqs)
+	seen := map[uint64]bool{}
+	for v := range seqs {
+		if seen[v] {
+			t.Fatalf("sequence %d handed out twice", v)
+		}
+		seen[v] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("got %d distinct sequences, want %d", len(seen), n)
 	}
 }

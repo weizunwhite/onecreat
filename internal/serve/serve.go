@@ -198,20 +198,36 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, unsubscribe := s.bc.Subscribe()
-	defer unsubscribe()
+	sub := s.bc.Subscribe()
+	defer s.bc.Unsubscribe(sub)
 
 	fmt.Fprint(w, ": connected\n\n") // open the stream immediately
 	flusher.Flush()
 
 	for {
-		select {
-		case data, ok := <-ch:
+		// Drain everything queued before waiting again, so a burst is written in
+		// one pass rather than one wake-up per frame.
+		for {
+			f, ok := sub.TryNext()
 			if !ok {
+				break
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", f.Data); err != nil {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
+		}
+		// A client that cannot keep up with state-bearing frames is disconnected
+		// rather than served a stream with invisible holes: it reconnects and
+		// re-syncs from /history. Silently continuing is the one option Plan 10
+		// rules out.
+		if sub.Overflowed() {
+			fmt.Fprint(w, "event: stream_reset\ndata: {\"reason\":\"client too slow; re-sync from /history\"}\n\n")
+			flusher.Flush()
+			return
+		}
+		select {
+		case <-sub.Wake():
 		case <-r.Context().Done():
 			return
 		}

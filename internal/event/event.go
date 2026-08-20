@@ -208,3 +208,45 @@ func (f FuncSink) Emit(e Event) {
 // Discard is a Sink that drops every event. Useful in tests and for runs that
 // only care about the final session state.
 var Discard Sink = FuncSink(func(Event) {})
+
+// Delivery classifies how an event may be treated when a consumer falls behind.
+//
+// It exists because "drop the frame when the buffer is full" is only acceptable
+// for *some* events. A text delta that never arrives costs a flicker; an
+// ApprovalRequest that never arrives leaves the agent blocked forever on a
+// prompt nobody will ever see, and a TurnDone that never arrives leaves the UI
+// spinning on a turn that finished. Those are not degraded rendering — they are
+// lost state (A11).
+type Delivery int
+
+const (
+	// Ephemeral events are renderings-in-progress: the newest one supersedes the
+	// last, and a consumer that misses some still converges on the right final
+	// picture. They may be coalesced or dropped under pressure.
+	Ephemeral Delivery = iota
+	// Durable events carry state a consumer cannot reconstruct by waiting for the
+	// next one. They must never be dropped silently — a transport that cannot
+	// deliver one must fail loudly (disconnect) so the client re-syncs.
+	Durable
+)
+
+// ephemeralKinds are the only kinds a transport may drop. The list is
+// deliberately short and explicit, and the default is Durable: a new kind is
+// state-bearing until someone proves otherwise, so forgetting to classify one
+// fails safe.
+var ephemeralKinds = map[Kind]bool{
+	Reasoning:    true, // thinking delta — superseded by the next delta and by Message
+	Text:         true, // answer delta — superseded by the next delta and by Message
+	ToolProgress: true, // partial tool output — superseded by ToolResult
+}
+
+// Delivery reports whether this kind may be dropped when a consumer is behind.
+func (k Kind) Delivery() Delivery {
+	if ephemeralKinds[k] {
+		return Ephemeral
+	}
+	return Durable
+}
+
+// Durable reports whether this kind must not be dropped silently.
+func (k Kind) Durable() bool { return k.Delivery() == Durable }

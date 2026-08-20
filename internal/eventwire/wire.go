@@ -14,6 +14,31 @@ import "reasonix/internal/event"
 // The Kind enum becomes a stable string and the TurnDone error becomes a
 // message, since neither serializes cleanly.
 type Event struct {
+	// --- envelope (Protocol V2) ---------------------------------------------
+	//
+	// Every frame carries enough identity for a client to tell *which* stream it
+	// belongs to and whether it missed anything. Before V2 a frame was just its
+	// payload, so a dropped event was indistinguishable from one that was never
+	// sent — the client could not even detect the loss, let alone recover (A11).
+	//
+	// SchemaVersion lets a client reject a stream it does not understand instead
+	// of misreading fields. Sequence is per-stream and gap-free: a client that
+	// sees it jump knows it lost frames and can re-sync from /history. Durable
+	// mirrors the server-side QoS decision, so a client can reason about what a
+	// gap could possibly have contained.
+	// The envelope is filled by a Stamper, not by Encode: sequence numbers belong
+	// to a *stream*, and Encode has no stream. An unstamped payload therefore
+	// marshals to exactly the pre-V2 JSON, which is what keeps the payload
+	// contract test honest — it compares the payload and nothing else.
+	SchemaVersion int    `json:"schemaVersion,omitempty"`
+	EventID       string `json:"eventId,omitempty"`
+	Sequence      uint64 `json:"sequence,omitempty"`
+	SessionID     string `json:"sessionId,omitempty"`
+	TabID         string `json:"tabId,omitempty"`
+	Timestamp     string `json:"timestamp,omitempty"`
+	Durable       bool   `json:"durable,omitempty"`
+
+	// --- payload -------------------------------------------------------------
 	Kind       string      `json:"kind"`
 	Text       string      `json:"text,omitempty"`
 	Reasoning  string      `json:"reasoning,omitempty"`
@@ -130,7 +155,14 @@ func EncodeAsk(a event.Ask) *Ask {
 	return &Ask{ID: a.ID, Questions: qs}
 }
 
+// SchemaVersion is the current event-protocol version stamped on every frame.
+// Bump it only for a breaking change to the envelope or payload shapes; adding
+// an optional field is not breaking.
+const SchemaVersion = 2
+
 // Encode converts one domain event into the shared JSON-facing event contract.
+// It fills the payload only — a Stamper adds the envelope, because sequence
+// numbers belong to a *stream*, not to an event.
 func Encode(e event.Event) Event {
 	w := Event{Kind: KindNames[e.Kind], Text: e.Text, Reasoning: e.Reasoning}
 	switch e.Kind {

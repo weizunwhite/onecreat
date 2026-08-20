@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/eventwire"
 	"reasonix/internal/i18n"
 )
 
@@ -99,7 +100,7 @@ func NewApp() *App {
 	a.hw = newHardwareService(a.workspaceRoot, a.activeCtrl, a.serial)
 	// 主标签在这里就注册进 tabs 并设为活动:标签运行时只有这一份,不再有「App 上的
 	// 活动镜像」。它的 controller 由 buildController 异步装配,期间 Ready=false。
-	a.tabs.Register(&tabRuntime{id: "main", kind: "chat", sink: &eventSink{app: a, tabID: "main"}})
+	a.tabs.Register(&tabRuntime{id: "main", kind: "chat", sink: newEventSink(nil, a, "main")})
 	return a
 }
 
@@ -230,7 +231,7 @@ func (a *App) CreateTab(kind string) (TabMeta, error) {
 	// 没有需要一并重指的镜像状态。
 	a.tabs.Register(&tabRuntime{
 		id: id, kind: kind, ws: a.workspace(),
-		sink: &eventSink{ctx: a.ctx, app: a, tabID: id},
+		sink: newEventSink(a.ctx, a, id),
 	})
 
 	go a.buildTab(id)
@@ -687,15 +688,23 @@ func (a *App) Capabilities() CapabilitiesView {
 // --- memory panel (frontend ⇄ controller) ---
 
 // eventSink is the controller's event.Sink in desktop mode: it forwards every
-// agent event to the frontend as one shell event, JSON-shaped by toWire. It is a
-// type distinct from App so App's bound method set stays the clean command surface
-// — Emit must not be exposed to JS. Emit runs on the agent goroutine; Shell.Emit
+// agent event to the frontend as one shell event, stamped and JSON-shaped by its
+// own eventwire.Stamper. It is a type distinct from App so App's bound method set
+// stays the clean command surface — Emit must not be exposed to JS. Emit runs on the agent goroutine; Shell.Emit
 // is goroutine-safe, and the ctx guard covers the brief window before startup
 // assigns it.
 type eventSink struct {
 	ctx   context.Context
 	app   *App
 	tabID string // 该 sink 归属的标签;事件发到 agent:event:<tabID>,空则发旧的全局通道
+	// stamp 给这条标签流编号:schemaVersion / sequence / eventId / timestamp。
+	// 每个标签一条独立的流,所以每个 sink 一个 stamper(Plan 10 / A11)。
+	stamp *eventwire.Stamper
+}
+
+// newEventSink 建一个标签的事件出口。
+func newEventSink(ctx context.Context, app *App, tabID string) *eventSink {
+	return &eventSink{ctx: ctx, app: app, tabID: tabID, stamp: eventwire.NewStamper("", tabID)}
 }
 
 func (s *eventSink) Emit(e event.Event) {
@@ -704,7 +713,7 @@ func (s *eventSink) Emit(e event.Event) {
 		if s.tabID != "" {
 			ch = eventChannel + ":" + s.tabID
 		}
-		s.app.sh().Emit(ch, toWire(e))
+		s.app.sh().Emit(ch, s.stamp.Wire(e))
 	}
 	// Persist after each turn so a force-kill of a long session loses at most the
 	// in-flight prompt, not every turn back to the last workspace switch.
