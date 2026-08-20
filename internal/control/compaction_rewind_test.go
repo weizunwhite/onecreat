@@ -194,7 +194,7 @@ func TestCheckpointsConcurrentWithRebindNoRace(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 200; i++ {
-			c.SetSessionPath(path) // 每次都在 c.mu 下替换 c.cp 指针
+			c.SetSessionPath(path) // 每次都换 checkpoint store 指针
 		}
 		close(done)
 	}()

@@ -12,12 +12,11 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
@@ -60,11 +59,14 @@ type Controller struct {
 	// memory owns the session's memory snapshot and the notes queued to ride the
 	// next turn (see memory.go). A mid-session write must never touch the
 	// cache-stable system prefix.
-	memory      *memoryService
-	cleanup     func()
-	autoPlan    string
-	classifier  autoPlanClassifier
-	startedOnce bool // guards the one-shot SessionStart hook on first turn
+	memory     *memoryService
+	cleanup    func()
+	autoPlan   string
+	classifier autoPlanClassifier
+	// startedOnce guards the one-shot SessionStart hook on the first turn. It is a
+	// CompareAndSwap rather than sync.Once on purpose: the original semantics let a
+	// second caller return immediately instead of blocking until the hook finishes.
+	startedOnce atomic.Bool
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -94,28 +96,11 @@ type Controller struct {
 	ckpt   *checkpointService
 	wsRoot string
 
-	// mu guards the turn/exclusive-operation state and the per-turn runtime flags
-	// (plan mode, coaching persona); every critical section under it is short and
-	// non-blocking. Approvals, checkpoints, memory, MCP and session persistence
-	// each carry their own lock now — see the services above.
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	running bool
-	// busy 标记一个「独占重写会话日志」的操作正在进行(compact/summarize/new/rewind/
-	// fork/branch/switch)。它与 running(turn 进行中)互斥:任一进行中,runGuarded 就
-	// 不启动新 turn,这些 op 之间也互斥。既有守卫只挡 turn→op(op 入口查 running),这里
-	// 补上 op→turn —— 堵住「op 在飞行中(尤其 summarize 的多秒摘要网络调用)时,并发的
-	// 一轮 turn 经 runGuarded 启动、Session.Add 追加消息,随后 op 基于旧快照的
-	// Replace/SetSession 把整轮静默覆盖丢掉」的窗口(B2 的反向)。
-	busy     bool
-	planMode bool
-	// coachPreamble 是会话级「协作模式」persona(如学生引导 / 老师助手):一段
-	// 由前端选定的口径文案,Compose 把它作为 <coaching-style> 块随每个 turn 注入
-	// (发给模型、不进缓存系统前缀),空串=默认无 persona。XML 包裹使其在侧栏
-	// 预览里被自动剥掉,不污染会话标题。
-	coachPreamble string
-	// turn counts model turns this session, passed to hooks in their payload.
-	turn int
+	// turn arbitrates who may touch the conversation right now (a model turn vs an
+	// exclusive log-rewriting operation) and carries the per-turn runtime flags —
+	// plan mode and the coaching persona, injected at Compose time and never part
+	// of the cached system prefix (see turn_state.go).
+	turn *turnState
 }
 
 // Options carries the already-built pieces setup assembles. Lifecycle metadata
@@ -192,6 +177,7 @@ func New(opts Options) *Controller {
 		reg:           opts.Registry,
 		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
 		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.Executor),
+		turn:          newTurnState(sink, opts.Executor),
 		wsRoot:        opts.WorkspaceRoot,
 		ckpt:          newCheckpointService(opts.WorkspaceRoot),
 	}
@@ -208,52 +194,6 @@ func New(opts Options) *Controller {
 
 // --- commands (frontend → controller) ---
 
-// runGuarded runs body on a background goroutine under a fresh cancellable
-// context, guarding against concurrent turns and emitting a TurnDone event when
-// it finishes (Err set on failure; nil also for a user Cancel). A no-op if a
-// turn is already in flight.
-func (c *Controller) runGuarded(body func(ctx context.Context) error) {
-	c.mu.Lock()
-	if c.running || c.busy {
-		c.mu.Unlock()
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
-	c.running = true
-	c.mu.Unlock()
-
-	go func() {
-		defer cancel()
-		err := body(ctx)
-		c.mu.Lock()
-		c.running = false
-		c.cancel = nil
-		c.mu.Unlock()
-		c.sink.Emit(event.Event{Kind: event.TurnDone, Err: err})
-	}()
-}
-
-// tryBeginExclusive 原子地尝试进入「独占重写会话日志」临界区:若已有 turn 运行(running)
-// 或已有另一个独占 op(busy),返回 false;否则置 busy 返回 true。成功的调用方必须
-// defer endExclusive()。配合 runGuarded 同时检查 running||busy,使 turn 与 compact/
-// summarize/new/rewind/fork/branch/switch 严格互斥(见 busy 字段说明)。
-func (c *Controller) tryBeginExclusive() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.running || c.busy {
-		return false
-	}
-	c.busy = true
-	return true
-}
-
-func (c *Controller) endExclusive() {
-	c.mu.Lock()
-	c.busy = false
-	c.mu.Unlock()
-}
-
 // Send starts a turn with an uncomposed message. The controller applies
 // auto-plan, plan-mode, memory, and background-job framing inside the async turn
 // path so frontends do not block on classifier I/O.
@@ -266,7 +206,7 @@ func (c *Controller) Send(input string) {
 // resolved @-reference payloads so referenced file contents cannot inflate the
 // complexity score.
 func (c *Controller) SendWithRaw(input, raw string) {
-	c.runGuarded(func(ctx context.Context) error { return c.runTurnWithRaw(ctx, input, raw) })
+	c.turn.Guarded(func(ctx context.Context) error { return c.runTurnWithRaw(ctx, input, raw) })
 }
 
 // planApprovalTool is the Tool name on the ApprovalRequest the controller emits
@@ -304,10 +244,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	// research + approved-execution sub-turns below): a gating UserPromptSubmit
 	// aborts before any model call; Stop fires once when the turn returns.
 	if c.hooks.Enabled() {
-		c.mu.Lock()
-		c.turn++
-		turn := c.turn
-		c.mu.Unlock()
+		turn := c.turn.NextTurn()
 		if block, _ := c.hooks.PromptSubmit(ctx, input, turn); block {
 			return nil // the hook's notify callback already surfaced the reason
 		}
@@ -316,10 +253,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	if err := c.runner.Run(ctx, input); err != nil {
 		return err
 	}
-	c.mu.Lock()
-	plan := c.planMode
-	c.mu.Unlock()
-	if !plan {
+	if !c.turn.PlanMode() {
 		return nil
 	}
 	proposal := lastAssistantText(c.session.History())
@@ -335,7 +269,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	if !allow {
 		return nil // keep planning; plan mode stays on
 	}
-	c.SetPlanMode(false)
+	c.turn.SetPlanMode(false)
 	c.seedPlanTodos(proposal)
 	// The plan is the go-ahead: don't re-prompt for each write of the approved
 	// work. Auto-approve writers for the duration of this execution turn only.
@@ -355,142 +289,6 @@ func lastAssistantText(msgs []provider.Message) string {
 	return ""
 }
 
-// Submit is the one-call entry for a simple frontend: it takes raw user input
-// and does everything — slash-command dispatch, @-reference expansion, plan-mode
-// composition — emitting all output as events. The HTTP/SSE server uses this so
-// a browser client only POSTs the typed line.
-//
-// Slash commands route to the matching primitive: /compact and /new run their
-// session op and emit a Notice; /mcp__server__prompt and custom /commands
-// resolve to a turn; an unknown slash emits a Notice. Anything else is a normal
-// turn with its @-references resolved first.
-func (c *Controller) Submit(input string) {
-	trimmed := strings.TrimSpace(input)
-	switch {
-	case trimmed == "/compact" || strings.HasPrefix(trimmed, "/compact "):
-		focus := strings.TrimSpace(strings.TrimPrefix(trimmed, "/compact"))
-		go func() {
-			if err := c.Compact(context.Background(), focus); err != nil {
-				c.notice("compaction failed: " + err.Error())
-			} else {
-				c.notice("compacted")
-				if err := c.session.Save(); err != nil {
-					slog.Warn("controller: snapshot after compact", "err", err)
-				}
-			}
-		}()
-	case trimmed == "/new":
-		go func() {
-			if err := c.NewSession(); err != nil {
-				c.notice("new session failed: " + err.Error())
-			} else {
-				c.notice("new session")
-			}
-		}()
-	case strings.HasPrefix(trimmed, "#"):
-		// "#<note>" quick-adds a memory line — same shortcut as the chat TUI, so
-		// the desktop and HTTP frontends (which route raw input through Submit)
-		// get it for free. It never starts a model turn.
-		note := strings.TrimSpace(trimmed[1:])
-		if note == "" {
-			c.notice("nothing to remember")
-			return
-		}
-		if path, err := c.memory.QuickAdd(memory.ScopeProject, note); err != nil {
-			c.notice("memory: " + err.Error())
-		} else {
-			c.notice("remembered → " + path)
-		}
-	case strings.HasPrefix(trimmed, "/mcp__"):
-		c.runGuarded(func(ctx context.Context) error {
-			sent, found, err := c.MCPPrompt(ctx, trimmed)
-			if err != nil {
-				return err
-			}
-			if !found {
-				c.notice("unknown command: " + trimmed)
-				return nil
-			}
-			return c.runTurnWithRaw(ctx, sent, sent)
-		})
-	case strings.HasPrefix(trimmed, "/"):
-		if ref, ok := FileRefLine(trimmed); ok {
-			c.runRefTurn(ref)
-			return
-		}
-		// Read-only management verbs (/model /memory /skill /hooks /mcp) emit a
-		// listing Notice, so Submit-based frontends (desktop, HTTP) get them with
-		// no extra wiring. (The chat TUI handles these itself with richer output.)
-		fields := strings.Fields(trimmed)
-		switch fields[0] {
-		case "/tree":
-			c.notice(c.BranchTreeText())
-			return
-		case "/branch":
-			args := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
-			if turn, name, fromTurn, err := ParseBranchTarget(args); err != nil {
-				c.notice(err.Error())
-			} else if fromTurn {
-				if _, err := c.ForkNamed(turn-1, name); err != nil {
-					c.notice(err.Error())
-				}
-			} else {
-				if _, err := c.Branch(name); err != nil {
-					c.notice(err.Error())
-				}
-			}
-			return
-		case "/switch":
-			ref := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
-			if _, err := c.SwitchBranch(ref); err != nil {
-				c.notice(err.Error())
-			}
-			return
-		}
-		if c.managementNotice(trimmed) {
-			return
-		}
-		// A custom command wins over a skill of the same name; both resolve to a
-		// turn. (Built-in slash verbs like /compact are handled above.)
-		if sent, ok := c.CustomCommand(trimmed); ok {
-			c.runGuarded(func(ctx context.Context) error {
-				return c.runTurnWithRaw(ctx, sent, sent)
-			})
-			return
-		}
-		if sent, ok := c.RunSkill(trimmed); ok {
-			c.runGuarded(func(ctx context.Context) error {
-				return c.runTurnWithRaw(ctx, sent, sent)
-			})
-			return
-		}
-		c.notice("unknown command: " + trimmed)
-	default:
-		c.runRefTurn(input)
-	}
-}
-
-// runRefTurn resolves a line's @references into a context block and starts a
-// turn with it prepended (or the raw line when nothing resolved).
-func (c *Controller) runRefTurn(input string) {
-	c.runGuarded(func(ctx context.Context) error {
-		block, errs := c.ResolveRefs(ctx, input)
-		for _, e := range errs {
-			c.notice(e)
-		}
-		sent := input
-		if block != "" {
-			sent = "Referenced context:\n\n" + block + "\n\n" + input
-		}
-		return c.runTurnWithRaw(ctx, sent, input)
-	})
-}
-
-// notice emits an informational Notice event.
-func (c *Controller) notice(text string) {
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
-}
-
 // Run executes a turn synchronously, returning the agent's error. Used by the
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
@@ -499,31 +297,13 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	startMessages := c.session.MessageCount()
 	defer c.session.SaveActivityIfChanged(startMessages)
 	if c.hooks.Enabled() {
-		c.turn++
-		if block, _ := c.hooks.PromptSubmit(ctx, input, c.turn); block {
+		turn := c.turn.NextTurn()
+		if block, _ := c.hooks.PromptSubmit(ctx, input, turn); block {
 			return nil
 		}
-		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), c.turn) }()
+		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), turn) }()
 	}
 	return c.runner.Run(ctx, input)
-}
-
-// Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
-// unblocks via the cancelled context.
-func (c *Controller) Cancel() {
-	c.mu.Lock()
-	cancel := c.cancel
-	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-}
-
-// Running reports whether a turn is currently in flight.
-func (c *Controller) Running() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.running
 }
 
 // EnableInteractiveApproval swaps the executor's gate for one that routes "ask"
@@ -538,36 +318,6 @@ func (c *Controller) EnableInteractiveApproval() {
 	}
 }
 
-// SetPlanMode flips the executor's read-only gate without touching the
-// cache-stable prompt prefix, and remembers the state so Compose can prepend the
-// plan-mode marker to outgoing turns.
-func (c *Controller) SetPlanMode(v bool) {
-	c.mu.Lock()
-	c.planMode = v
-	c.mu.Unlock()
-	if c.executor != nil {
-		c.executor.SetPlanMode(v)
-	}
-}
-
-// PlanMode reports whether outgoing turns currently receive the plan-mode
-// marker. Frontends use it after Compose because auto-plan may flip the mode.
-func (c *Controller) PlanMode() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.planMode
-}
-
-// SetCoachMode sets the session-level coaching persona (an empty string clears
-// it). Compose injects the preamble as a <coaching-style> block on each turn —
-// session-scoped, never the cached system prefix — so switching takes effect
-// immediately without busting the prompt cache.
-func (c *Controller) SetCoachMode(preamble string) {
-	c.mu.Lock()
-	c.coachPreamble = strings.TrimSpace(preamble)
-	c.mu.Unlock()
-}
-
 // Compact runs one compaction pass on the executor's session on demand.
 // instructions is optional `/compact <focus>` guidance steering what to keep.
 func (c *Controller) Compact(ctx context.Context, instructions string) error {
@@ -577,10 +327,10 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	// turn 进行中、或另一个会话重写 op 进行中,都拒绝:compact() 会 Snapshot→多秒摘要
 	// 网络调用→整体 Replace,期间并发的 turn(Session.Add)会被基于旧快照的 Replace
 	// 整轮覆盖丢掉(B2 双向)。守卫覆盖整个 Snapshot→summarize→Replace 跨度。
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.busyNotice("正在运行中,请等当前轮结束再压缩")
 	}
-	defer c.endExclusive()
+	defer c.turn.EndExclusive()
 	return c.executor.CompactNow(ctx, instructions)
 }
 
@@ -595,13 +345,9 @@ func (c *Controller) busyNotice(msg string) error {
 // on the first turn — by then the sink/notify is wired, and a resumed session
 // fires it too (its first post-resume turn).
 func (c *Controller) maybeSessionStart(ctx context.Context) {
-	c.mu.Lock()
-	if c.startedOnce {
-		c.mu.Unlock()
+	if !c.startedOnce.CompareAndSwap(false, true) {
 		return
 	}
-	c.startedOnce = true
-	c.mu.Unlock()
 	c.hooks.SessionStart(ctx)
 }
 
@@ -614,24 +360,20 @@ func (c *Controller) NewSession() error {
 	}
 	// turn 进行中、或另一个会话重写 op 进行中,都拒绝:Snapshot→SetSession 换会话指针,
 	// 期间并发的 turn(Session.Add)会落到混合状态/被丢掉(B2 双向)。
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.busyNotice("正在运行中,请等当前轮结束再新建会话")
 	}
-	defer c.endExclusive()
+	defer c.turn.EndExclusive()
 	if err := c.session.Save(); err != nil {
 		return err
 	}
 	c.hooks.SessionEnd(context.Background())
 	if c.session.dir != "" {
-		c.mu.Lock()
 		c.session.SetPath(agent.NewSessionPath(c.session.dir, c.label))
-		c.mu.Unlock()
 	}
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
 	c.ckpt.Rebind(c.session.Path())
-	c.mu.Lock()
-	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
-	c.mu.Unlock()
+	c.startedOnce.Store(true) // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.hooks.SessionStart(context.Background())
 	return nil
 }
@@ -663,10 +405,10 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 	if !c.ckpt.Available() || c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.rewindFail(fmt.Errorf("cannot rewind while another operation is running"))
 	}
-	defer c.endExclusive()
+	defer c.turn.EndExclusive()
 	boundary, hasBound := c.ckpt.Bound(turn)
 
 	if scope == RewindCode || scope == RewindBoth {
@@ -696,188 +438,6 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 	return nil
 }
 
-// Fork branches the conversation at the start of turn into a NEW session file,
-// preserving the current one as the branch point, and switches to the branch. Code
-// is untouched (it's a conversation operation). Like a conversation rewind it needs
-// the live boundary, so it is unavailable for resumed-session turns and refused
-// while a turn runs. Returns the new session path.
-func (c *Controller) Fork(turn int) (string, error) {
-	return c.ForkNamed(turn, "")
-}
-
-func (c *Controller) ForkNamed(turn int, name string) (string, error) {
-	if c.executor == nil {
-		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
-	}
-	if c.session.dir == "" {
-		return "", c.rewindFail(fmt.Errorf("fork needs session persistence, which is disabled"))
-	}
-	if !c.tryBeginExclusive() {
-		return "", c.rewindFail(fmt.Errorf("cannot fork while another operation is running"))
-	}
-	defer c.endExclusive()
-	boundary, hasBound := c.ckpt.Bound(turn)
-	if !hasBound {
-		return "", c.rewindFail(fmt.Errorf("fork unavailable for turn %d (resumed session)", turn))
-	}
-
-	// Persist the current conversation first so the branch point survives, then
-	// seed a fresh session with the messages up to the fork and switch to it.
-	if err := c.session.Save(); err != nil {
-		slog.Warn("controller: pre-fork snapshot", "err", err)
-	}
-	parentPath := c.session.Path()
-	parentID := agent.BranchID(parentPath)
-	src := c.executor.Session().Snapshot()
-	if boundary > len(src) {
-		boundary = len(src)
-	}
-	forked := append([]provider.Message(nil), src[:boundary]...)
-	sess := agent.NewSession("")
-	sess.Messages = forked
-
-	newPath := agent.NewSessionPath(c.session.dir, c.label)
-	if err := sess.Save(newPath); err != nil {
-		return "", c.rewindFail(err)
-	}
-	if err := agent.SaveBranchMeta(newPath, agent.BranchMeta{
-		Name:             strings.TrimSpace(name),
-		ParentID:         parentID,
-		ForkTurn:         turn,
-		ForkMessageIndex: boundary,
-	}); err != nil {
-		return "", c.rewindFail(err)
-	}
-	c.executor.SetSession(sess)
-	c.session.SetPath(newPath)
-	c.ckpt.Rebind(newPath)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("forked conversation at turn %d into a new session", turn)})
-	return newPath, nil
-}
-
-// Branch copies the current conversation into a child branch and switches to it.
-// Unlike Fork, it branches at the current tip and does not require a checkpoint.
-func (c *Controller) Branch(name string) (string, error) {
-	if c.executor == nil {
-		return "", c.rewindFail(fmt.Errorf("branch unavailable"))
-	}
-	if c.session.dir == "" {
-		return "", c.rewindFail(fmt.Errorf("branch needs session persistence, which is disabled"))
-	}
-	if !c.tryBeginExclusive() {
-		return "", c.rewindFail(fmt.Errorf("cannot branch while another operation is running"))
-	}
-	defer c.endExclusive()
-	if !c.executor.Session().HasContent() {
-		return "", c.rewindFail(fmt.Errorf("nothing to branch yet"))
-	}
-	if err := c.session.Save(); err != nil {
-		return "", c.rewindFail(err)
-	}
-	parentPath := c.session.Path()
-	parentID := agent.BranchID(parentPath)
-	src := c.executor.Session().Snapshot()
-	branched := append([]provider.Message(nil), src...)
-	sess := agent.NewSession("")
-	sess.Messages = branched
-
-	newPath := agent.NewSessionPath(c.session.dir, c.label)
-	if err := sess.Save(newPath); err != nil {
-		return "", c.rewindFail(err)
-	}
-	if err := agent.SaveBranchMeta(newPath, agent.BranchMeta{
-		Name:             strings.TrimSpace(name),
-		ParentID:         parentID,
-		ForkTurn:         -1,
-		ForkMessageIndex: len(branched),
-	}); err != nil {
-		return "", c.rewindFail(err)
-	}
-	c.executor.SetSession(sess)
-	c.session.SetPath(newPath)
-	c.ckpt.Rebind(newPath)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
-	return newPath, nil
-}
-
-// Branches lists saved conversation branches in this controller's session dir.
-func (c *Controller) Branches() ([]agent.BranchInfo, error) {
-	if c.session.dir == "" {
-		return nil, fmt.Errorf("session persistence is disabled")
-	}
-	if err := c.session.Save(); err != nil {
-		return nil, err
-	}
-	return agent.ListBranches(c.session.dir)
-}
-
-func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("usage: /switch <branch id|name>"))
-	}
-	if !c.tryBeginExclusive() {
-		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("cannot switch branches while another operation is running"))
-	}
-	defer c.endExclusive()
-	branches, err := c.Branches()
-	if err != nil {
-		return agent.BranchInfo{}, c.rewindFail(err)
-	}
-	match, err := resolveBranch(branches, ref)
-	if err != nil {
-		return agent.BranchInfo{}, c.rewindFail(err)
-	}
-	loaded, err := agent.LoadSession(match.Path)
-	if err != nil {
-		return agent.BranchInfo{}, c.rewindFail(err)
-	}
-	if c.executor != nil {
-		c.executor.SetSession(loaded)
-	}
-	c.session.SetPath(match.Path)
-	c.ckpt.Rebind(match.Path)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
-	return match, nil
-}
-
-func resolveBranch(branches []agent.BranchInfo, ref string) (agent.BranchInfo, error) {
-	refLower := strings.ToLower(ref)
-	var matches []agent.BranchInfo
-	for _, b := range branches {
-		nameLower := strings.ToLower(strings.TrimSpace(b.Name))
-		switch {
-		case b.ID == ref || strings.EqualFold(b.ID, ref):
-			return b, nil
-		case b.Name != "" && nameLower == refLower:
-			matches = append(matches, b)
-		case strings.HasPrefix(strings.ToLower(b.ID), refLower):
-			matches = append(matches, b)
-		case strings.HasPrefix(strings.ToLower(shortBranchID(b.ID)), refLower):
-			matches = append(matches, b)
-		case b.Path == ref:
-			return b, nil
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0], nil
-	}
-	if len(matches) > 1 {
-		return agent.BranchInfo{}, fmt.Errorf("branch %q is ambiguous", ref)
-	}
-	return agent.BranchInfo{}, fmt.Errorf("branch %q not found", ref)
-}
-
-func branchDisplayName(b agent.BranchInfo) string {
-	if strings.TrimSpace(b.Name) != "" {
-		return fmt.Sprintf("%s (%s)", b.Name, b.ID)
-	}
-	return b.ID
-}
-
 // SummarizeFrom compresses the conversation from turn onward into one summary;
 // SummarizeUpTo compresses everything before it. Both are Claude Code's "summarize
 // from/up to here" — they restructure the message log (keeping code untouched), so
@@ -896,10 +456,10 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.rewindFail(fmt.Errorf("cannot summarize while another operation is running"))
 	}
-	defer c.endExclusive()
+	defer c.turn.EndExclusive()
 	boundary, hasBound := c.ckpt.Bound(turn)
 	if !hasBound {
 		return c.rewindFail(fmt.Errorf("summarize unavailable for turn %d (resumed session)", turn))
@@ -1014,10 +574,7 @@ func (c *Controller) SystemPrompt() string { return c.systemPrompt }
 // no handle left to stop it.
 func (c *Controller) Close() {
 	c.Cancel()
-	c.mu.Lock()
-	started := c.startedOnce
-	c.mu.Unlock()
-	if started {
+	if c.startedOnce.Load() {
 		c.hooks.SessionEnd(context.Background())
 	}
 	if c.jobs != nil {
@@ -1047,132 +604,6 @@ func (c *Controller) Jobs() []jobs.View {
 // is disabled.
 
 // --- approval bridge (agent gate → events) ---
-
-type seedTodo struct {
-	Content string `json:"content"`
-	Status  string `json:"status"`
-	Level   int    `json:"level,omitempty"`
-}
-
-// seedPlanTodos turns an approved plan into a starter task list and emits it as a
-// synthetic todo_write event, so the live task panel populates the instant the
-// user approves — a structural guarantee, not a prompt the model might ignore.
-// The model still flips item status as it works (only it knows its own
-// progress); this just makes the list exist. No-op when the plan has no list.
-func (c *Controller) seedPlanTodos(plan string) {
-	args := PlanTodosJSON(plan)
-	if args == "" {
-		return
-	}
-	t := event.Tool{ID: "plan-seed", Name: "todo_write", Args: args, ReadOnly: true}
-	c.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: t})
-	t.Output = "task list seeded from the approved plan"
-	c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: t})
-}
-
-// PlanTodosJSON parses an approved plan's markdown into todo_write-shaped args
-// JSON ({"todos":[...]}), or "" when the plan has no list items. The exit_plan_mode
-// path seeds via seedPlanTodos (an event); a frontend whose own approval flow
-// bypasses exit_plan_mode (the chat TUI's text-plan approval) calls this directly
-// to render the same starter checklist. Shared parsing keeps the two consistent.
-func PlanTodosJSON(plan string) string {
-	items := parsePlanTodos(plan)
-	if len(items) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(map[string]any{"todos": items})
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// parsePlanTodos extracts a starter task list from an approved plan's markdown
-// list items (bulleted or numbered): the first is in_progress, the rest pending,
-// capped so a long plan can't flood the panel. It understands ONLY markdown lists
-// — an unambiguous, standard structure — and deliberately does not guess at prose,
-// tables, or arrow sequences (those need brittle, language-specific heuristics).
-// The plan-mode marker steers the model to present its plan as a list, so this
-// catches the normal case; anything it misses is covered by the model's own
-// todo_write calls as it executes.
-func parsePlanTodos(plan string) []seedTodo {
-	var todos []seedTodo
-	for _, raw := range strings.Split(plan, "\n") {
-		item, level, ok := listItem(raw)
-		if !ok {
-			continue
-		}
-		status := "pending"
-		if len(todos) == 0 {
-			status = "in_progress"
-		}
-		todos = append(todos, seedTodo{Content: item, Status: status, Level: level})
-		if len(todos) >= 20 {
-			break
-		}
-	}
-	return todos
-}
-
-// listItem parses a markdown list line ("- x", "* x", "1. x", "2) x") into its
-// task text and a nesting level derived from leading indentation (0 for a
-// top-level item, 1 for an indented sub-step — capped at 1 since the plan is
-// two-level). ok is false when the line isn't a list item. Light inline-markdown
-// stripping keeps the checklist readable.
-func listItem(line string) (content string, level int, ok bool) {
-	trimmed := strings.TrimLeft(line, " \t")
-	if trimmed == "" {
-		return "", 0, false
-	}
-	indent := 0
-	for _, c := range line[:len(line)-len(trimmed)] {
-		if c == '\t' {
-			indent += 4
-		} else {
-			indent++
-		}
-	}
-	s := trimmed
-	// A numbered markdown heading ("### 1. Add the loader") is how models often
-	// write a phase even when asked for a list; strip the heading marker and
-	// treat it as a top-level phase. A heading without a number (a section
-	// title like "## Plan") falls through and is ignored.
-	heading := false
-	if h := strings.TrimLeft(s, "#"); h != s && strings.HasPrefix(h, " ") {
-		heading = true
-		s = strings.TrimSpace(h)
-	}
-	switch {
-	case strings.HasPrefix(s, "- "), strings.HasPrefix(s, "* "), strings.HasPrefix(s, "+ "):
-		s = s[2:]
-	default:
-		// numbered: leading digits, then "." or ")", then a space
-		i := 0
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-		if i == 0 || i+1 >= len(s) || (s[i] != '.' && s[i] != ')') || s[i+1] != ' ' {
-			return "", 0, false
-		}
-		s = s[i+2:]
-	}
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "[ ] ")
-	s = strings.TrimPrefix(s, "[x] ")
-	s = strings.ReplaceAll(s, "`", "")
-	s = strings.ReplaceAll(s, "**", "")
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", 0, false
-	}
-	if heading {
-		return s, 0, true // a heading is always a top-level phase
-	}
-	if indent >= 2 {
-		return s, 1, true
-	}
-	return s, 0, true
-}
 
 // --- approvals / asks (forwarded to approvalBroker; see approval.go) ---
 
@@ -1304,3 +735,22 @@ func (c *Controller) SessionPath() string { return c.session.Path() }
 // History returns the executor's current message log (for repopulating a
 // resumed frontend's view).
 func (c *Controller) History() []provider.Message { return c.session.History() }
+
+// --- turn arbitration (forwarded to turnState; see turn_state.go) ---
+
+// Cancel stops the in-flight turn, if any.
+func (c *Controller) Cancel() { c.turn.Cancel() }
+
+// Running reports whether a turn is in flight.
+func (c *Controller) Running() bool { return c.turn.Running() }
+
+// SetPlanMode flips the executor's read-only gate without touching the
+// cache-stable prompt prefix, and remembers the state so Compose can prepend the
+// plan-mode marker to outgoing turns.
+func (c *Controller) SetPlanMode(v bool) { c.turn.SetPlanMode(v) }
+
+// PlanMode reports whether plan mode is on.
+func (c *Controller) PlanMode() bool { return c.turn.PlanMode() }
+
+// SetCoachMode sets the session's coaching persona ("" clears it).
+func (c *Controller) SetCoachMode(preamble string) { c.turn.SetCoach(preamble) }

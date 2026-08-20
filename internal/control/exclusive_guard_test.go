@@ -18,20 +18,20 @@ func TestExclusiveOpBlocksConcurrentTurn(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	c := New(Options{Runner: runner})
 
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		t.Fatal("空闲态应能进入独占临界区")
 	}
 	c.SendWithRaw("hi", "hi") // busy 飞行中:runGuarded 应直接返回、不启动并发 turn
 	if len(runner.inputs) != 0 {
 		t.Fatalf("op 飞行中不应启动并发 turn,但 runner 被调用了: %v", runner.inputs)
 	}
-	c.endExclusive()
+	c.turn.EndExclusive()
 
 	// 释放后应能正常进入下一个独占 op(守卫不会卡死)。
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		t.Fatal("endExclusive 后应能再次进入独占临界区")
 	}
-	c.endExclusive()
+	c.turn.EndExclusive()
 }
 
 // H1 回归(既有方向):一轮 turn 进行中(running)时,会话重写 op 必须被拒并返回错误,
@@ -41,11 +41,9 @@ func TestRunningTurnBlocksExclusiveOp(t *testing.T) {
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	c := New(Options{Executor: exec})
 
-	c.mu.Lock()
-	c.running = true // 模拟一轮 turn 进行中
-	c.mu.Unlock()
+	c.turn.markRunning() // 模拟一轮 turn 进行中
 
-	if c.tryBeginExclusive() {
+	if c.turn.TryBeginExclusive() {
 		t.Fatal("turn 进行中不应允许独占 op 进入")
 	}
 	if err := c.Compact(context.Background(), ""); err == nil {

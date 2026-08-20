@@ -16,10 +16,8 @@ const PlanModeMarker = "[Plan mode — read-only. Explore the codebase first (re
 // returning the message to actually send to the model. The frontend keeps
 // showing the raw text as the user bubble.
 func (c *Controller) Compose(text string) string {
-	c.mu.Lock()
-	plan := c.planMode
-	coach := c.coachPreamble
-	c.mu.Unlock()
+	plan := c.turn.PlanMode()
+	coach := c.turn.Coach()
 	notes := c.memory.DrainPending()
 
 	if plan {
