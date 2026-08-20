@@ -12,6 +12,12 @@ package control
 // Changing the active path is a two-part operation the Controller sequences:
 // this store repoints the file, and the checkpoint service rebinds to the new
 // session. Neither knows about the other.
+//
+// It also registers the session with internal/session, so *every* frontend — the
+// desktop, the CLI, an editor over ACP — produces a session with an identity, a
+// workspace and a named engine, instead of only the desktop knowing anything
+// about the conversations on disk (Plan 11 / A15). The registry owns that
+// record; the transcript stays the engine's.
 
 import (
 	"log/slog"
@@ -19,6 +25,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 )
 
 type sessionStore struct {
@@ -26,13 +33,34 @@ type sessionStore struct {
 	dir string
 	// exec is the agent whose Session is being persisted; nil in headless tests.
 	exec *agent.Agent
+	// workspace is the project this session belongs to, recorded once when the
+	// session is first registered.
+	workspace string
+	// registry owns session identity and metadata; nil when persistence is off.
+	registry *session.Registry
 
 	mu   sync.Mutex
 	path string
 }
 
-func newSessionStore(dir, path string, exec *agent.Agent) *sessionStore {
-	return &sessionStore{dir: dir, path: path, exec: exec}
+func newSessionStore(dir, path, workspace string, exec *agent.Agent) *sessionStore {
+	s := &sessionStore{dir: dir, path: path, workspace: workspace, exec: exec}
+	if dir != "" {
+		s.registry = session.Open(dir)
+	}
+	s.register(path)
+	return s
+}
+
+// register gives a transcript a session record on first sight. Failures are not
+// fatal: a missing record costs a title in the history panel, never a message.
+func (s *sessionStore) register(path string) {
+	if s.registry == nil || path == "" {
+		return
+	}
+	if _, err := s.registry.Ensure(path, s.workspace, session.EngineNative); err != nil {
+		slog.Warn("control: register session", "path", path, "err", err)
+	}
 }
 
 // SetPath pins where auto-save lands. The caller is responsible for rebinding
@@ -41,6 +69,7 @@ func (s *sessionStore) SetPath(p string) {
 	s.mu.Lock()
 	s.path = p
 	s.mu.Unlock()
+	s.register(p)
 }
 
 // Adopt seeds the session from a loaded transcript and pins the active file to
@@ -128,4 +157,14 @@ func (s *sessionStore) History() []provider.Message {
 		return nil
 	}
 	return s.exec.Session().Snapshot() // copy — a turn may be appending concurrently
+}
+
+// SessionRecord returns OneCreat's record for the active session — its identity,
+// project, engine and title — as opposed to the transcript, which stays the
+// engine's. Frontends use it instead of deriving identity from a file name.
+func (s *sessionStore) SessionRecord() (session.Record, bool) {
+	if s.registry == nil {
+		return session.Record{}, false
+	}
+	return s.registry.ByStore(s.Path())
 }

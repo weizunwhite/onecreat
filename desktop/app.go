@@ -328,13 +328,12 @@ func (a *App) SubmitDisplay(display, input string) {
 	if ctrl == nil {
 		return
 	}
-	dir := config.SessionDir()
 	sessionPath := ctrl.SessionPath()
-	_ = recordSessionDisplay(dir, sessionPath, input, display)
+	_ = recordSessionDisplay(a.sessions.reg, sessionPath, input, display)
 	// 记录该 session 创建时所在的 workspace,用于侧栏按文件夹分组。
 	// 只在首次有效消息时落,后续 workspace 切换不影响归属。
 	if root := a.workspaceRoot(); root != "" {
-		_ = rememberSessionCwd(dir, sessionPath, root)
+		_ = rememberSessionCwd(a.sessions.reg, sessionPath, root)
 	}
 	ctrl.Submit(input)
 }

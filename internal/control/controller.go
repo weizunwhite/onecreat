@@ -32,6 +32,7 @@ import (
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
@@ -187,7 +188,7 @@ func New(opts Options) *Controller {
 		jobs:          opts.Jobs,
 		reg:           opts.Registry,
 		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
-		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.Executor),
+		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.WorkspaceRoot, opts.Executor),
 		turn:          newTurnState(sink, opts.Executor),
 		gateway:       opts.Gateway,
 		wsRoot:        opts.WorkspaceRoot,
@@ -774,3 +775,8 @@ func (c *Controller) SetCoachMode(preamble string) { c.turn.SetCoach(preamble) }
 // supplied none). Frontends use it to ask whether the account manages the model
 // choice, instead of sniffing the process environment.
 func (c *Controller) Gateway() *account.Gateway { return c.gateway }
+
+// SessionRecord is OneCreat's record for the active session: a stable identity,
+// the project it runs in, and which engine owns its transcript. Empty when
+// persistence is disabled.
+func (c *Controller) SessionRecord() (session.Record, bool) { return c.session.SessionRecord() }

@@ -50,9 +50,9 @@ func TestPreviewSessionMessagesLoadsWithoutResuming(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := previewSessionMessages(dir, path)
+	got, err := newSessionService(newTabManager()).previewMessages(path)
 	if err != nil {
-		t.Fatalf("previewSessionMessages: %v", err)
+		t.Fatalf("previewMessages: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("preview history length = %d, want 2", len(got))

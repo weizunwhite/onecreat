@@ -18,10 +18,14 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 )
 
 type sessionService struct {
 	tabs *tabManager
+	// reg 是会话身份与元数据的唯一所有者(见 internal/session)。桌面端所有元数据写入
+	// 都经这一个实例 —— 它把读-改-写串行化,多标签同时写才不会丢更新。
+	reg *session.Registry
 
 	// 按 tab 单飞的自动落盘状态。
 	saveMu    sync.Mutex
@@ -30,7 +34,10 @@ type sessionService struct {
 }
 
 func newSessionService(tabs *tabManager) *sessionService {
-	return &sessionService{tabs: tabs, saving: map[string]bool{}, saveAgain: map[string]bool{}}
+	return &sessionService{
+		tabs: tabs, reg: session.Open(config.SessionDir()),
+		saving: map[string]bool{}, saveAgain: map[string]bool{},
+	}
 }
 
 // SessionMeta summarises one saved session for the history panel.
@@ -56,9 +63,12 @@ func (s *sessionService) List() []SessionMeta {
 	if err != nil {
 		return []SessionMeta{}
 	}
-	titles := loadSessionTitles(dir)
-	cwds := loadSessionCwds(dir)
-	kinds := loadSessionKinds(dir)
+	// 一次取出注册表:身份与元数据只有这一个所有者,transcript 的预览 / 轮数 / 时间戳
+	// 仍来自引擎自己的 ListSessions。
+	meta := map[string]session.Record{}
+	for _, rec := range s.reg.List() {
+		meta[filepath.Base(rec.Store)] = rec
+	}
 	ctrl := s.tabs.Ctrl("")
 	cur := ""
 	if ctrl != nil {
@@ -69,14 +79,14 @@ func (s *sessionService) List() []SessionMeta {
 		out = append(out, SessionMeta{
 			Path:           s.Path,
 			Preview:        s.Preview,
-			Title:          titles[filepath.Base(s.Path)],
+			Title:          meta[filepath.Base(s.Path)].Title,
 			Turns:          s.Turns,
 			CreatedAt:      s.CreatedAt.UnixMilli(),
 			LastActivityAt: s.LastActivityAt.UnixMilli(),
 			ModTime:        s.LastActivityAt.UnixMilli(),
 			Current:        s.Path == cur,
-			Cwd:            cwds[filepath.Base(s.Path)],
-			Kind:           kinds[filepath.Base(s.Path)],
+			Cwd:            meta[filepath.Base(s.Path)].Workspace,
+			Kind:           meta[filepath.Base(s.Path)].Kind,
 		})
 	}
 	return out
@@ -90,7 +100,7 @@ func (s *sessionService) MarkKind(kind string) {
 	if ctrl == nil {
 		return
 	}
-	_ = rememberSessionKind(config.SessionDir(), ctrl.SessionPath(), kind)
+	_ = rememberSessionKind(s.reg, ctrl.SessionPath(), kind)
 }
 
 // sessionPathsInUse 返回所有标签 controller 当前正在写的 session 路径 → 标签 id 映射;
@@ -131,13 +141,13 @@ func (s *sessionService) Delete(path string) error {
 		}
 		return fmt.Errorf("该会话正在另一个任务标签中使用,无法删除;请先在那个标签里新建会话")
 	}
-	return deleteSessionFile(config.SessionDir(), path)
+	return deleteSessionFile(s.reg, path)
 }
 
 // RenameSession sets a custom display name for a session (empty clears it back to
 // the preview). It only affects the history panel; the file on disk is unchanged.
 func (s *sessionService) Rename(path, title string) error {
-	return setSessionTitle(config.SessionDir(), path, title)
+	return setSessionTitle(s.reg, path, title)
 }
 
 // ResumeSession snapshots the current conversation, then loads the session at
@@ -167,7 +177,7 @@ func (s *sessionService) Resume(path string) ([]HistoryMessage, error) {
 // PreviewSession reads a saved session for display only. It does not snapshot or
 // swap the active controller, so the history drawer can call it while a turn runs.
 func (s *sessionService) Preview(path string) ([]HistoryMessage, error) {
-	return previewSessionMessages(config.SessionDir(), path)
+	return s.previewMessages(path)
 }
 
 // HistoryMessage is one prior turn, for the frontend to repopulate its transcript
@@ -185,7 +195,7 @@ func (s *sessionService) History() []HistoryMessage {
 		return nil
 	}
 	msgs := ctrl.History()
-	return historyMessages(msgs, sessionDisplayResolver(config.SessionDir(), ctrl.SessionPath()))
+	return historyMessages(msgs, sessionDisplayResolver(s.reg, ctrl.SessionPath()))
 }
 
 func historyMessages(msgs []provider.Message, resolveUserContent func(string) string) []HistoryMessage {
@@ -204,12 +214,12 @@ func historyMessages(msgs []provider.Message, resolveUserContent func(string) st
 	return out
 }
 
-func previewSessionMessages(sessionDir, path string) ([]HistoryMessage, error) {
+func (s *sessionService) previewMessages(path string) ([]HistoryMessage, error) {
 	loaded, err := agent.LoadSession(path)
 	if err != nil {
 		return nil, err
 	}
-	return historyMessages(loaded.Snapshot(), sessionDisplayResolver(sessionDir, path)), nil
+	return historyMessages(loaded.Snapshot(), sessionDisplayResolver(s.reg, path)), nil
 }
 
 // scheduleSnapshot kicks a single-flight background save of one tab's session;
