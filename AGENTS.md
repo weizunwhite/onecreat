@@ -76,6 +76,12 @@ The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream mod
 
 - **Desktop bridge is hand-mirrored.** `desktop/frontend/src/lib/bridge.ts` (`AppBindings`) mirrors `desktop/app.go`'s exported method set by hand — change a Go signature and you must update the TS interface, the in-browser mock (`makeMockApp`), and call sites. Wails passes args positionally. `internal/eventwire` now owns the JSON event contract — the `event.Kind` → wire-string map, the wire structs, and the encoder. `desktop/wire.go` and `internal/serve/wire.go` are thin alias/delegation shims over it, so a new `event.Kind` is registered once (`eventwire.KindNames`); `TestKindNamesCoversEveryDeclaredKind` fails until it is. In Web mode the browser-facing HTTP surface is an explicit allowlist (`desktop/rpc_surface.go`, `rpcPublicMethods`): a new exported `*App` method does **not** become an endpoint until it is listed there *and* in `AppBindings`; `TestRPCSurfaceMatchesFrontendBindings` keeps the two sets identical.
 
+### Runtime scopes (ownership, not directories)
+
+`internal/runtime` names the four lifetimes explicitly: **Process → Workspace → Session → Turn**. A Workspace is *shared* by every session on the same root (refcounted via `OpenWorkspace`/`Release`); Sessions and Turns are never shared. Closing a scope closes its children first, then its own resources in reverse registration order; `Defer` is a method on the scope you hold, so a resource can only be attached to a lifetime you actually have. Cancellation flows **downward only** — a cancelled Turn never touches its Session.
+
+> **Not wired yet.** `boot.Build` still chains MCP / CodeGraph / LSP into one session-scoped `cleanup`, so closing one tab still stops a CodeGraph daemon a sibling tab shares. Landing the real wiring is Plan 04 (single composition root) and Plan 05 (resource lifetimes). Don't treat the scope package as evidence that the sharing bug is fixed.
+
 ### Config & memory
 
 - **Workspace is an explicit value, not the process cwd.** `internal/workspace.Context` (immutable, always absolute; zero value = process-cwd semantics) is threaded through `config.LoadIn`, `boot.Options.Workspace`, `builtin.ConfineWorkspace` and `control.Options.WorkspaceRoot`. Runtime workspace switching must never call `os.Chdir` — only *startup* may (`desktop.resolveStartupWorkspace`, the web `--workspace` flag). Anything workspace-relative (project config, `.mcp.json`, `.env`, memory, skills, file tools, bash, CodeGraph, LSP, hooks, checkpoint confinement) resolves against the Context.

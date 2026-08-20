@@ -90,6 +90,12 @@ The Controller wraps **`internal/agent.Agent`** (the actual run loop: stream mod
 
 `internal/evidence` is the verification layer that turned this from a coding harness into a teaching-project platform: it matches `complete_step` calls against the latest `todo_write` list and accumulates a real evidence chain (commands run, files produced, device output) so a project's claims are backed by what actually happened, not by the model's say-so. It is intentionally **zero hardware coupling** — the same engine backs software and hardware projects. `internal/skill` resolves `/skill-name` invocations (built-ins in `skill/builtins.go`, indexed in `index.go`) and adapts them to the tool surface.
 
+### Runtime scopes (ownership, not directories)
+
+`internal/runtime` names the four lifetimes explicitly: **Process → Workspace → Session → Turn**. A Workspace is *shared* by every session on the same root (refcounted via `OpenWorkspace`/`Release`); Sessions and Turns are never shared. Closing a scope closes its children first, then its own resources in reverse registration order; `Defer` is a method on the scope you hold, so a resource can only be attached to a lifetime you actually have. Cancellation flows **downward only** — a cancelled Turn never touches its Session.
+
+> **Not wired yet.** `boot.Build` still chains MCP / CodeGraph / LSP into one session-scoped `cleanup`, so closing one tab still stops a CodeGraph daemon a sibling tab shares. Landing the real wiring is Plan 04 (single composition root) and Plan 05 (resource lifetimes). Don't treat the scope package as evidence that the sharing bug is fixed.
+
 ### Config & memory
 
 - **Workspace is an explicit value, not the process cwd.** `internal/workspace.Context` (immutable, always absolute; zero value = process-cwd semantics) is threaded through `config.LoadIn`, `boot.Options.Workspace`, `builtin.ConfineWorkspace` and `control.Options.WorkspaceRoot`. Runtime workspace switching must never call `os.Chdir` — only *startup* may (`desktop.resolveStartupWorkspace`, the web `--workspace` flag). Anything workspace-relative (project config, `.mcp.json`, `.env`, memory, skills, file tools, bash, CodeGraph, LSP, hooks, checkpoint confinement) resolves against the Context.
