@@ -33,7 +33,7 @@ func (c *Controller) BranchTreeText() string {
 	if err != nil {
 		return "branches: " + err.Error()
 	}
-	return FormatBranchTree(branches, agent.BranchID(c.SessionPath()))
+	return FormatBranchTree(branches, agent.BranchID(c.session.Path()))
 }
 
 func FormatBranchTree(branches []agent.BranchInfo, currentID string) string {

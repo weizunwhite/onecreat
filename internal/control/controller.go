@@ -16,14 +16,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
 	"reasonix/internal/checkpoint"
-	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
@@ -52,16 +50,21 @@ type Controller struct {
 
 	label        string
 	systemPrompt string
-	sessionDir   string
-	host         *plugin.Host
-	commands     []command.Command
-	skills       []skill.Skill
-	hooks        *hook.Runner // session hook runner; nil-safe (no hooks configured)
-	mem          *memory.Set
-	cleanup      func()
-	autoPlan     string
-	classifier   autoPlanClassifier
-	startedOnce  bool // guards the one-shot SessionStart hook on first turn
+	// session owns where the conversation persists and the auto-save that keeps
+	// it there (see session_store.go). It does not own the message log — that is
+	// the agent's Session, single-writer by design.
+	session  *sessionStore
+	commands []command.Command
+	skills   []skill.Skill
+	hooks    *hook.Runner // session hook runner; nil-safe (no hooks configured)
+	// memory owns the session's memory snapshot and the notes queued to ride the
+	// next turn (see memory.go). A mid-session write must never touch the
+	// cache-stable system prefix.
+	memory      *memoryService
+	cleanup     func()
+	autoPlan    string
+	classifier  autoPlanClassifier
+	startedOnce bool // guards the one-shot SessionStart hook on first turn
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -75,12 +78,13 @@ type Controller struct {
 	// Close cancels its still-running jobs.
 	jobs *jobs.Manager
 
-	// reg is the live tool registry the executor reads each turn; pluginCtx is the
-	// session-scoped context a hot-added stdio server binds its subprocess to.
-	// Together they let AddMCPServer connect a server mid-session and have its tools
-	// available on the next turn (see AddMCPServer / RemoveMCPServer).
-	reg       *tool.Registry
-	pluginCtx context.Context
+	// mcp owns this session's MCP servers: the plugin host, the live tool registry
+	// the executor reads each turn, and the context hot-added stdio servers bind
+	// their subprocesses to (see mcp.go). Connecting a server mid-session makes its
+	// tools available on the next turn.
+	mcp *mcpService
+	// reg is kept for ToolNames (a read-only status readout).
+	reg *tool.Registry
 
 	// ckpt owns snapshot-based rewind: the per-session checkpoint store, the
 	// monotonic turn counter and the turn→message-index boundaries (see
@@ -90,8 +94,10 @@ type Controller struct {
 	ckpt   *checkpointService
 	wsRoot string
 
-	// mu guards the run state and approval bookkeeping; every critical section
-	// under it is short and non-blocking.
+	// mu guards the turn/exclusive-operation state and the per-turn runtime flags
+	// (plan mode, coaching persona); every critical section under it is short and
+	// non-blocking. Approvals, checkpoints, memory, MCP and session persistence
+	// each carry their own lock now — see the services above.
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	running bool
@@ -108,16 +114,8 @@ type Controller struct {
 	// (发给模型、不进缓存系统前缀),空串=默认无 persona。XML 包裹使其在侧栏
 	// 预览里被自动剥掉,不污染会话标题。
 	coachPreamble string
-	sessionPath   string
 	// turn counts model turns this session, passed to hooks in their payload.
 	turn int
-
-	// pendingMemory holds memory notes added mid-session (via "#" quick-add or a
-	// memory edit) that haven't yet been folded into a turn. Compose drains it
-	// onto the next outgoing turn — never into the cache-stable system prefix — so
-	// a fresh memory takes effect this session without busting the prompt cache;
-	// it joins the prefix naturally on the next session.
-	pendingMemory []string
 }
 
 // Options carries the already-built pieces setup assembles. Lifecycle metadata
@@ -180,13 +178,10 @@ func New(opts Options) *Controller {
 		approvals:     newApprovalBroker(sink, opts.Policy, opts.Hooks),
 		label:         opts.Label,
 		systemPrompt:  opts.SystemPrompt,
-		sessionDir:    opts.SessionDir,
-		sessionPath:   opts.SessionPath,
-		host:          opts.Host,
 		commands:      opts.Commands,
 		skills:        opts.Skills,
 		hooks:         opts.Hooks,
-		mem:           opts.Memory,
+		memory:        newMemoryService(opts.Memory),
 		cleanup:       opts.Cleanup,
 		autoPlan:      normalizeAutoPlan(opts.AutoPlan),
 		classifier:    classifier,
@@ -195,7 +190,8 @@ func New(opts Options) *Controller {
 		balanceClient: opts.BalanceClient,
 		jobs:          opts.Jobs,
 		reg:           opts.Registry,
-		pluginCtx:     pluginCtx,
+		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
+		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.Executor),
 		wsRoot:        opts.WorkspaceRoot,
 		ckpt:          newCheckpointService(opts.WorkspaceRoot),
 	}
@@ -203,7 +199,7 @@ func New(opts Options) *Controller {
 	c.ckpt.Rebind(opts.SessionPath)
 	if c.executor != nil {
 		c.executor.SetPreEditHook(c.ckpt.Snapshot)
-		c.executor.SetMemoryQueue(c)
+		c.executor.SetMemoryQueue(c.memory)
 		// 压缩(自动或手动)会原地重写日志、改变消息下标 → 失效 checkpoint 边界(B1)。
 		c.executor.SetOnCompact(c.ckpt.Invalidate)
 	}
@@ -299,8 +295,8 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	c.maybeSessionStart(ctx)
 	c.maybeAutoPlan(ctx, raw)
 	input = c.Compose(input)
-	startMessages := c.messageCount()
-	defer c.snapshotActivityIfChanged(startMessages)
+	startMessages := c.session.MessageCount()
+	defer c.session.SaveActivityIfChanged(startMessages)
 	// Open a checkpoint for this turn before the user message is appended, so the
 	// recorded message boundary precedes it and pre-edit snapshots land here.
 	c.beginTurnCheckpoint(input)
@@ -315,7 +311,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 		if block, _ := c.hooks.PromptSubmit(ctx, input, turn); block {
 			return nil // the hook's notify callback already surfaced the reason
 		}
-		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.History()), turn) }()
+		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), turn) }()
 	}
 	if err := c.runner.Run(ctx, input); err != nil {
 		return err
@@ -326,7 +322,7 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	if !plan {
 		return nil
 	}
-	proposal := lastAssistantText(c.History())
+	proposal := lastAssistantText(c.session.History())
 	if proposal == "" {
 		return nil // no substantive proposal to gate
 	}
@@ -378,7 +374,7 @@ func (c *Controller) Submit(input string) {
 				c.notice("compaction failed: " + err.Error())
 			} else {
 				c.notice("compacted")
-				if err := c.Snapshot(); err != nil {
+				if err := c.session.Save(); err != nil {
 					slog.Warn("controller: snapshot after compact", "err", err)
 				}
 			}
@@ -400,7 +396,7 @@ func (c *Controller) Submit(input string) {
 			c.notice("nothing to remember")
 			return
 		}
-		if path, err := c.QuickAdd(memory.ScopeProject, note); err != nil {
+		if path, err := c.memory.QuickAdd(memory.ScopeProject, note); err != nil {
 			c.notice("memory: " + err.Error())
 		} else {
 			c.notice("remembered → " + path)
@@ -500,14 +496,14 @@ func (c *Controller) notice(text string) {
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) error {
 	c.maybeSessionStart(ctx)
-	startMessages := c.messageCount()
-	defer c.snapshotActivityIfChanged(startMessages)
+	startMessages := c.session.MessageCount()
+	defer c.session.SaveActivityIfChanged(startMessages)
 	if c.hooks.Enabled() {
 		c.turn++
 		if block, _ := c.hooks.PromptSubmit(ctx, input, c.turn); block {
 			return nil
 		}
-		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.History()), c.turn) }()
+		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), c.turn) }()
 	}
 	return c.runner.Run(ctx, input)
 }
@@ -622,17 +618,17 @@ func (c *Controller) NewSession() error {
 		return c.busyNotice("正在运行中,请等当前轮结束再新建会话")
 	}
 	defer c.endExclusive()
-	if err := c.Snapshot(); err != nil {
+	if err := c.session.Save(); err != nil {
 		return err
 	}
 	c.hooks.SessionEnd(context.Background())
-	if c.sessionDir != "" {
+	if c.session.dir != "" {
 		c.mu.Lock()
-		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
+		c.session.SetPath(agent.NewSessionPath(c.session.dir, c.label))
 		c.mu.Unlock()
 	}
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
-	c.ckpt.Rebind(c.SessionPath())
+	c.ckpt.Rebind(c.session.Path())
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.mu.Unlock()
@@ -691,7 +687,7 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 			return c.rewindFail(fmt.Errorf("无法回退到 turn %d:会话已被压缩或边界失效", turn))
 		}
 		c.ckpt.TruncateFrom(turn)
-		if err := c.Snapshot(); err != nil {
+		if err := c.session.Save(); err != nil {
 			slog.Warn("controller: snapshot after rewind", "err", err)
 		}
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
@@ -713,7 +709,7 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 	if c.executor == nil {
 		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	if c.sessionDir == "" {
+	if c.session.dir == "" {
 		return "", c.rewindFail(fmt.Errorf("fork needs session persistence, which is disabled"))
 	}
 	if !c.tryBeginExclusive() {
@@ -727,10 +723,10 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 
 	// Persist the current conversation first so the branch point survives, then
 	// seed a fresh session with the messages up to the fork and switch to it.
-	if err := c.Snapshot(); err != nil {
+	if err := c.session.Save(); err != nil {
 		slog.Warn("controller: pre-fork snapshot", "err", err)
 	}
-	parentPath := c.SessionPath()
+	parentPath := c.session.Path()
 	parentID := agent.BranchID(parentPath)
 	src := c.executor.Session().Snapshot()
 	if boundary > len(src) {
@@ -740,7 +736,7 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 	sess := agent.NewSession("")
 	sess.Messages = forked
 
-	newPath := agent.NewSessionPath(c.sessionDir, c.label)
+	newPath := agent.NewSessionPath(c.session.dir, c.label)
 	if err := sess.Save(newPath); err != nil {
 		return "", c.rewindFail(err)
 	}
@@ -753,9 +749,7 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 		return "", c.rewindFail(err)
 	}
 	c.executor.SetSession(sess)
-	c.mu.Lock()
-	c.sessionPath = newPath
-	c.mu.Unlock()
+	c.session.SetPath(newPath)
 	c.ckpt.Rebind(newPath)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("forked conversation at turn %d into a new session", turn)})
@@ -768,7 +762,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	if c.executor == nil {
 		return "", c.rewindFail(fmt.Errorf("branch unavailable"))
 	}
-	if c.sessionDir == "" {
+	if c.session.dir == "" {
 		return "", c.rewindFail(fmt.Errorf("branch needs session persistence, which is disabled"))
 	}
 	if !c.tryBeginExclusive() {
@@ -778,17 +772,17 @@ func (c *Controller) Branch(name string) (string, error) {
 	if !c.executor.Session().HasContent() {
 		return "", c.rewindFail(fmt.Errorf("nothing to branch yet"))
 	}
-	if err := c.Snapshot(); err != nil {
+	if err := c.session.Save(); err != nil {
 		return "", c.rewindFail(err)
 	}
-	parentPath := c.SessionPath()
+	parentPath := c.session.Path()
 	parentID := agent.BranchID(parentPath)
 	src := c.executor.Session().Snapshot()
 	branched := append([]provider.Message(nil), src...)
 	sess := agent.NewSession("")
 	sess.Messages = branched
 
-	newPath := agent.NewSessionPath(c.sessionDir, c.label)
+	newPath := agent.NewSessionPath(c.session.dir, c.label)
 	if err := sess.Save(newPath); err != nil {
 		return "", c.rewindFail(err)
 	}
@@ -801,9 +795,7 @@ func (c *Controller) Branch(name string) (string, error) {
 		return "", c.rewindFail(err)
 	}
 	c.executor.SetSession(sess)
-	c.mu.Lock()
-	c.sessionPath = newPath
-	c.mu.Unlock()
+	c.session.SetPath(newPath)
 	c.ckpt.Rebind(newPath)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
@@ -812,13 +804,13 @@ func (c *Controller) Branch(name string) (string, error) {
 
 // Branches lists saved conversation branches in this controller's session dir.
 func (c *Controller) Branches() ([]agent.BranchInfo, error) {
-	if c.sessionDir == "" {
+	if c.session.dir == "" {
 		return nil, fmt.Errorf("session persistence is disabled")
 	}
-	if err := c.Snapshot(); err != nil {
+	if err := c.session.Save(); err != nil {
 		return nil, err
 	}
-	return agent.ListBranches(c.sessionDir)
+	return agent.ListBranches(c.session.dir)
 }
 
 func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
@@ -845,9 +837,7 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	if c.executor != nil {
 		c.executor.SetSession(loaded)
 	}
-	c.mu.Lock()
-	c.sessionPath = match.Path
-	c.mu.Unlock()
+	c.session.SetPath(match.Path)
 	c.ckpt.Rebind(match.Path)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
@@ -928,109 +918,10 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	// 会从磁盘 checkpoint 的陈旧 MsgIndex 无条件回填 cpBound,对 summarize 前的 turn 做对话
 	// rewind 会静默切到错误偏移(悬空 tool_calls → 请求 OpenAI 兼容端点 400)。
 	c.InvalidateCheckpoints()
-	if err := c.Snapshot(); err != nil {
+	if err := c.session.Save(); err != nil {
 		slog.Warn("controller: post-summarize snapshot", "err", err)
 	}
 	return nil
-}
-
-// Resume seeds the session from a loaded transcript and pins the active file to
-// its path so auto-save keeps appending there.
-func (c *Controller) Resume(s *agent.Session, path string) {
-	if c.executor != nil {
-		c.executor.SetSession(s)
-	}
-	c.mu.Lock()
-	c.sessionPath = path
-	c.mu.Unlock()
-	c.ckpt.Rebind(path)
-}
-
-// Snapshot writes the executor's conversation to the active session file. No-op
-// when persistence is unavailable or the session has never been used (no user
-// interaction). Called after every turn so a crash loses at most one in-flight
-// prompt.
-func (c *Controller) Snapshot() error {
-	return c.snapshot(false)
-}
-
-// SnapshotActivity writes the active conversation and marks the session as
-// recently active. Use it only after a real user/model turn changes the
-// transcript; switch/close snapshots should call Snapshot so they do not reorder
-// recent-session pickers.
-func (c *Controller) SnapshotActivity() error {
-	return c.snapshot(true)
-}
-
-func (c *Controller) snapshot(markActivity bool) error {
-	c.mu.Lock()
-	path := c.sessionPath
-	c.mu.Unlock()
-	if c.executor == nil || path == "" {
-		return nil
-	}
-	s := c.executor.Session()
-	if !s.HasContent() {
-		return nil
-	}
-	if !markActivity {
-		if _, err := agent.EnsureBranchMeta(path); err != nil {
-			return err
-		}
-	}
-	if err := s.Save(path); err != nil {
-		return err
-	}
-	if markActivity {
-		return agent.TouchBranchMeta(path)
-	}
-	return nil
-}
-
-func (c *Controller) messageCount() int {
-	if c.executor == nil {
-		return 0
-	}
-	return len(c.executor.Session().Snapshot())
-}
-
-func (c *Controller) snapshotActivityIfChanged(startMessages int) {
-	if c.messageCount() <= startMessages {
-		return
-	}
-	if err := c.SnapshotActivity(); err != nil {
-		slog.Warn("controller: activity snapshot", "err", err)
-	}
-}
-
-// SetSessionPath pins where auto-save lands (a fresh session file minted by the
-// caller when no resume path applies).
-func (c *Controller) SetSessionPath(p string) {
-	c.mu.Lock()
-	c.sessionPath = p
-	c.mu.Unlock()
-	c.ckpt.Rebind(p)
-}
-
-// SessionDir reports the directory new session files land in ("" disables
-// persistence), so the caller can decide whether to mint a path.
-func (c *Controller) SessionDir() string { return c.sessionDir }
-
-// SessionPath reports the file the current conversation auto-saves to ("" when
-// persistence is disabled), so a history view can mark the active session.
-func (c *Controller) SessionPath() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.sessionPath
-}
-
-// History returns the executor's current message log (for repopulating a
-// resumed frontend's view).
-func (c *Controller) History() []provider.Message {
-	if c.executor == nil {
-		return nil
-	}
-	return c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
 }
 
 // ContextSnapshot returns (promptTokens, contextWindow) from the most recent
@@ -1084,10 +975,6 @@ func (c *Controller) Balance(ctx context.Context) (*billing.Balance, error) {
 	return billing.FetchWithClient(ctx, c.balanceClient, c.balanceURL, c.balanceKey)
 }
 
-// Host returns the running MCP host (nil when no plugins), for frontends that
-// list servers / resolve MCP prompts.
-func (c *Controller) Host() *plugin.Host { return c.host }
-
 // Commands returns the loaded custom slash commands.
 func (c *Controller) Commands() []command.Command { return c.commands }
 
@@ -1108,212 +995,6 @@ func (c *Controller) ToolNames() []string {
 // HookRunner returns the session's hook runner (nil-safe; may hold zero hooks),
 // so a frontend can list the active hooks via `/hooks`.
 func (c *Controller) HookRunner() *hook.Runner { return c.hooks }
-
-// AddMCPServer connects an MCP server live and persists it to the config file. Its
-// tools are registered immediately and become available on the next turn (the
-// agent reads the registry per turn). The raw entry — ${VARS} intact — is what's
-// written to disk; the live connection uses the expanded form. Returns the number
-// of tools the server exposed. A save failure after a successful connect is
-// reported but non-fatal: the server still works this session.
-func (c *Controller) AddMCPServer(e config.PluginEntry) (int, error) {
-	n, err := c.connectMCPServer(e)
-	if err != nil {
-		return 0, err
-	}
-	// 持久化到【用户级】配置(和桌面设置面板 applyConfigChange 同一层单文件编辑),而不是
-	// SourcePath 偏好的项目级 onecreat.toml。写项目级会把全量合并快照落进项目文件,之后
-	// 遮蔽用户级配置的所有修改(默认模型 / provider / system_prompt)静默失效。项目级 MCP
-	// 隔离应走 .mcp.json,不经这里。
-	path := config.UserConfigPath()
-	if path == "" {
-		return n, fmt.Errorf("connected, but cannot resolve user config path to save")
-	}
-	cfg := config.LoadForEdit(path)
-	if err := cfg.UpsertPlugin(e); err != nil {
-		return n, fmt.Errorf("connected, but config rejected the entry: %w", err)
-	}
-	if err := cfg.SaveTo(path); err != nil {
-		return n, fmt.Errorf("connected, but saving config failed: %w", err)
-	}
-	return n, nil
-}
-
-// ConnectMCPServer connects an MCP server for this controller only. It does not
-// write the entry to config, so UI affordances such as a one-click hardware
-// assistant can expose tools to the current conversation without changing the
-// user's persistent MCP list.
-func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) {
-	return c.connectMCPServer(e)
-}
-
-func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {
-	exp := e.ExpandedPlugin()
-	return c.connectMCPSpec(plugin.Spec{
-		Name:    exp.Name,
-		Type:    exp.Type,
-		Command: exp.Command,
-		Args:    exp.Args,
-		Env:     exp.Env,
-		URL:     exp.URL,
-		Headers: exp.Headers,
-	})
-}
-
-func (c *Controller) connectMCPSpec(s plugin.Spec) (int, error) {
-	if c.host == nil {
-		c.host = plugin.NewHost()
-	}
-	tools, err := c.host.Add(c.pluginCtx, s)
-	if err != nil {
-		return 0, err
-	}
-	if c.reg != nil {
-		c.reg.RemovePrefix(plugin.ToolPrefix(s.Name))
-		for _, t := range tools {
-			c.reg.Add(t)
-		}
-	}
-	return len(tools), nil
-}
-
-func (c *Controller) ConfiguredMCPNames() []string {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(cfg.Plugins))
-	for _, p := range cfg.Plugins {
-		names = append(names, p.Name)
-	}
-	return names
-}
-
-func (c *Controller) DisconnectedMCPNames() []string {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil
-	}
-	connected := map[string]bool{}
-	if c.host != nil {
-		for _, name := range c.host.ServerNames() {
-			connected[name] = true
-		}
-	}
-	var names []string
-	for _, p := range cfg.Plugins {
-		if !connected[p.Name] {
-			names = append(names, p.Name)
-		}
-	}
-	return names
-}
-
-func (c *Controller) ConnectConfiguredMCPServer(name string) (int, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return 0, err
-	}
-	for _, p := range cfg.Plugins {
-		if p.Name == name {
-			return c.connectMCPServer(p)
-		}
-	}
-	if name == "codegraph" {
-		return c.connectCodegraphMCPServer(cfg)
-	}
-	return 0, fmt.Errorf("no configured MCP server named %q", name)
-}
-
-func (c *Controller) connectCodegraphMCPServer(cfg *config.Config) (int, error) {
-	if !cfg.Codegraph.Enabled {
-		return 0, fmt.Errorf("codegraph is disabled in config")
-	}
-	bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
-	if !ok {
-		return 0, fmt.Errorf("codegraph is not installed")
-	}
-	// Pin the daemon to this session's workspace, not the process working
-	// directory: with several projects open at once they are not the same, and
-	// indexing the wrong tree is silent and expensive.
-	root := c.wsRoot
-	if root == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return 0, err
-		}
-		root = wd
-	}
-	if err := codegraph.EnsureInit(c.pluginCtx, bin, root); err != nil {
-		return 0, fmt.Errorf("codegraph init: %w", err)
-	}
-	return c.connectMCPSpec(plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: root})
-}
-
-// RemoveMCPServer disconnects a live MCP server — its tools vanish from the next
-// turn — and removes it from the config file. It reports whether a live server was
-// disconnected; an error only when the name is neither connected nor in config (or
-// the config save fails). The persistence target follows the entry's source:
-// user-level toml → edit the user file; project-level onecreat.toml/reasonix.toml →
-// surgically drop just that [[plugins]] block from the project file (never a full
-// snapshot, which would shadow the user's config — the 1b regression); .mcp.json →
-// disconnect for this session only and tell the user to edit that file (not ours).
-func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error) {
-	if c.host != nil {
-		if prefix, ok := c.host.Remove(name); ok {
-			disconnected = true
-			if c.reg != nil {
-				c.reg.RemovePrefix(prefix)
-			}
-		}
-	}
-
-	// 持久化按来源分流,走与 `reasonix mcp remove` CLI 共享的同一函数(消灭第二份实现)。
-	outcome, perr := config.RemovePluginPersisted(name)
-	if perr != nil {
-		return disconnected, perr
-	}
-	switch outcome {
-	case config.PluginFromMCPJSON:
-		// .mcp.json 不由我们写回。本会话已断开,发 notice 告知需手动编辑,不再静默复活。
-		if !disconnected && c.reg != nil {
-			c.reg.RemovePrefix(plugin.ToolPrefix(name))
-		}
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-			Text: fmt.Sprintf("已断开 %q(本会话);它声明在项目根 .mcp.json 里,需手动编辑该文件才能永久移除", name)})
-		return disconnected, nil
-	case config.PluginRemovedUser, config.PluginRemovedProject:
-		if !disconnected && c.reg != nil {
-			c.reg.RemovePrefix(plugin.ToolPrefix(name))
-		}
-		return disconnected, nil
-	default: // PluginNotFound
-		if !disconnected {
-			return false, fmt.Errorf("no MCP server named %q", name)
-		}
-		return disconnected, nil
-	}
-}
-
-// DisconnectMCPServer disconnects a live server for this session without touching
-// config — the connector toggle's "off". Its tools vanish next turn; it reconnects
-// on the next session start, or now via ConnectConfiguredMCPServer (the "on").
-// Reports whether a live server was actually disconnected.
-func (c *Controller) DisconnectMCPServer(name string) bool {
-	disconnected := false
-	if c.host != nil {
-		if prefix, ok := c.host.Remove(name); ok {
-			disconnected = true
-			if c.reg != nil {
-				c.reg.RemovePrefix(prefix)
-			}
-		}
-	}
-	removedPlaceholder := 0
-	if !disconnected && c.reg != nil {
-		removedPlaceholder = c.reg.RemovePrefix(plugin.ToolPrefix(name))
-	}
-	return disconnected || removedPlaceholder > 0
-}
 
 // Label returns the human-readable model label, e.g. "deepseek-flash".
 func (c *Controller) Label() string { return c.label }
@@ -1364,96 +1045,6 @@ func (c *Controller) Jobs() []jobs.View {
 // session without disturbing the cache-stable system prefix (it folds into the
 // prefix on the next session). All of these are no-ops returning "" when memory
 // is disabled.
-
-// QuickAdd appends a one-line note to the doc-memory file for scope (project
-// REASONIX.md by default) — the write side of "#<note>". Returns the file written.
-func (c *Controller) QuickAdd(scope memory.Scope, note string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.mem == nil {
-		return "", nil
-	}
-	path := c.mem.DocPath(scope)
-	if path == "" {
-		return "", fmt.Errorf("no target file for memory scope %q", scope)
-	}
-	if err := memory.AppendDoc(path, note); err != nil {
-		return "", err
-	}
-	c.pendingMemory = append(c.pendingMemory, note)
-	c.refreshMemoryLocked()
-	return path, nil
-}
-
-// SaveDoc overwrites a recognized memory doc with body — the save side of the
-// desktop panel's in-place editor. Returns the file written.
-func (c *Controller) SaveDoc(path, body string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.mem == nil {
-		return "", nil
-	}
-	written, err := c.mem.WriteDoc(path, body)
-	if err != nil {
-		return "", err
-	}
-	// Inject the new content once on the next turn: the cached prefix still holds
-	// the pre-edit version this session, so handing the model the current text
-	// avoids a stale-guidance gap until the next session re-folds it into the
-	// prefix. Trimmed to a single tail note (drained by Compose), not per-turn.
-	c.pendingMemory = append(c.pendingMemory,
-		"Memory file "+written+" was just edited. Its current contents:\n"+strings.TrimSpace(body))
-	c.refreshMemoryLocked()
-	return written, nil
-}
-
-// ForgetMemory deletes a saved auto-memory by name — the panel/TUI delete action,
-// the manual counterpart to the model's `forget` tool. It queues a turn-tail note
-// so the deletion applies this session (the cached prefix still lists the fact
-// until the next session re-folds the index).
-func (c *Controller) ForgetMemory(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.mem == nil {
-		return nil
-	}
-	if err := c.mem.Store.Delete(name); err != nil {
-		return err
-	}
-	c.pendingMemory = append(c.pendingMemory,
-		"Deleted memory \""+name+"\" — disregard its line still shown in the saved-memories index until next session.")
-	c.refreshMemoryLocked()
-	return nil
-}
-
-// QueueMemory implements memory.Queue: when the model runs the remember/forget
-// tool, the tool calls this with a note that rides the next turn so the change
-// applies this session without touching the cache-stable prefix. It also
-// refreshes the snapshot a memory panel reads.
-func (c *Controller) QueueMemory(note string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.pendingMemory = append(c.pendingMemory, note)
-	c.refreshMemoryLocked()
-}
-
-// Memory returns the loaded memory snapshot (nil when memory is disabled), for
-// frontends that surface a memory panel or the /memory command. The returned
-// *Set is immutable — mutations go through QuickAdd / SaveDoc.
-func (c *Controller) Memory() *memory.Set {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.mem
-}
-
-// refreshMemoryLocked re-discovers memory from disk so a later Memory() reflects
-// a just-applied write. Caller holds c.mu.
-func (c *Controller) refreshMemoryLocked() {
-	if c.mem == nil {
-		return
-	}
-	c.mem = memory.Load(memory.Options{CWD: c.mem.CWD, UserDir: c.mem.UserDir})
-}
 
 // --- approval bridge (agent gate → events) ---
 
@@ -1629,3 +1220,87 @@ func (c *Controller) beginTurnCheckpoint(input string) {
 	}
 	c.ckpt.Begin(input, len(c.executor.Session().Messages))
 }
+
+// --- MCP servers (forwarded to mcpService; see mcp.go) ---
+
+// Host returns the running MCP host (nil when no plugins), for frontends that
+// list servers / resolve MCP prompts.
+func (c *Controller) Host() *plugin.Host { return c.mcp.Host() }
+
+// AddMCPServer connects an MCP server live and persists it to the user config.
+func (c *Controller) AddMCPServer(e config.PluginEntry) (int, error) { return c.mcp.AddAndSave(e) }
+
+// ConnectMCPServer connects an MCP server for this session only (no config write).
+func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) { return c.mcp.Connect(e) }
+
+// ConfiguredMCPNames lists the servers declared in config.
+func (c *Controller) ConfiguredMCPNames() []string { return c.mcp.ConfiguredNames() }
+
+// DisconnectedMCPNames lists configured servers not connected this session.
+func (c *Controller) DisconnectedMCPNames() []string { return c.mcp.DisconnectedNames() }
+
+// ConnectConfiguredMCPServer connects a configured-but-disconnected server by name.
+func (c *Controller) ConnectConfiguredMCPServer(name string) (int, error) {
+	return c.mcp.ConnectConfigured(name)
+}
+
+// RemoveMCPServer disconnects a server and removes it from config.
+func (c *Controller) RemoveMCPServer(name string) (bool, error) { return c.mcp.RemoveAndSave(name) }
+
+// DisconnectMCPServer disconnects a server for this session only.
+func (c *Controller) DisconnectMCPServer(name string) bool { return c.mcp.Disconnect(name) }
+
+// --- memory (forwarded to memoryService; see memory.go) ---
+
+// QuickAdd appends a one-line note to the doc-memory file for scope — the write
+// side of "#<note>". Returns the file written.
+func (c *Controller) QuickAdd(scope memory.Scope, note string) (string, error) {
+	return c.memory.QuickAdd(scope, note)
+}
+
+// SaveDoc overwrites a recognized memory doc with body. Returns the file written.
+func (c *Controller) SaveDoc(path, body string) (string, error) { return c.memory.SaveDoc(path, body) }
+
+// ForgetMemory deletes a saved auto-memory by name.
+func (c *Controller) ForgetMemory(name string) error { return c.memory.Forget(name) }
+
+// QueueMemory implements memory.Queue for callers that hold a *Controller.
+func (c *Controller) QueueMemory(note string) { c.memory.QueueMemory(note) }
+
+// Memory returns the loaded memory snapshot (nil when memory is disabled). The
+// returned *Set is immutable — mutations go through QuickAdd / SaveDoc.
+func (c *Controller) Memory() *memory.Set { return c.memory.Set() }
+
+// --- session persistence (forwarded to sessionStore; see session_store.go) ---
+
+// Resume seeds the session from a loaded transcript and pins the active file to
+// its path so auto-save keeps appending there.
+func (c *Controller) Resume(s *agent.Session, path string) {
+	c.session.Adopt(s, path)
+	c.ckpt.Rebind(path)
+}
+
+// SetSessionPath pins where auto-save lands (a fresh session file minted by the
+// caller when no resume path applies).
+func (c *Controller) SetSessionPath(p string) {
+	c.session.SetPath(p)
+	c.ckpt.Rebind(p)
+}
+
+// Snapshot writes the executor's conversation to the active session file.
+func (c *Controller) Snapshot() error { return c.session.Save() }
+
+// SnapshotActivity writes the conversation and marks the session recently active.
+func (c *Controller) SnapshotActivity() error { return c.session.SaveActivity() }
+
+// SessionDir reports the directory new session files land in ("" disables
+// persistence), so the caller can decide whether to mint a path.
+func (c *Controller) SessionDir() string { return c.session.Dir() }
+
+// SessionPath reports the file the current conversation auto-saves to ("" when
+// persistence is disabled), so a history view can mark the active session.
+func (c *Controller) SessionPath() string { return c.session.Path() }
+
+// History returns the executor's current message log (for repopulating a
+// resumed frontend's view).
+func (c *Controller) History() []provider.Message { return c.session.History() }

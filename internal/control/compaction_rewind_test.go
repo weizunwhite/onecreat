@@ -30,7 +30,7 @@ func TestConversationRewindAfterCompactionFails(t *testing.T) {
 			}
 		}),
 	})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
 	// 记录 turn 1 的对话边界(消息下标 1,即 "first answer" 之前)。
 	c.ckpt.seedBound(1, 1)
@@ -74,7 +74,7 @@ func TestConversationRewindStaleBoundaryReportsFailure(t *testing.T) {
 			}
 		}),
 	})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
 	c.ckpt.seedBound(1, 99) // 越界:远大于当前消息数
 
@@ -97,7 +97,7 @@ func TestConversationRewindPrunesAbandonedCheckpoints(t *testing.T) {
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "p1"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	c := New(Options{Executor: exec, SessionDir: t.TempDir(), Label: "test", Sink: event.Discard})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
 	// 造 turn 0 / turn 1 的 checkpoint + 对话边界。
 	c.ckpt.storeForTest().Begin(0, "t0", 0)

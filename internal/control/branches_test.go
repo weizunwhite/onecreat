@@ -139,7 +139,7 @@ func TestSubmitBranchEmitsErrorNoticeWhileRunning(t *testing.T) {
 			}
 		}),
 	})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
 	c.mu.Lock()
 	c.running = true

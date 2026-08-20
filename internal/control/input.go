@@ -19,9 +19,8 @@ func (c *Controller) Compose(text string) string {
 	c.mu.Lock()
 	plan := c.planMode
 	coach := c.coachPreamble
-	notes := c.pendingMemory
-	c.pendingMemory = nil
 	c.mu.Unlock()
+	notes := c.memory.DrainPending()
 
 	if plan {
 		text = PlanModeMarker + "\n\n" + text
@@ -101,7 +100,7 @@ func (c *Controller) RunSkill(input string) (sent string, found bool) {
 // the MCP server (an async prompts/get). found is false when no such prompt
 // exists; err carries a fetch failure. Honours ctx.
 func (c *Controller) MCPPrompt(ctx context.Context, input string) (sent string, found bool, err error) {
-	if c.host == nil {
+	if c.mcp.host == nil {
 		return "", false, nil
 	}
 	fields := strings.Fields(input)
@@ -110,7 +109,7 @@ func (c *Controller) MCPPrompt(ctx context.Context, input string) (sent string, 
 	}
 	name := strings.TrimPrefix(fields[0], "/")
 
-	prompts := c.host.Prompts()
+	prompts := c.mcp.host.Prompts()
 	idx := -1
 	for i := range prompts {
 		if prompts[i].Name == name {
