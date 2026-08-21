@@ -30,8 +30,17 @@ func NewBroadcaster() *Broadcaster { return NewBroadcasterFor("") }
 // NewBroadcasterFor is NewBroadcaster with an explicit session id stamped on
 // every frame, so a client holding more than one stream can tell them apart.
 func NewBroadcasterFor(sessionID string) *Broadcaster {
+	return NewBroadcasterWithLimits(sessionID, eventstream.DefaultLimits)
+}
+
+// NewBroadcasterWithLimits is NewBroadcasterFor with an explicit backlog policy.
+//
+// 溢出路径(慢客户端被断流 → 重新对齐)只有在**真的溢出**时才走得到,而默认上限是
+// 4096 条状态帧 —— 端到端地把它灌满既慢又不确定。给上限一个显式入口,溢出就能被
+// 确定性地构造出来,而不是靠 socket 缓冲的运气。零值退回 DefaultLimits。
+func NewBroadcasterWithLimits(sessionID string, l eventstream.Limits) *Broadcaster {
 	return &Broadcaster{
-		hub:   eventstream.New(eventstream.DefaultLimits),
+		hub:   eventstream.New(l),
 		stamp: eventwire.NewStamper(sessionID, ""),
 	}
 }

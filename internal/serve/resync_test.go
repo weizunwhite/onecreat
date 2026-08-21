@@ -177,3 +177,38 @@ func TestEmbeddedUIWiresResync(t *testing.T) {
 		t.Error("内置 UI 仍在用 /history 重建界面;它只有 transcript,对不齐 running 与待办审批")
 	}
 }
+
+// 重新对齐期间到达的帧必须缓冲后重放(复核 B2 做端到端用例时查出来的洞)。
+//
+// `resync()` 是异步的:`fetch('/snapshot')` 在飞的时候 `onmessage` 还在照常渲染,
+// 而拿到快照后第一件事是 `renderHistory` —— 它清空整个 log。于是那个窗口里到达的帧
+// 被画出来又被抹掉,而快照是更早的一份、并不包含它们。`lastSeq` 还会被回退到快照的
+// 序号,所以连断层检测都不会再触发。
+//
+// 最坏情况正是 AR-R07 要防的那一种:丢掉的是 `turn_done`,快照里 running 仍为 true,
+// 之后又没有新事件 —— 界面永远转圈,而且没有任何东西会去纠正它。
+//
+// 说清楚这条守卫是什么:它是**接线检查**,不是行为测试。这个文件是内嵌的单文件 UI,
+// 没有构建步骤也不进 desktop/frontend 那条 CI;真正的行为证明在服务端那侧的
+// TestForcedOverflowResyncLeavesNoHoleAndNoDuplicate —— 它证明协议支持「缓冲—取快照
+// —按序号丢弃」这套算法,这里则确认客户端确实照这套算法接线了。
+func TestEmbeddedUIBuffersFramesWhileResyncing(t *testing.T) {
+	ui := string(indexHTML)
+	for _, want := range []string{
+		"resyncBuf", // 缓冲区本身
+		"if(resyncing){ resyncBuf=resyncBuf||[];", // 取快照期间:入缓冲,不渲染
+		"resyncBufFull=true",                      // 缓冲满了不静默丢弃
+		"resync('对齐期间积压过多')",                      // ……改成再对齐一次
+		"buf.forEach(e=>{",                        // 快照应用完之后重放
+		"e.sequence<=lastSeq)return;",             // 快照已经包含的丢弃 —— 否则就是重复
+		"function applyEvent(e)",                  // 实时与重放共用一条应用路径
+	} {
+		if !strings.Contains(ui, want) {
+			t.Errorf("内置 UI 少了 %q —— 取快照期间到达的状态帧会被 renderHistory 抹掉,而快照里没有它们", want)
+		}
+	}
+	// onmessage 不得再自己写一遍 switch:两份应用逻辑必然漂移。
+	if strings.Count(ui, "case 'turn_done':") != 1 {
+		t.Error("turn_done 的处理出现了不止一处 —— 实时帧与重放必须共用 applyEvent")
+	}
+}
