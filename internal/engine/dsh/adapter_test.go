@@ -179,7 +179,9 @@ func TestTerminalCauseIsStable(t *testing.T) {
 func TestChildEnvDoesNotLeakHostSecrets(t *testing.T) {
 	t.Setenv("SOME_OTHER_PROVIDER_API_KEY", "sk-should-not-leak")
 	t.Setenv("ONECREAT_GATEWAY_TOKEN", "gw-should-not-leak")
-	t.Setenv("PATH", "/usr/bin")
+	// 值本身无所谓,断言的是「白名单把它透传了」;用一个中性值,免得在 Windows 上
+	// 留下一个我无法实跑验证的平台假设。
+	t.Setenv("PATH", "passthrough-marker")
 
 	e, err := New(Options{
 		Cfg:          config.DSHConfig{BinPath: "x", GatewayBaseURL: "https://gw.invalid"},
@@ -197,7 +199,7 @@ func TestChildEnvDoesNotLeakHostSecrets(t *testing.T) {
 		}
 	}
 	// 它真正需要的那些必须还在。
-	for _, want := range []string{"PATH=/usr/bin", "DEEPSEEK_API_KEY=the-token", "DEEPSEEK_BASE_URL=https://gw.invalid"} {
+	for _, want := range []string{"PATH=passthrough-marker", "DEEPSEEK_API_KEY=the-token", "DEEPSEEK_BASE_URL=https://gw.invalid"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("sidecar 缺少必要的环境项 %q", want)
 		}
