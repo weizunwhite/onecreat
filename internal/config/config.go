@@ -40,6 +40,11 @@ type Config struct {
 	Engine string    `toml:"engine"`
 	DSH    DSHConfig `toml:"dsh"`
 
+	// env is the workspace-scoped .env overlay this config resolves credentials
+	// through. Like workspace it is loader-supplied identity, not a configurable
+	// field, so it stays unexported and invisible to the TOML codec.
+	env Env
+
 	// workspace is the project directory this config was loaded from. It is
 	// unexported (and therefore invisible to the TOML codec, which decodes onto
 	// an existing *Config) because it is loader-supplied identity, not a
@@ -51,6 +56,24 @@ type Config struct {
 // Workspace reports the project directory this config was loaded from. The zero
 // Context means "process working directory" (see LoadIn).
 func (c *Config) Workspace() workspace.Context { return c.workspace }
+
+// Env returns the workspace-scoped environment overlay (process env first, then
+// this workspace's .env, then ~/.env). Use it instead of os.Getenv for anything
+// a project's .env may supply — os.Getenv cannot tell two workspaces apart.
+func (c *Config) Env() Env { return c.env }
+
+// bindEnv attaches the overlay to the config and to every provider entry, so
+// ProviderEntry.APIKey resolves through the workspace that loaded it rather than
+// through whichever workspace happened to be loaded first (AR-R10).
+//
+// 每个 ProviderEntry 各带一份:`ResolveModel` 返回的是结构体**副本**,副本必须自己
+// 带着叠加层,否则一离开 Config 就退化成读进程环境。
+func (c *Config) bindEnv(env Env) {
+	c.env = env
+	for i := range c.Providers {
+		c.Providers[i].env = env
+	}
+}
 
 // DSHConfig 配置 dsh(DeepSeek Harness)sidecar 引擎。仅当 engine="dsh" 时生效。
 // 秘密(网关 token / API key)仍从环境变量取,绝不写这里——只放"环境变量名"。
@@ -320,6 +343,12 @@ type ProviderEntry struct {
 	// Empty = provider default.
 	Thinking string `toml:"thinking"`
 	Effort   string `toml:"effort"`
+	// env is the workspace-scoped .env overlay APIKey resolves through. It is
+	// loader-supplied (Config.bindEnv), unexported so the TOML codec never sees
+	// it, and carried by value so a ResolveModel copy keeps resolving through the
+	// workspace it came from (AR-R10). The zero value behaves exactly like
+	// os.Getenv, so hand-built entries are unaffected.
+	env Env
 }
 
 // ModelList returns the models this provider exposes: the explicit `models` list,
@@ -561,7 +590,7 @@ func Load() (*Config, error) {
 // exactly what Load did before workspaces became explicit — so the CLI, which
 // genuinely is process-cwd scoped, needs no root and behaves identically.
 func LoadIn(ws workspace.Context) (*Config, error) {
-	loadDotEnvIn(ws)
+	env := loadDotEnvIn(ws)
 	cfg := Default()
 
 	var tomlSources []string
@@ -595,6 +624,9 @@ func LoadIn(ws workspace.Context) (*Config, error) {
 	cfg.mergeMCPJSON(entries)
 	normalizeLegacyEffort(cfg)
 	cfg.workspace = ws
+	// 叠加层必须在所有 provider 合并完成之后再绑:bindEnv 会写进每个 ProviderEntry,
+	// 之后再追加的 provider 就拿不到了。
+	cfg.bindEnv(env)
 	return cfg, nil
 }
 
@@ -640,11 +672,11 @@ func mergeTOMLPlugins(paths []string) ([]PluginEntry, error) {
 // of resetting to defaults. .env is loaded so api_key_env resolution works while
 // the wizard decides which keys are still missing.
 func LoadForEdit(path string) *Config {
-	loadDotEnv()
 	cfg := Default()
 	if err := mergeFile(cfg, path); err != nil {
 		slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
 	}
+	cfg.bindEnv(loadDotEnv())
 	return cfg
 }
 
@@ -884,7 +916,10 @@ func (e *ProviderEntry) APIKey() string {
 	if e.APIKeyEnv == "" {
 		return ""
 	}
-	return os.Getenv(e.APIKeyEnv)
+	// 经工作区叠加层解析,不是 os.Getenv —— 后者分不清两个工作区,谁先加载谁的
+	// 同名 key 就永久获胜(AR-R10)。零值 Env 的行为与 os.Getenv 完全一致,所以
+	// 那些不经 Load 直接构造 ProviderEntry 的地方(测试、向导)行为不变。
+	return e.env.Get(e.APIKeyEnv)
 }
 
 // Configured reports whether the provider's api_key_env is set — the same check
