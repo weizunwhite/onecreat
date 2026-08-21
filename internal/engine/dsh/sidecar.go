@@ -41,7 +41,8 @@ type Options struct {
 }
 
 // Engine 驱动一个 dsh sidecar 子进程。它实现"拉起→握手→驱动→关闭"的生命周期,
-// 并把 dsh 事件流映射+脱敏后喂给 sink。这是 spike 骨架:尚未接进 control.Controller。
+// 并把 dsh 事件流映射+脱敏后喂给 sink。adapter.go 把它接到 engine.TurnEngine 边界上;
+// 该引擎当前在装配根 fail-closed(见 protocol.go 的包注释)。
 type Engine struct {
 	opts   Options
 	scrub  *Scrubber

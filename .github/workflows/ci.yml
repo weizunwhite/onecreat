@@ -137,3 +137,41 @@ jobs:
 
       - name: test
         run: go test ./...
+
+  # Frontend 之前完全不在 CI 里(复核 AR-R13.2):desktop job 只写一个
+  # frontend/dist/index.html 占位就跑 Go。于是 Go↔TS 的方法生成守卫虽然存在,
+  # **TS 调用、数据类型和真实 bundle 仍然可以在 CI 之外坏掉** —— 桌面/Web 两个
+  # 前端的运行时错误一个都不会被这条流水线发现。
+  #
+  # 单独一个 job,不塞进 desktop:那一条要装 WebKit 工具链,已经够慢了;而且分开之后
+  # "Go 坏了" 与 "TS 坏了" 一眼就能区分。
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/frontend/pnpm-lock.yaml
+
+      # --frozen-lockfile:lockfile 与 package.json 不一致时直接失败,而不是悄悄
+      # 装一个和开发机不同的依赖树。
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: pnpm tsc --noEmit
+
+      # 真正打一次包:tsc 过了不代表 bundle 出得来(缺资源、循环依赖、插件报错都在
+      # 这一步才暴露)。
+      - name: build
+        run: pnpm build

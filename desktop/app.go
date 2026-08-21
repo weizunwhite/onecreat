@@ -252,9 +252,10 @@ func (a *App) CloseTab(id string) {
 	if !ok {
 		return
 	}
-	// Snapshot/Close 是慢操作,在 tabs 锁外做。若此刻 buildTab 还在跑
-	// (ctrl==nil),Close 已经置了 closed=true,buildTab 完成时会自行 Close 掉刚
-	// 建好的 controller 并不发 ready,避免 controller 泄漏(A6)。
+	// Snapshot/Close 是慢操作,在 tabs 锁外做。若此刻 buildTab 还在跑(ctrl==nil),
+	// 这个标签已经从注册表里被移除 —— 「不在注册表里」本身就是关闭信号(Plan 02
+	// 删掉了冗余的 closed 标志,两个信号意味着两处要同步)。buildTab 完成时写回落空,
+	// 于是它自行 Close 掉刚建好的 controller 并不发 ready,避免 controller 泄漏(A6)。
 	if v.ctrl != nil {
 		_ = v.ctrl.Snapshot()
 		v.ctrl.Close()
