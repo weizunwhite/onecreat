@@ -80,6 +80,15 @@ const (
 	CapHostedTools Capability = "hosted-tools"
 )
 
+// All 列出全部已知能力。它存在是为了让「可以问哪些能力」只有一处真源:传输层要把
+// 能力表交给前端(前端据此禁用入口并说明原因),没有它就得在 serve / desktop 各抄一份
+// 常量清单,加一个能力时必然漏掉某一份。
+//
+// 顺序固定,便于稳定编码。
+func All() []Capability {
+	return []Capability{CapStreaming, CapApproval, CapResume, CapFork, CapHostedTools}
+}
+
 // UnsupportedError 是"这个引擎干不了这件事"的类型化错误。
 //
 // 它必须在**任何状态被修改之前**返回 —— 半路失败会留下 native 影子状态被改过、

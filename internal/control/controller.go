@@ -409,11 +409,20 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	return c.executor.CompactNow(ctx, instructions)
 }
 
+// BusyError 是「有回合在跑,现在不能做这件事」的类型化错误。
+//
+// 它与 engine.UnsupportedError 必须能被区分开:一个是**待会儿可以再来**的状态冲突,
+// 另一个是这个引擎**永远做不到**。传输层据此给出不同的状态码(见 internal/serve),
+// 混成一个码等于告诉客户端「分不清该不该重试」。
+type BusyError struct{ Msg string }
+
+func (e *BusyError) Error() string { return e.Msg }
+
 // busyNotice 在有 turn 运行时拒绝「会重写整个会话」的操作:发一条 Warn Notice(前端
 // 即便吞掉返回的 error 也能看到原因),并返回该错误(B2)。
 func (c *Controller) busyNotice(msg string) error {
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
-	return fmt.Errorf("%s", msg)
+	return &BusyError{Msg: msg}
 }
 
 // maybeSessionStart fires the SessionStart hook exactly once per session, lazily

@@ -9,6 +9,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/engine"
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
 	"reasonix/internal/nilutil"
@@ -239,6 +241,28 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeOpError 把控制层的错误映射成**语义正确**的状态码。
+//
+// 之前这些端点一律回 500。500 的含义是「服务器坏了,可以重试」—— 而对一个引擎干不了
+// 的操作,事实恰恰相反:重试多少次都一样。照状态码行事的客户端(重试队列、自动化脚本)
+// 会一直撞下去,真正的原因只在响应体的中文里。语义错的状态码,和不给原因差不太多。
+//
+// 两条必须分开(复核 AR-R02 的验收原话就是「明确 409/422」):
+//   - 引擎不支持 → 422:请求本身没问题,这个引擎处理不了,**别重试**;
+//   - 有回合在跑 → 409:是状态冲突,**待会儿可以再来**。
+func writeOpError(w http.ResponseWriter, err error) {
+	var unsupported *engine.UnsupportedError
+	var busy *control.BusyError
+	switch {
+	case errors.As(err, &unsupported):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	case errors.As(err, &busy):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 // submit runs raw user input as a turn (slash commands and @-references
 // resolved by the controller). Returns 202 — output arrives on the event stream.
 func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +310,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 	if err := s.ctrl.Compact(r.Context(), ""); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -294,7 +318,7 @@ func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newSession(w http.ResponseWriter, _ *http.Request) {
 	if err := s.ctrl.NewSession(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -366,10 +390,19 @@ func (s *Server) snapshot(w http.ResponseWriter, _ *http.Request) {
 	if asks == nil {
 		asks = []event.Ask{}
 	}
+	// 能力表:前端据此禁用做不到的入口**并说明原因**,而不是让用户点下去撞一个
+	// 422。后端仍然独立校验(requireCap 在改任何状态之前)—— 这里给的是"显示原因"
+	// 所需的数据,不是那道门本身。UI 从来不是安全边界(复核 AR-R02)。
+	caps := map[string]bool{}
+	for _, c := range engine.All() {
+		caps[string(c)] = s.ctrl.Supports(c)
+	}
 	writeJSON(w, map[string]any{
 		"schemaVersion":    eventwire.SchemaVersion,
 		"streamId":         s.bc.StreamID(),
 		"sequence":         s.bc.Sequence(),
+		"engine":           s.ctrl.EngineName(),
+		"capabilities":     caps,
 		"history":          history,
 		"running":          s.ctrl.Running(),
 		"plan":             s.ctrl.PlanMode(),
@@ -464,7 +497,7 @@ func (s *Server) rewind(w http.ResponseWriter, r *http.Request) {
 		scope = control.RewindConversation
 	}
 	if err := s.ctrl.Rewind(body.Turn, scope); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -482,7 +515,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.ctrl.ForkNamed(body.Turn, body.Name)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"path": path})
@@ -509,7 +542,7 @@ func (s *Server) summarize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -566,7 +599,7 @@ func (s *Server) forget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.ctrl.ForgetMemory(body.Name); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -591,7 +624,7 @@ func (s *Server) checkpoints(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) branches(w http.ResponseWriter, _ *http.Request) {
 	branches, err := s.ctrl.Branches()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	tree := s.ctrl.BranchTreeText()
