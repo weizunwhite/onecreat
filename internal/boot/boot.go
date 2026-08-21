@@ -398,6 +398,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bgSpecs[i].Stderr = opts.Stderr
 		}
 	}
+	// 后期追加的 spec 也要拿到本工作区的环境。`PluginSpecsIn` 只覆盖配置里的那些,而
+	// codegraph 与 `opts.ExtraPlugins` 是在那之后才 append 进来的 —— 它们的 BaseEnv
+	// 为 nil,会退回进程环境。C1 之前那没问题(`.env` 就在进程环境里),之后就是静默
+	// 失效:同一个会话里,配置里的 MCP 服务器拿得到项目 `.env`,这两类拿不到。
+	//
+	// 放在这里、和 stderr 那一遍并排,是为了让「每个 tier 都过一遍」成为结构上的事实:
+	// 哪天加了第四个 tier 而漏掉这一遍,stderr 也会一起坏,不会只坏这条安静的。
+	applyChildEnv(workspaceBaseEnv(cfg.Env()), eagerSpecs, lazySpecs, bgSpecs)
 
 	// Eager: block until handshake. Failures show up in /mcp.
 	if len(eagerSpecs) > 0 {
@@ -865,10 +873,7 @@ func PluginSpecs(entries []config.PluginEntry) []plugin.Spec {
 // a command/arg/header resolves through it, and the child process is launched
 // with that workspace's environment rather than the raw process environment.
 func PluginSpecsIn(env config.Env, entries []config.PluginEntry) []plugin.Spec {
-	var baseEnv []string
-	if !env.Empty() {
-		baseEnv = env.Environ() // nil = 继承进程环境,与 PluginSpecs 的行为一致
-	}
+	baseEnv := workspaceBaseEnv(env)
 	specs := make([]plugin.Spec, len(entries))
 	for i, e := range entries {
 		e = e.ExpandedPluginIn(env) // resolve ${VAR} / ${VAR:-default} for this workspace
@@ -884,6 +889,34 @@ func PluginSpecsIn(env config.Env, entries []config.PluginEntry) []plugin.Spec {
 		}
 	}
 	return specs
+}
+
+// workspaceBaseEnv 是「这个工作区的插件该用什么基础环境」的唯一规则:没有 `.env` 叠加层
+// 就返回 nil,也就是继承进程环境 —— 改动前的行为,进程级前端(CLI / ACP)该有的行为。
+// 有叠加层才显式组装一份,免得给不需要的会话钉上一个 boot 时的环境快照。
+func workspaceBaseEnv(env config.Env) []string {
+	if env.Empty() {
+		return nil
+	}
+	return env.Environ()
+}
+
+// applyChildEnv 给还没有基础环境的 spec 装上这个工作区的子进程环境。
+//
+// 只填 nil 的那些:调用方显式给过 BaseEnv 就是它的决定,不覆盖。env 为 nil(工作区没有
+// `.env` 叠加层)时整个是 no-op —— nil BaseEnv 的含义就是「继承进程环境」,那是改动前的
+// 行为,也是 CLI / ACP 这类进程级前端该有的行为。
+func applyChildEnv(env []string, tiers ...[]plugin.Spec) {
+	if env == nil {
+		return
+	}
+	for _, tier := range tiers {
+		for i := range tier {
+			if tier[i].BaseEnv == nil {
+				tier[i].BaseEnv = env
+			}
+		}
+	}
 }
 
 // MCPStartupNotice formats the warning shown when configured MCP servers failed
