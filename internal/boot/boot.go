@@ -298,7 +298,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		fmt.Fprintln(stderr, "warning: bash not found on PATH; the shell tool will run commands under Windows PowerShell. Install Git for Windows or WSL to use bash.")
 	}
 	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, stderr)
-	addBuiltins(reg, ws, cfg.Tools.Enabled, cfg.WriteRoots(), bashSpec, searchSpec, stderr)
+	// 这个工作区的子进程环境:进程环境 + 本工作区 `.env` 里进程环境没有的键。
+	// `.env` 不再 os.Setenv(复核 C1),所以每个会自己起子进程的东西 —— bash 工具、
+	// MCP 插件、钩子、语言服务器 —— 都必须显式收下这一份。少给一处,那一处的
+	// `.env` 就静默失效;共用进程环境,两个工作区就又互相污染。
+	childEnv := cfg.Env().Environ()
+	addBuiltins(reg, ws, cfg.Tools.Enabled, cfg.WriteRoots(), bashSpec, searchSpec, childEnv, stderr)
 	// Always construct a host, even with no plugins configured, so the controller's
 	// host pointer is stable for the session and `/mcp add` can hot-add into it.
 	//
@@ -333,9 +338,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	eagerEntries = kept
 
-	eagerSpecs := PluginSpecs(eagerEntries)
-	lazySpecs := PluginSpecs(lazyEntries)
-	bgSpecs := PluginSpecs(bgEntries)
+	eagerSpecs := PluginSpecsIn(cfg.Env(), eagerEntries)
+	lazySpecs := PluginSpecsIn(cfg.Env(), lazyEntries)
+	bgSpecs := PluginSpecsIn(cfg.Env(), bgEntries)
 	// Caller-supplied servers join the eager tier: the host named them for this
 	// session, so their tools must exist on the first turn.
 	eagerSpecs = append(eagerSpecs, opts.ExtraPlugins...)
@@ -474,7 +479,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		hook.Load(hook.LoadOptions{ProjectRoot: root, Trusted: hooksTrusted}),
 		root, nil,
 		func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg}) },
-	)
+	).SetEnv(childEnv) // 钩子也是子进程:`.env` 只能从这里到达它们(复核 C1)
 	if hook.ProjectDefinesHooks(root) && !hooksTrusted {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: "this project defines hooks but they are not trusted — run /hooks trust to enable them"})
@@ -803,7 +808,7 @@ func newProviderFor(e *config.ProviderEntry, proxy netclient.ProxySpec, gw *acco
 // A zero ws leaves the replacements' work dir empty, i.e. process-cwd relative —
 // identical to the registered defaults — so a process-scoped frontend is
 // unaffected.
-func addBuiltins(reg *tool.Registry, ws workspace.Context, enabled, writeRoots []string, bashSpec sandbox.Spec, searchSpec builtin.SearchSpec, stderr io.Writer) {
+func addBuiltins(reg *tool.Registry, ws workspace.Context, enabled, writeRoots []string, bashSpec sandbox.Spec, searchSpec builtin.SearchSpec, childEnv []string, stderr io.Writer) {
 	if len(enabled) == 0 {
 		for _, t := range tool.Builtins() {
 			reg.Add(t)
@@ -821,7 +826,7 @@ func addBuiltins(reg *tool.Registry, ws workspace.Context, enabled, writeRoots [
 	// order is preserved on replace): relative paths resolve against the
 	// workspace root, file-writers are confined to writeRoots, bash runs in the
 	// workspace under the OS sandbox. Only replace tools actually enabled/present.
-	confined := builtin.ConfineWorkspace(ws.Root(), writeRoots, bashSpec, searchSpec)
+	confined := builtin.ConfineWorkspace(ws.Root(), writeRoots, bashSpec, searchSpec, childEnv)
 	for _, t := range confined {
 		if _, ok := reg.Get(t.Name()); ok {
 			reg.Add(t)
@@ -848,18 +853,32 @@ func partitionByTier(entries []config.PluginEntry) (eager, lazy, bg []config.Plu
 }
 
 // PluginSpecs maps configured plugin entries to plugin.Spec, expanding ${VAR}
-// references. Exported so custom assemblers can connect the config's plugins
-// alongside their own (e.g. ACP's per-session MCP servers).
+// references from the process environment. Exported so custom assemblers can
+// connect the config's plugins alongside their own (e.g. ACP's per-session MCP
+// servers). Prefer PluginSpecsIn when a workspace config is at hand — it is the
+// only path a project's `.env` reaches its MCP servers by (复核 C1)。
 func PluginSpecs(entries []config.PluginEntry) []plugin.Spec {
+	return PluginSpecsIn(config.Env{}, entries)
+}
+
+// PluginSpecsIn is PluginSpecs bound to one workspace's env overlay: `${VAR}` in
+// a command/arg/header resolves through it, and the child process is launched
+// with that workspace's environment rather than the raw process environment.
+func PluginSpecsIn(env config.Env, entries []config.PluginEntry) []plugin.Spec {
+	var baseEnv []string
+	if !env.Empty() {
+		baseEnv = env.Environ() // nil = 继承进程环境,与 PluginSpecs 的行为一致
+	}
 	specs := make([]plugin.Spec, len(entries))
 	for i, e := range entries {
-		e = e.ExpandedPlugin() // resolve ${VAR} / ${VAR:-default} from the environment
+		e = e.ExpandedPluginIn(env) // resolve ${VAR} / ${VAR:-default} for this workspace
 		specs[i] = plugin.Spec{
 			Name:    e.Name,
 			Type:    e.Type,
 			Command: e.Command,
 			Args:    e.Args,
 			Env:     e.Env,
+			BaseEnv: baseEnv,
 			URL:     e.URL,
 			Headers: e.Headers,
 		}

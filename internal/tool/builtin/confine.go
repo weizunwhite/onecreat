@@ -46,11 +46,13 @@ func ConfineWriters(roots []string) []tool.Tool {
 // behaviour, so a process-scoped frontend (the CLI) gets byte-identical tools.
 // roots confines the writers (as ConfineWriters), bashSpec is the OS-sandbox
 // spec (as ConfineBash), and search selects the grep engine (as ConfineSearch).
+// env is the child environment bash hands its commands — the workspace's `.env`
+// overlay reaches subprocesses only through it (复核 C1);nil 继承进程环境。
 //
 // Only path resolution moves here: confinement, sandboxing and engine selection
 // keep the exact semantics of the three narrower helpers below, which remain for
 // callers that have no workspace of their own.
-func ConfineWorkspace(workDir string, roots []string, bashSpec sandbox.Spec, search SearchSpec) []tool.Tool {
+func ConfineWorkspace(workDir string, roots []string, bashSpec sandbox.Spec, search SearchSpec, env []string) []tool.Tool {
 	rs := realRoots(roots)
 	return []tool.Tool{
 		readFile{workDir: workDir},
@@ -60,7 +62,7 @@ func ConfineWorkspace(workDir string, roots []string, bashSpec sandbox.Spec, sea
 		notebookEdit{workDir: workDir, roots: rs},
 		deleteRange{workDir: workDir, roots: rs},
 		deleteSymbol{workDir: workDir, roots: rs},
-		bash{workDir: workDir, sb: bashSpec, shell: sandbox.ResolveShell()},
+		bash{workDir: workDir, sb: bashSpec, shell: sandbox.ResolveShell(), env: env},
 		listDir{workDir: workDir},
 		globTool{workDir: workDir},
 		grepTool{workDir: workDir, rg: search.RgPath},

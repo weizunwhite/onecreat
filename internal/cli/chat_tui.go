@@ -287,17 +287,22 @@ func (m chatTUI) runStatusline() tea.Cmd {
 		"contextUsed":   used,
 		"contextWindow": window,
 	})
-	return func() tea.Msg { return statuslineMsg{out: runStatuslineCmd(cmd, string(payload))} }
+	// 状态栏脚本也是子进程:`.env` 不再 os.Setenv 之后(复核 C1),它只能从会话自己的
+	// 子进程环境拿到工作区的值。钩子运行器持有的就是这一份。
+	env := m.ctrl.HookRunner().Env()
+	return func() tea.Msg { return statuslineMsg{out: runStatuslineCmd(cmd, string(payload), env)} }
 }
 
 // runStatuslineCmd runs a status-line command with the JSON context on stdin and
 // returns its first stdout line (status lines are a single row). A tight timeout
 // keeps a slow script from stalling the UI; any failure collapses to "".
-func runStatuslineCmd(cmd, stdinPayload string) string {
+// env 是子进程环境(nil 继承进程环境)。
+func runStatuslineCmd(cmd, stdinPayload string, env []string) string {
 	res := hook.DefaultSpawner(context.Background(), hook.SpawnInput{
 		Command: cmd,
 		Stdin:   stdinPayload + "\n",
 		Timeout: 2 * time.Second,
+		Env:     env,
 	})
 	out := strings.TrimSpace(res.Stdout)
 	if i := strings.IndexByte(out, '\n'); i >= 0 {

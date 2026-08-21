@@ -27,11 +27,14 @@ func init() { tool.RegisterBuiltin(bash{}) }
 // unconfined and is overridden per run by ConfineBash. shell is the resolved
 // interpreter (real bash, or PowerShell on a Windows host without bash); the
 // zero value resolves lazily. workDir, when non-empty, is the directory the
-// command runs in (cmd.Dir); empty uses the process cwd.
+// command runs in (cmd.Dir); empty uses the process cwd. env, when non-nil, is
+// the child environment (`.env` 不再写进进程环境后,工作区的值只能从这里进来 ——
+// 复核 C1);nil 继承进程环境,也就是进程级前端原本的行为。
 type bash struct {
 	sb      sandbox.Spec
 	shell   sandbox.Shell
 	workDir string
+	env     []string
 }
 
 func (bash) Name() string { return "bash" }
@@ -105,12 +108,13 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 		if !ok {
 			return "", fmt.Errorf("当前环境不支持后台执行(run_in_background)——请去掉该参数直接运行")
 		}
-		workDir := b.workDir
+		workDir, childEnv := b.workDir, b.env
 		// The job runs under the manager's session context (no 120s timeout), so it
 		// survives this turn; its combined output streams to the job buffer.
 		job := jm.Start("bash", commandPreview(p.Command), func(jobCtx context.Context, out io.Writer) (string, error) {
 			cmd := exec.CommandContext(jobCtx, argv[0], argv[1:]...)
 			cmd.Dir = workDir
+			cmd.Env = childEnv // nil 继承进程环境
 			setKillTree(cmd)
 			cmd.WaitDelay = bashWaitDelay
 			cmd.Stdout = out
@@ -125,6 +129,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = b.workDir // "" lets exec use the process working directory
+	cmd.Env = b.env     // nil 继承进程环境
 	setKillTree(cmd)
 	cmd.WaitDelay = bashWaitDelay
 	var buf bytes.Buffer

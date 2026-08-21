@@ -42,6 +42,12 @@ type Spec struct {
 	// for cwd-aware servers like CodeGraph, which detect the project from the
 	// directory they are launched in — they must be pinned to the project root.
 	Dir string
+	// BaseEnv 是子进程的基础环境。nil 表示继承本进程的环境(改动前的行为)。
+	//
+	// 它存在的理由是 `.env` 不再写进进程环境了(复核 C1):项目的 `.env` 属于某个
+	// 工作区,而进程环境只有一份 —— 想让插件拿到本项目的密钥,就得由装配方把这个
+	// 工作区的环境**显式**交过来。
+	BaseEnv []string
 	// Stderr optionally mirrors plugin subprocess stderr output. Stderr is always
 	// captured in a bounded buffer for failure diagnostics; nil keeps it out of
 	// the terminal so child logs cannot corrupt interactive UIs.

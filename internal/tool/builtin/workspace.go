@@ -17,12 +17,15 @@ import (
 // compile-time built-ins). WriteRoots confines the file-writers (as
 // ConfineWriters); when empty and Dir is set, Dir itself becomes the sole write
 // root, so writes stay inside the project by default. Bash is the OS-sandbox
-// spec for the bash tool (as ConfineBash).
+// spec for the bash tool (as ConfineBash). Env is the child environment bash
+// hands its commands — the workspace's `.env` overlay reaches subprocesses only
+// through it (复核 C1);nil 继承进程环境。
 type Workspace struct {
 	Dir        string
 	WriteRoots []string
 	Bash       sandbox.Spec
 	Search     SearchSpec
+	Env        []string
 }
 
 // Tools returns the built-in tools bound to the workspace, ready to Add to a
@@ -44,7 +47,7 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 		multiEdit{workDir: w.Dir, roots: roots},
 		deleteRange{workDir: w.Dir, roots: roots},
 		deleteSymbol{workDir: w.Dir, roots: roots},
-		bash{workDir: w.Dir, sb: w.Bash},
+		bash{workDir: w.Dir, sb: w.Bash, env: w.Env},
 		listDir{workDir: w.Dir},
 		globTool{workDir: w.Dir},
 		grepTool{workDir: w.Dir, rg: w.Search.RgPath},

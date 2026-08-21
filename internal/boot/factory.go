@@ -306,7 +306,9 @@ func (f *Factory) startWorkspaceServices(scope *runtime.Workspace, spec Workspac
 	// the manager is cheap even with none installed. It is workspace-scoped:
 	// two tabs on one project share the same running servers.
 	if spec.Config.LSP.Enabled {
-		mgr := lsp.NewManager(spec.Root, LSPSpecs(spec.Config.LSP))
+		// 语言服务器也是子进程:`.env` 不再 os.Setenv 之后,工作区的值只能从这份
+		// 显式环境进来(复核 C1)。
+		mgr := lsp.NewManagerWithEnv(spec.Root, LSPSpecs(spec.Config.LSP), spec.Config.Env().Environ())
 		svc.lsp = mgr
 		scope.Defer("lsp", mgr.Close)
 	}

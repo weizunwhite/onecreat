@@ -311,6 +311,8 @@ type SpawnInput struct {
 	Cwd     string
 	Stdin   string
 	Timeout time.Duration
+	// Env 是钩子命令的子进程环境(nil 继承进程环境)。见 Runner.WithEnv。
+	Env []string
 }
 
 type SpawnResult struct {
@@ -396,6 +398,7 @@ func DefaultSpawner(ctx context.Context, in SpawnInput) SpawnResult {
 	cmd := exec.CommandContext(cctx, name, args...)
 	proc.HideWindow(cmd)
 	cmd.Dir = in.Cwd
+	cmd.Env = in.Env // nil 继承进程环境
 	cmd.Stdin = strings.NewReader(in.Stdin)
 	var outBuf, errBuf cappedBuffer
 	cmd.Stdout = &outBuf

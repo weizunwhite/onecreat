@@ -17,12 +17,58 @@ type Runner struct {
 	cwd     string
 	spawner Spawner
 	notify  func(string) // surface a non-blocking (warn/error) hook message; may be nil
+	// env 是钩子命令的子进程环境(nil 继承进程环境)。钩子是 shell 命令,原本靠
+	// 继承进程环境拿到 `.env` 里的 token;`.env` 不再 os.Setenv 之后,只能从这里进来
+	// (复核 C1)。
+	env []string
 }
 
 // NewRunner builds a Runner. spawner nil uses DefaultSpawner; notify nil drops
 // non-blocking messages.
 func NewRunner(hooks []ResolvedHook, cwd string, spawner Spawner, notify func(string)) *Runner {
 	return &Runner{hooks: hooks, cwd: cwd, spawner: spawner, notify: notify}
+}
+
+// SetEnv binds r to the child environment its hook commands are spawned with,
+// and returns r so it can be chained onto NewRunner at the composition root.
+// nil r stays nil (a no-op Runner is valid), and a nil env keeps the process
+// environment — so callers with no workspace are unaffected.
+func (r *Runner) SetEnv(env []string) *Runner {
+	if r == nil {
+		return nil
+	}
+	r.env = env
+	return r
+}
+
+// Env returns the child environment hook commands are spawned with (nil = the
+// process environment). Exported so the composition root's wiring is observable:
+// a hook that silently lost the workspace's `.env` is otherwise invisible until a
+// user's token stops working.
+func (r *Runner) Env() []string {
+	if r == nil {
+		return nil
+	}
+	return r.env
+}
+
+// spawn returns the spawner every Run goes through, with the workspace child
+// environment stamped onto each SpawnInput. One seam instead of an Env argument
+// on eleven Run call sites — and it means a hook can never accidentally be
+// spawned without it.
+func (r *Runner) spawn() Spawner {
+	base := r.spawner
+	if base == nil {
+		base = DefaultSpawner
+	}
+	if r.env == nil {
+		return base
+	}
+	env := r.env
+	return func(ctx context.Context, in SpawnInput) SpawnResult {
+		in.Env = env
+		return base(ctx, in)
+	}
 }
 
 // Hooks returns the resolved hooks (for `/hooks` listing).
@@ -61,7 +107,7 @@ func (r *Runner) PreToolUse(ctx context.Context, name string, args json.RawMessa
 	if !r.Enabled() {
 		return false, ""
 	}
-	rep := Run(ctx, Payload{Event: PreToolUse, Cwd: r.cwd, ToolName: name, ToolArgs: args}, r.hooks, r.spawner)
+	rep := Run(ctx, Payload{Event: PreToolUse, Cwd: r.cwd, ToolName: name, ToolArgs: args}, r.hooks, r.spawn())
 	return r.handle(rep)
 }
 
@@ -71,7 +117,7 @@ func (r *Runner) PostToolUse(ctx context.Context, name string, args json.RawMess
 	if !r.Enabled() {
 		return
 	}
-	rep := Run(ctx, Payload{Event: PostToolUse, Cwd: r.cwd, ToolName: name, ToolArgs: args, ToolResult: result}, r.hooks, r.spawner)
+	rep := Run(ctx, Payload{Event: PostToolUse, Cwd: r.cwd, ToolName: name, ToolArgs: args, ToolResult: result}, r.hooks, r.spawn())
 	r.handle(rep)
 }
 
@@ -81,7 +127,7 @@ func (r *Runner) PromptSubmit(ctx context.Context, prompt string, turn int) (blo
 	if !r.Enabled() {
 		return false, ""
 	}
-	rep := Run(ctx, Payload{Event: UserPromptSubmit, Cwd: r.cwd, Prompt: prompt, Turn: turn}, r.hooks, r.spawner)
+	rep := Run(ctx, Payload{Event: UserPromptSubmit, Cwd: r.cwd, Prompt: prompt, Turn: turn}, r.hooks, r.spawn())
 	return r.handle(rep)
 }
 
@@ -90,7 +136,7 @@ func (r *Runner) Stop(ctx context.Context, lastAssistant string, turn int) {
 	if !r.Enabled() {
 		return
 	}
-	rep := Run(ctx, Payload{Event: Stop, Cwd: r.cwd, LastAssistant: lastAssistant, Turn: turn}, r.hooks, r.spawner)
+	rep := Run(ctx, Payload{Event: Stop, Cwd: r.cwd, LastAssistant: lastAssistant, Turn: turn}, r.hooks, r.spawn())
 	r.handle(rep)
 }
 
@@ -100,7 +146,7 @@ func (r *Runner) SessionStart(ctx context.Context) {
 	if !r.Enabled() {
 		return
 	}
-	r.handle(Run(ctx, Payload{Event: SessionStart, Cwd: r.cwd}, r.hooks, r.spawner))
+	r.handle(Run(ctx, Payload{Event: SessionStart, Cwd: r.cwd}, r.hooks, r.spawn()))
 }
 
 // SessionEnd fires when a session is closed or rotated (/new). It can't block.
@@ -108,7 +154,7 @@ func (r *Runner) SessionEnd(ctx context.Context) {
 	if !r.Enabled() {
 		return
 	}
-	r.handle(Run(ctx, Payload{Event: SessionEnd, Cwd: r.cwd}, r.hooks, r.spawner))
+	r.handle(Run(ctx, Payload{Event: SessionEnd, Cwd: r.cwd}, r.hooks, r.spawn()))
 }
 
 // SubagentStop fires when a `task` sub-agent finishes. It can't block; last is
@@ -117,7 +163,7 @@ func (r *Runner) SubagentStop(ctx context.Context, last string) {
 	if !r.Enabled() {
 		return
 	}
-	r.handle(Run(ctx, Payload{Event: SubagentStop, Cwd: r.cwd, LastAssistant: last}, r.hooks, r.spawner))
+	r.handle(Run(ctx, Payload{Event: SubagentStop, Cwd: r.cwd, LastAssistant: last}, r.hooks, r.spawn()))
 }
 
 // Notification fires when the agent needs the user's attention (e.g. a pending
@@ -126,7 +172,7 @@ func (r *Runner) Notification(ctx context.Context, message string) {
 	if !r.Enabled() {
 		return
 	}
-	r.handle(Run(ctx, Payload{Event: Notification, Cwd: r.cwd, Message: message}, r.hooks, r.spawner))
+	r.handle(Run(ctx, Payload{Event: Notification, Cwd: r.cwd, Message: message}, r.hooks, r.spawn()))
 }
 
 // PostLLMCall fires after every model turn completes but before the
@@ -138,7 +184,7 @@ func (r *Runner) PostLLMCall(ctx context.Context, reasoning string, turn int) st
 	if !r.Has(PostLLMCall) {
 		return reasoning
 	}
-	rep := Run(ctx, Payload{Event: PostLLMCall, Cwd: r.cwd, Reasoning: reasoning, Turn: turn}, r.hooks, r.spawner)
+	rep := Run(ctx, Payload{Event: PostLLMCall, Cwd: r.cwd, Reasoning: reasoning, Turn: turn}, r.hooks, r.spawn())
 	r.handle(rep)
 	for _, o := range rep.Outcomes {
 		if o.Decision == DecisionPass {
@@ -157,7 +203,7 @@ func (r *Runner) PreCompact(ctx context.Context, trigger string) string {
 	if !r.Enabled() {
 		return ""
 	}
-	rep := Run(ctx, Payload{Event: PreCompact, Cwd: r.cwd, Trigger: trigger}, r.hooks, r.spawner)
+	rep := Run(ctx, Payload{Event: PreCompact, Cwd: r.cwd, Trigger: trigger}, r.hooks, r.spawn())
 	r.handle(rep)
 	var b strings.Builder
 	for _, o := range rep.Outcomes {

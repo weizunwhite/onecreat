@@ -20,7 +20,7 @@ import (
 func wsTools(t *testing.T, root string) map[string]tool.Tool {
 	t.Helper()
 	out := map[string]tool.Tool{}
-	for _, tl := range ConfineWorkspace(root, []string{root}, sandbox.Spec{Mode: "off"}, SearchSpec{}) {
+	for _, tl := range ConfineWorkspace(root, []string{root}, sandbox.Spec{Mode: "off"}, SearchSpec{}, nil) {
 		out[tl.Name()] = tl
 	}
 	return out
@@ -174,7 +174,7 @@ func TestZeroWorkspaceKeepsProcessCwdBehaviour(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	tools := map[string]tool.Tool{}
-	for _, tl := range ConfineWorkspace("", []string{dir}, sandbox.Spec{Mode: "off"}, SearchSpec{}) {
+	for _, tl := range ConfineWorkspace("", []string{dir}, sandbox.Spec{Mode: "off"}, SearchSpec{}, nil) {
 		tools[tl.Name()] = tl
 	}
 	if _, err := tryTool(t, tools["write_file"], map[string]any{"path": "cwd.txt", "content": "here"}); err != nil {

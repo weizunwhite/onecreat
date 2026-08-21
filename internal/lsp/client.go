@@ -42,11 +42,13 @@ type Diagnostic struct {
 	Source   string `json:"source"`
 }
 
-func startClient(ctx context.Context, bin string, args []string, env map[string]string, langID, root string) (*client, error) {
+// env 是已经组装好的子进程环境,原样成为 cmd.Env —— 组装在 Manager.clientEnv,
+// 这里不再自己拼(复核 C1:工作区 `.env` 不经过 os.Setenv)。
+func startClient(ctx context.Context, bin string, args, env []string, langID, root string) (*client, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	proc.HideWindow(cmd)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), envSlice(env)...)
+	cmd.Env = env
 	cmd.Stderr = io.Discard
 
 	stdin, err := cmd.StdinPipe()
