@@ -590,6 +590,11 @@ function acceptSlash(){if(!slashOpen)return;const c=slashFiltered[slashIndex];if
 // /snapshot 与 /history 的区别:前者还带 running / pending approvals / pending asks,
 // 也就是那些"只在事件里出现过一次"的状态。只重放 transcript 是对不齐的。
 let lastSeq=0, streamId=null, sawStream=false, resyncing=false, resyncBuf=null, resyncBufFull=false;
+// resyncGen 给每次对齐一个代号。没有它,一次对齐的收尾会把**下一次**对齐刚建好的状态
+// 清掉:溢出重试是在 .then 里同步发起的,而先前那次的 .finally 排在它后面才跑 ——
+// 于是第二次对齐的 resyncing/resyncBuf 被抹成 false/null,那一次的缓冲形同虚设,
+// 期间到达的帧又会被渲染后抹掉。这个洞是 node 行为测试当场抓出来的,字符串守卫看不见。
+let resyncGen=0;
 // 对齐期间的缓冲上限。它不是性能调优:缓冲区满了就意味着又有状态帧留不住,而"静默丢掉
 // 状态"正是这一层唯一不允许的事 —— 所以满了不丢,改成再对齐一次(快照会更新)。
 const RESYNC_BUF_MAX=4096;
@@ -643,6 +648,7 @@ function gatedIsBlocked(id){
 
 function resync(reason){
   if(resyncing)return; resyncing=true; resyncBuf=[]; resyncBufFull=false;
+  const gen=++resyncGen;
   return fetch('/snapshot').then(r=>r.json()).then(s=>{
     streamId=s.streamId; lastSeq=s.sequence||0;
     renderHistory(s.history);
@@ -659,7 +665,10 @@ function resync(reason){
     if(full){ fetchStatus(); resync('对齐期间积压过多'); return; } // 半截缓冲不重放
     buf.forEach(e=>{ if(typeof e.sequence==='number'&&e.sequence<=lastSeq)return; applyEvent(e); });
     fetchStatus();
-  }).catch(()=>{}).finally(()=>{resyncing=false; resyncBuf=null; resyncBufFull=false;});
+  }).catch(()=>{}).finally(()=>{
+    // 只有仍然是"当前那一次"才收尾 —— 否则会清掉后来者的状态(见 resyncGen)。
+    if(gen===resyncGen){ resyncing=false; resyncBuf=null; resyncBufFull=false; }
+  });
 }
 
 const es=new EventSource('/events');
