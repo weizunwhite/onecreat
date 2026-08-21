@@ -50,6 +50,16 @@ func (s *Stamper) Wire(e event.Event) Event {
 	return w
 }
 
+// Sequence 返回这条流已经发出的最后一个序号(尚未发出任何事件时为 0)。
+//
+// 权威快照要带上它:客户端拿到快照后,就知道"这份状态对应到第 N 号事件为止",于是
+// 之后收到的第一条事件是不是接得上、中间有没有洞,一目了然(AR-R07)。
+func (s *Stamper) Sequence() uint64 { return s.seq.Load() }
+
+// StreamID 返回这条流的身份(sessionID[:tabID]),让客户端能认出"这已经是另一条流了,
+// 手里的序号别再拿来比对"。与 eventID 用同一份拼法,免得两处漂移。
+func (s *Stamper) StreamID() string { return s.streamBase() }
+
 // Encode stamps and marshals in one step, for transports that only ever need
 // the bytes.
 func (s *Stamper) Encode(e event.Event) ([]byte, error) {
@@ -61,6 +71,15 @@ func (s *Stamper) Encode(e event.Event) ([]byte, error) {
 // sequence is already unique per stream, and a derived id keeps the two
 // obviously consistent.
 func (s *Stamper) eventID(n uint64) string {
+	base := s.streamBase()
+	if base == "" {
+		return strconv.FormatUint(n, 10)
+	}
+	return base + "#" + strconv.FormatUint(n, 10)
+}
+
+// streamBase 是流身份的拼法,eventID 与 StreamID 共用一份。
+func (s *Stamper) streamBase() string {
 	base := s.sessionID
 	if s.tabID != "" {
 		if base != "" {
@@ -68,8 +87,5 @@ func (s *Stamper) eventID(n uint64) string {
 		}
 		base += s.tabID
 	}
-	if base == "" {
-		return strconv.FormatUint(n, 10)
-	}
-	return base + "#" + strconv.FormatUint(n, 10)
+	return base
 }

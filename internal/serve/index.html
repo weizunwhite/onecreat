@@ -578,9 +578,61 @@ function closeSlashMenu(){slashOpen=false;const m=$('#slash-menu');if(m)m.remove
 function acceptSlash(){if(!slashOpen)return;const c=slashFiltered[slashIndex];if(c){input.value='/'+c.cmd+' ';}closeSlashMenu();input.focus();}
 
 // ── SSE ──
+// 重新对齐(AR-R07)。慢客户端积压过多状态帧会被服务端断开;断开只是止损,它并不
+// 知道自己错过了什么 —— 错过的可能是 approval_request(审批永远不出现,agent 卡在
+// 没人看得见的提示上)或 turn_done(UI 永远转圈)。所以三种情况都必须回到权威快照:
+//   1. 收到 stream_reset;
+//   2. 重连成功(onopen)且之前已经在流上;
+//   3. 事件序号出现断层。
+// /snapshot 与 /history 的区别:前者还带 running / pending approvals / pending asks,
+// 也就是那些"只在事件里出现过一次"的状态。只重放 transcript 是对不齐的。
+let lastSeq=0, streamId=null, sawStream=false, resyncing=false;
+
+function renderHistory(ms){
+  log.innerHTML=''; log.appendChild(welcome); welcome.style.display='';
+  currentMsg=null;currentText=null;currentReasoning=null;toolCards={};
+  if(!ms||ms.length===0){scrollDown();return;}
+  hideWelcome();
+  ms.forEach(m=>{if(!m.content)return; if(m.role==='user'){addUserMsg(m.content);}else{const d=el('div','msg msg--assistant');d.appendChild(el('div','msg__text',m.content));log.appendChild(d);}});
+  scrollDown();
+}
+
+function resync(reason){
+  if(resyncing)return; resyncing=true;
+  return fetch('/snapshot').then(r=>r.json()).then(s=>{
+    streamId=s.streamId; lastSeq=s.sequence||0;
+    renderHistory(s.history);
+    setRunning(!!s.running);
+    planMode=!!s.plan; updateModeButtons();
+    // 待办的审批 / 提问要重新显示出来 —— 它们正是最不能丢的那一类。
+    (s.pendingApprovals||[]).forEach(a=>showApproval(a));
+    (s.pendingAsks||[]).forEach(a=>showAsk(a));
+    if(reason)log.appendChild(el('div','notice','⟳ 已与服务端重新对齐('+reason+')')),scrollDown();
+    fetchStatus();
+  }).catch(()=>{}).finally(()=>{resyncing=false;});
+}
+
 const es=new EventSource('/events');
+es.addEventListener('stream_ready',ev=>{
+  let d={}; try{d=JSON.parse(ev.data);}catch(_){}
+  // 换了一条流(服务端重启 / 换会话),手里的序号不再可比。
+  const newStream = streamId!==null && d.streamId!==streamId;
+  if(sawStream||newStream){ resync(newStream?'流已重建':'重新连接'); }
+  else { streamId=d.streamId; lastSeq=d.sequence||0; }
+  sawStream=true;
+});
+es.addEventListener('stream_reset',ev=>{
+  let d={}; try{d=JSON.parse(ev.data);}catch(_){}
+  // 服务端明说了去哪儿对齐;它今天指向 /snapshot,但以字段为准。
+  resync('连接跟不上,已重放丢失的状态');
+});
 es.onmessage=ev=>{
   const e=JSON.parse(ev.data);
+  // 序号断层 = 中间掉过帧。只有可丢的增量帧才允许有洞,其余一律回到权威状态。
+  if(typeof e.sequence==='number'){
+    if(lastSeq&&e.sequence>lastSeq+1&&e.durable){ lastSeq=e.sequence; resync('检测到事件断层'); return; }
+    if(e.sequence>lastSeq)lastSeq=e.sequence;
+  }
   switch(e.kind){
     case 'turn_started': setRunning(true); finalizeMsg(); toolCards={}; break;
     case 'reasoning': appendReasoning(e.reasoning||e.text||''); break;
@@ -630,11 +682,8 @@ function fetchStatus(){
 setInterval(fetchStatus,30000);
 
 // ── history ──
-fetch('/history').then(r=>r.json()).then(ms=>{
-  if(!ms||ms.length===0)return; hideWelcome();
-  ms.forEach(m=>{if(!m.content)return; if(m.role==='user'){addUserMsg(m.content);}else{const d=el('div','msg msg--assistant');d.appendChild(el('div','msg__text',m.content));log.appendChild(d);}});
-  currentMsg=null;currentText=null;currentReasoning=null; scrollDown();
-}).catch(()=>{});
+// 首屏也走同一条「从权威状态重建」的路径,而不是另写一遍 —— 两份重建逻辑必然漂移。
+resync();
 
 // ── session list ──
 function loadSessions(){
@@ -648,7 +697,8 @@ function loadSessions(){
       const title=s.title||name.replace(/^\w+-/,'').replace(/T/,' ').replace(/[-_]/g,' ').slice(0,30);
       const meta=s.turns?s.turns+' turns':'';
       item.innerHTML='<svg class="session-item__icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div class="session-item__body"><div class="session-item__title">'+escHtml(title)+'</div><div class="session-item__meta">'+escHtml(meta)+'</div></div>';
-      item.onclick=()=>{if(running||s.current)return;post('/resume',{path:s.path}).then(()=>{log.innerHTML='';log.appendChild(welcome);welcome.style.display='';loadSessions();setTimeout(()=>fetch('/history').then(r=>r.json()).then(ms=>{if(!ms||ms.length===0)return;hideWelcome();ms.forEach(m=>{if(!m.content)return;if(m.role==='user')addUserMsg(m.content);else{const d=el('div','msg msg--assistant');d.appendChild(el('div','msg__text',m.content));log.appendChild(d);}});currentMsg=null;scrollDown();}),300);});};
+      // 恢复历史会话之后走同一条 resync:界面重建只能有一条路径,两份必然漂移。
+      item.onclick=()=>{if(running||s.current)return;post('/resume',{path:s.path}).then(()=>{loadSessions();setTimeout(()=>resync(),300);});};
       list.appendChild(item);
     });
   }).catch(()=>{const list=$('#session-list');if(list)list.innerHTML='<div style="padding:10px;color:var(--muted-2);font-size:12px">Error loading</div>';});

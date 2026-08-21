@@ -55,5 +55,12 @@ func (b *Broadcaster) Subscribe() *eventstream.Sub { return b.hub.Subscribe() }
 // Unsubscribe releases a client (the handler defers it).
 func (b *Broadcaster) Unsubscribe(s *eventstream.Sub) { b.hub.Unsubscribe(s) }
 
+// Sequence 返回这条流已发出的最后一个序号,StreamID 返回它的身份。权威快照要带上
+// 它们,客户端才能判断"我手里的状态截止到哪儿"以及"这还是不是同一条流"(AR-R07)。
+func (b *Broadcaster) Sequence() uint64 { return b.stamp.Sequence() }
+
+// StreamID 见 Sequence。
+func (b *Broadcaster) StreamID() string { return b.stamp.StreamID() }
+
 // Subscribers reports the current connection count (for diagnostics/tests).
 func (b *Broadcaster) Subscribers() int { return b.hub.Subscribers() }
