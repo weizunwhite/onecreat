@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"reasonix/internal/account"
@@ -697,14 +699,67 @@ type eventSink struct {
 	ctx   context.Context
 	app   *App
 	tabID string // 该 sink 归属的标签;事件发到 agent:event:<tabID>,空则发旧的全局通道
-	// stamp 给这条标签流编号:schemaVersion / sequence / eventId / timestamp。
-	// 每个标签一条独立的流,所以每个 sink 一个 stamper(Plan 10 / A11)。
+	// mu 保护 stamp / seenSession。事件从 agent 运行循环发出,而换会话由前端线程
+	// 触发,两者是不同的 goroutine。
+	mu sync.Mutex
+	// stamp 给这条流编号:schemaVersion / sequence / eventId / timestamp。
+	//
+	// **一个会话一条流**,不是一个标签一条流(复核 AR-R08.1)。之前这里固定
+	// `NewStamper("", tabID)`:`sessionId` 永远是空的,而 `/new`、恢复历史会话、
+	// 重建 controller 都不换 stamper —— 于是 sequence 是「这个标签自古以来」的计数,
+	// 客户端既认不出会话切换,也没法拿 sessionId 做关联。
+	//
+	// 现在换会话就换一条流(新的 stamper):sequence 从 1 重新开始,streamId 跟着变,
+	// 客户端据此知道「手里的序号别再拿来比对了」。
 	stamp *eventwire.Stamper
+	// seenSession 是上次盖章时这条标签所在的会话文件路径。空串表示还没解析过。
+	seenSession string
 }
 
 // newEventSink 建一个标签的事件出口。
 func newEventSink(ctx context.Context, app *App, tabID string) *eventSink {
 	return &eventSink{ctx: ctx, app: app, tabID: tabID, stamp: eventwire.NewStamper("", tabID)}
+}
+
+// stamperFor 返回当前该用的 stamper,必要时换一条新流。
+//
+// 只在**回合开始**时重新解析会话身份,这不是省事:换会话(`/new`、resume、rewind)
+// 都是 `turnState` 的独占操作,与回合互斥 —— 所以「回合开始」正是身份唯一可能变过的
+// 时点。把它放在每次 Emit 上既没必要,又要在文本增量这种热路径上多拿一次锁。
+func (s *eventSink) stamperFor(e event.Event) *eventwire.Stamper {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e.Kind != event.TurnStarted {
+		return s.stamp
+	}
+	path := s.currentSessionPath()
+	if path == s.seenSession {
+		return s.stamp
+	}
+	s.seenSession = path
+	s.stamp = eventwire.NewStamper(sessionIDFromPath(path), s.tabID)
+	return s.stamp
+}
+
+// currentSessionPath 读这条标签当前的会话文件路径(便宜的加锁读)。
+func (s *eventSink) currentSessionPath() string {
+	if s.app == nil {
+		return ""
+	}
+	ctrl := s.app.tabs.Ctrl(s.tabID)
+	if ctrl == nil {
+		return ""
+	}
+	return ctrl.SessionPath()
+}
+
+// sessionIDFromPath 从会话文件路径派生稳定的会话 id,与 internal/session 的派生方式
+// 一致(去掉目录与扩展名)。持久化关闭时路径为空,身份也就为空 —— 如实反映,不编一个。
+func sessionIDFromPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 }
 
 func (s *eventSink) Emit(e event.Event) {
@@ -713,7 +768,7 @@ func (s *eventSink) Emit(e event.Event) {
 		if s.tabID != "" {
 			ch = eventChannel + ":" + s.tabID
 		}
-		s.app.sh().Emit(ch, s.stamp.Wire(e))
+		s.app.sh().Emit(ch, s.stamperFor(e).Wire(e))
 	}
 	// Persist after each turn so a force-kill of a long session loses at most the
 	// in-flight prompt, not every turn back to the last workspace switch.
