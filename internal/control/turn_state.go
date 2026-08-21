@@ -26,11 +26,19 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/runtime"
 )
 
 type turnState struct {
 	sink event.Sink
 	exec *agent.Agent
+	// scope 是这个会话的 runtime.Session。有它时,每一轮都在它下面开一个
+	// runtime.Turn,回合 context 由 Turn 提供 —— 于是「关掉会话」会自动取消
+	// 在途的那一轮,而不是靠 Controller 记得手工 Cancel(AR-R12)。
+	//
+	// 为 nil 时退回 context.Background() 派生,即接线之前的行为:CLI/测试里
+	// 有大量不带 runtime scope 的 Controller,不该因此多出一条失败路径。
+	scope *runtime.Session
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -42,8 +50,22 @@ type turnState struct {
 	coachPreamble string
 }
 
-func newTurnState(sink event.Sink, exec *agent.Agent) *turnState {
-	return &turnState{sink: sink, exec: exec}
+func newTurnState(sink event.Sink, exec *agent.Agent, scope *runtime.Session) *turnState {
+	return &turnState{sink: sink, exec: exec, scope: scope}
+}
+
+// beginTurn 开一轮,返回它的 context 与收尾函数。
+//
+// 接了 runtime scope 就用 Turn:回合资源挂在 Turn 上、会话关闭时 context 自然
+// 级联取消。没接就退回原来的 context.Background() 派生。两条路都必须返回一个
+// 幂等的收尾函数 —— Guarded 会 defer 它。
+func (t *turnState) beginTurn() (context.Context, func()) {
+	if t.scope != nil {
+		turn := t.scope.BeginTurn()
+		return turn.Context(), turn.End
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return ctx, cancel
 }
 
 // NextTurn bumps and returns this session's model-turn counter, for hook payloads.
@@ -71,7 +93,7 @@ func (t *turnState) Guarded(body func(ctx context.Context) error) {
 		t.mu.Unlock()
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := t.beginTurn()
 	t.cancel = cancel
 	t.running = true
 	t.mu.Unlock()
@@ -109,6 +131,9 @@ func (t *turnState) EndExclusive() {
 
 // Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
 // unblocks via the cancelled context.
+//
+// 接了 runtime scope 时,这里调用的是 Turn 的收尾 —— 取消与正常结束在 Turn 上是
+// 同一件事(释放这一轮的资源、取消这一轮的 context,且从不碰它的 session)。
 func (t *turnState) Cancel() {
 	t.mu.Lock()
 	cancel := t.cancel

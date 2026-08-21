@@ -646,6 +646,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 
 	ctrlOpts := control.Options{
+		// 会话作用域交给 Controller:每一轮在它下面开一个 runtime.Turn,于是
+		// 关闭会话会自然级联取消在途的那一轮(AR-R12),不再靠手工 Cancel。
+		Scope:         sess,
 		Engine:        turnEngine,
 		Executor:      executor,
 		Sink:          sink,

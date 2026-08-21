@@ -34,6 +34,7 @@ import (
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/runtime"
 	"reasonix/internal/session"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
@@ -125,6 +126,11 @@ type Options struct {
 	// 两个字段不是两个真源:New 在构造时就把它们收敛成唯一的 Controller.engine,
 	// Engine 优先。Runner 是「用内置 Go 内核」的简写,绝大多数调用方(和全部
 	// 既有测试)只需要它。
+	// Scope 是这个会话的 runtime.Session(Plan 03 的四级作用域里的第三级)。
+	// 传了它,每一轮就在它下面开一个 runtime.Turn:回合资源挂在 Turn 上,关闭会话
+	// 会自动取消在途的那一轮(AR-R12)。留空则退回 context.Background() 派生,
+	// 即接线之前的行为。
+	Scope        *runtime.Session
 	Engine       engine.TurnEngine
 	Runner       agent.Runner
 	Executor     *agent.Agent
@@ -203,7 +209,7 @@ func New(opts Options) *Controller {
 		reg:           opts.Registry,
 		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
 		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.WorkspaceRoot, engineNameOf(eng), opts.Executor),
-		turn:          newTurnState(sink, opts.Executor),
+		turn:          newTurnState(sink, opts.Executor, opts.Scope),
 		gateway:       opts.Gateway,
 		wsRoot:        opts.WorkspaceRoot,
 		ckpt:          newCheckpointService(opts.WorkspaceRoot),
