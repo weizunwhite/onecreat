@@ -91,7 +91,6 @@ type Registry struct {
 	// RPC surface still speaks in transcript paths, so this is the bridge from
 	// the old handle to the new identity.
 	byStore map[string]string
-	loaded  bool
 }
 
 // Open returns the registry for a session directory. Nothing is read until the
@@ -100,13 +99,21 @@ func Open(dir string) *Registry { return &Registry{dir: dir} }
 
 func (r *Registry) path() string { return filepath.Join(r.dir, IndexFile) }
 
-// load reads the index once, importing legacy sidecars if this is the first run
-// after the upgrade. Caller holds mu.
-func (r *Registry) load() {
-	if r.loaded {
-		return
-	}
-	r.loaded = true
+// sync re-reads the index from disk, importing legacy sidecars if this is the
+// first run after the upgrade. Caller holds mu.
+//
+// 它**每次操作前都读**,而不是读一次就缓存住。原因是一个进程里必然存在不止一个
+// Registry:desktop 的 sessionService 一个,每个标签的 control.sessionStore 又各有
+// 一个。save() 写的是**整份**内存快照,所以只要谁的快照是旧的,它那一次写回就会把
+// 别人新加的记录抹掉 —— 这不是竞态,是必然(TestSecondOwnerDoesNotClobberTheFirst)。
+//
+// 代价是每次操作多一次几 KB 的 ReadFile。这些操作都是用户触发的低频动作(新建会话、
+// 改标题、刷新历史面板),拿这点开销换掉一整类「会话记录莫名消失」,是划算的。
+//
+// 残留窗口(如实记下):两个 owner 的「读—改—写」仍可能交错,各自的 mu 管不到对方。
+// 窗口是微秒级、且要求两个低频用户动作恰好同时发生。彻底消除需要索引文件级的锁,或者
+// 让整个进程共用一个 Registry —— 后者是更对的形状,记在 §19.7,不在本 Plan 展开。
+func (r *Registry) sync() {
 	r.index = map[string]Record{}
 	r.byStore = map[string]string{}
 
@@ -177,7 +184,7 @@ func (r *Registry) Ensure(store, workspace, engine string) (Record, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.load()
+	r.sync()
 	if id, ok := r.byStore[storeKey(store)]; ok {
 		rec := r.index[id]
 		// A record imported from the legacy sidecars has no engine or store yet.
@@ -220,7 +227,7 @@ func newID(store string) string {
 func (r *Registry) ByStore(store string) (Record, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.load()
+	r.sync()
 	id, ok := r.byStore[storeKey(store)]
 	if !ok {
 		return Record{}, false
@@ -233,7 +240,7 @@ func (r *Registry) ByStore(store string) (Record, bool) {
 func (r *Registry) List() []Record {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.load()
+	r.sync()
 	out := make([]Record, 0, len(r.index))
 	for _, rec := range r.index {
 		out = append(out, rec)
@@ -250,7 +257,7 @@ func (r *Registry) update(store string, fn func(*Record)) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.load()
+	r.sync()
 	id, ok := r.byStore[storeKey(store)]
 	if !ok {
 		return nil
@@ -315,7 +322,7 @@ func (r *Registry) Touch(store string) error { return r.update(store, func(*Reco
 func (r *Registry) Forget(store string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.load()
+	r.sync()
 	key := storeKey(store)
 	id, ok := r.byStore[key]
 	if !ok {
