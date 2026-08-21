@@ -4,18 +4,23 @@ on:
   push:
     branches: [main-v2]
   pull_request:
-    # main-v2 plus the stacked working branches. The refactor roadmap
-    # (docs/架构重构执行总计划.md) lands one Plan per PR, and a Plan whose
-    # predecessor has not merged yet stacks on that predecessor's branch — so its
-    # base is a refactor/* branch, not main-v2. Without this pattern those PRs get
-    # no matrix at all and each Plan's cross-platform acceptance would be unverifiable.
+    # **有意不加 `branches:` 过滤。**
     #
-    # fix/** was added after the 2026-08-21 review: the remediation PRs stack the
-    # same way, and their bases are fix/* branches. Without it, PRs #16–#21 got
-    # only the `label` job — the exact hole Plan 01 closed for refactor/**, dug
-    # again by a different branch prefix. Noticed only because PR #21's checks
-    # showed one job instead of five.
-    branches: [main-v2, "refactor/**", "fix/**"]
+    # 这里原来按 base 分支过滤,而这个过滤器已经**两次**静默吞掉整条矩阵:
+    #
+    #   1. 名单只有 [main-v2] 时,栈式 refactor/* PR 一个 job 都不跑 —— Plan 01 补了
+    #      "refactor/**";
+    #   2. 名单是 [main-v2, refactor/**, fix/**] 时,base 为 `test/*` 或 `docs/*` 的
+    #      PR 又只跑 `label`。2026-08-21 的整改栈里 #25 / #28 / #32 三个 PR 因此从头到尾
+    #      **没有被矩阵跑过一次**,而它们的 checks 看起来是有的。
+    #
+    # 两次都不是过滤器写错,是"每加一个分支前缀就要记得回来改一行"这件事本身不成立 ——
+    # 而它失败的方式恰恰最坏:**不是红,是看起来什么都没发生**。红 CI 会被人追问,
+    # 缺席的 CI 不会。
+    #
+    # 所以这次不加第三个前缀,直接去掉过滤器:任何 PR 都跑完整矩阵。代价是几分钟的
+    # runner 时间,换掉一整类"以为验证过其实没有"。要重新收紧,必须先想清楚怎么让
+    # 遗漏是**可见**的。
   # 手动重跑入口。2026-08-20 的 runner 分配故障(见 docs/架构重构执行总计划.md
   # §19.5)暴露了一个真实缺口:整个 matrix 因基础设施原因全红时,没有 rerun 权限
   # 的一方只能靠推提交来换一次新 run —— 而「为撞 CI 推空提交」是本项目的红线。
