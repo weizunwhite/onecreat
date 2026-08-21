@@ -3,7 +3,9 @@ package session
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -138,5 +140,69 @@ func TestLockFileIsNotMistakenForASession(t *testing.T) {
 		if filepath.Base(rec.Store) == lockFile {
 			t.Fatal("锁文件被登记成了会话")
 		}
+	}
+}
+
+// —— 跨进程:锁的**真正**目标 ——
+//
+// 上面几条用的是同一个进程里的两个 Registry 实例。复核明确要求「至少一个测试使用两个
+// 进程或可控 barrier 复现交错」—— 这不是吹毛求疵:进程内的两个实例即便没有文件锁,也
+// 常常因为调度而侥幸不撞;而 Desktop + CLI 同时开着才是这个 bug 最常发生的场景,那条
+// 路径上唯一的保护就是 lockfile。没有跨进程用例,等于这把锁的主要用途从未被验证过。
+//
+// 做法:把测试二进制自己当成第二个进程(经环境变量分派),让它对同一个索引目录写入。
+
+const (
+	childEnvDir   = "REASONIX_TEST_REGISTRY_DIR"
+	childEnvCount = "REASONIX_TEST_REGISTRY_N"
+	childEnvTag   = "REASONIX_TEST_REGISTRY_TAG"
+)
+
+// TestMain 让这个包的测试二进制可以被当作「写索引的子进程」复用。
+func TestMain(m *testing.M) {
+	if dir := os.Getenv(childEnvDir); dir != "" {
+		n, _ := strconv.Atoi(os.Getenv(childEnvCount))
+		tag := os.Getenv(childEnvTag)
+		r := Open(dir)
+		for i := 0; i < n; i++ {
+			if _, err := r.Ensure(filepath.Join(dir, fmt.Sprintf("%s%02d.jsonl", tag, i)), dir, "native"); err != nil {
+				fmt.Fprintln(os.Stderr, "child:", err)
+				os.Exit(1)
+			}
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func TestTwoProcessesDoNotLoseEachOthersRecords(t *testing.T) {
+	dir := t.TempDir()
+	const n = 30
+
+	start := func(tag string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append(os.Environ(),
+			childEnvDir+"="+dir,
+			childEnvCount+"="+strconv.Itoa(n),
+			childEnvTag+"="+tag,
+		)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("拉起子进程 %s: %v", tag, err)
+		}
+		return cmd
+	}
+
+	a, b := start("p"), start("q")
+	for _, c := range []*exec.Cmd{a, b} {
+		if err := c.Wait(); err != nil {
+			t.Fatalf("子进程失败: %v", err)
+		}
+	}
+
+	got := Open(dir).List()
+	if len(got) != 2*n {
+		t.Fatalf("两个**进程**各写 %d 条,磁盘上应有 %d 条,拿到 %d —— 跨进程写回互相覆盖了",
+			n, 2*n, len(got))
 	}
 }
