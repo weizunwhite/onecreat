@@ -212,3 +212,39 @@ func TestEmbeddedUIBuffersFramesWhileResyncing(t *testing.T) {
 		t.Error("turn_done 的处理出现了不止一处 —— 实时帧与重放必须共用 applyEvent")
 	}
 }
+
+// AR-R02 的验收有三句,这是第三句的后半:
+//
+//	「HTTP 返回明确 409/422;**Desktop/CLI 禁用并显示原因**;后端校验不能依赖 UI。」
+//
+// 后端已经按 422/409 拒绝了,`/snapshot` 也带上了 `capabilities`。但只到这一步的话,
+// 用户仍然会看到一个可点的 "New Session",点下去撞一个 422,而错误只出现在响应体里 ——
+// 界面没有任何变化。这不是"体验不够好":用户会以为自己点错了,反复再点。
+//
+// 所以入口要**禁用并说明原因**。同时必须说清另一半:UI **不是**那道门 —— 后端的
+// requireCap 在改任何状态之前独立校验,把这里全部注释掉也不会放行任何操作。
+func TestEmbeddedUIDisablesUnsupportedEntries(t *testing.T) {
+	ui := string(indexHTML)
+	for _, want := range []string{
+		"s.capabilities",    // 从权威快照读能力,而不是自己猜
+		"applyCapabilities", // 一处集中处理,不是四个按钮各写一遍
+		"aria-disabled",     // 真的禁用,不只是变灰
+		"is-unsupported",    // 视觉状态
+		"title=",            // 说明原因 —— 光禁用等于"莫名其妙点不动"
+	} {
+		if !strings.Contains(ui, want) {
+			t.Errorf("内置 UI 少了 %q —— 做不到的入口仍然可点,用户只能靠撞 422 才知道", want)
+		}
+	}
+	// 四个依赖能力的入口都要挂上:漏一个就是那一个仍然可点。
+	for _, id := range []string{"btn-new", "btn-compact", "btn-rewind", "btn-tree"} {
+		if !strings.Contains(ui, "'"+id+"'") {
+			t.Errorf("能力映射里没有 %s", id)
+		}
+	}
+	// 后端才是门。UI 里不得出现"因为禁用了所以不用校验"这类假设 —— 这条靠的是
+	// serve 侧的 422 用例,这里只确认能力表的来源是快照(服务端),不是本地推断。
+	if strings.Contains(ui, "capabilities={") && !strings.Contains(ui, "s.capabilities") {
+		t.Error("能力表是前端自己编的,不是服务端给的")
+	}
+}

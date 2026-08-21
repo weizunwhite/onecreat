@@ -53,6 +53,9 @@ input,textarea{font:inherit;color:inherit}
 .sidebar__item:hover{background:var(--panel);color:var(--fg)}
 .sidebar__item--active{background:var(--accent-soft);color:var(--accent)}
 .sidebar__item--accent{background:var(--accent);color:oklch(99% 0 0);font-weight:500;box-shadow:var(--shadow-sm)}
+/* 引擎做不到的入口:变灰、不可点、光标示意。真正的拒绝在后端(见 applyCapabilities)。 */
+.sidebar__item.is-unsupported{opacity:.4;cursor:not-allowed;pointer-events:auto}
+.sidebar__item.is-unsupported:hover{background:transparent}
 .sidebar__item--accent:hover{background:var(--accent-strong);color:oklch(99% 0 0)}
 .sidebar__item svg{width:15px;height:15px;flex-shrink:0;opacity:.7}
 .sidebar__item--active svg,.sidebar__item--accent svg{opacity:1}
@@ -603,6 +606,41 @@ function renderHistory(ms){
 // 取快照期间到达的帧必须**缓冲**,不能边收边渲染:renderHistory 紧接着会清空整个
 // log,那些帧于是被画出来又被抹掉,而快照里并没有它们(它是更早的一份)——丢的可能
 // 正是那条 turn_done,界面就永远转圈。缓冲之后按序号重放,快照已含的丢弃。
+// 依赖引擎能力的入口:哪个按钮需要哪条能力,以及做不到时该怎么解释。
+// 一处集中,不在四个按钮上各写一遍 —— 那种写法加第五个入口时必然漏掉。
+const CAP_GATED=[
+  {id:'btn-new',     cap:'resume', what:'新建会话'},
+  {id:'btn-compact', cap:'resume', what:'压缩上下文'},
+  {id:'btn-rewind',  cap:'fork',   what:'回退会话'},
+  {id:'btn-tree',    cap:'fork',   what:'查看分支'},
+];
+
+// applyCapabilities 按服务端给的能力表禁用做不到的入口**并说明原因**。
+//
+// 只到「后端回 422」是不够的:用户看到一个可点的按钮,点下去界面毫无变化(错误只在
+// 响应体里),于是以为自己点错了,反复再点。
+//
+// 说清另一半:**这不是那道门。** 后端的 requireCap 在改任何状态之前独立校验,把这里
+// 全部删掉也放行不了任何操作 —— UI 从来不是安全边界(复核 AR-R02)。这里做的只是
+// 「别让用户白点」。
+function applyCapabilities(caps,engineName){
+  if(!caps)return;
+  CAP_GATED.forEach(g=>{
+    const el=$('#'+g.id); if(!el)return;
+    const ok=caps[g.cap]!==false;
+    el.classList.toggle('is-unsupported',!ok);
+    el.setAttribute('aria-disabled',ok?'false':'true');
+    if(ok)el.removeAttribute('title');
+    else el.setAttribute('title','当前引擎('+(engineName||'?')+')不支持'+g.what+'(缺少能力 '+g.cap+')');
+  });
+}
+
+// gatedIsBlocked 在点击时再挡一道,免得只靠 CSS 的 pointer-events。
+function gatedIsBlocked(id){
+  const el=$('#'+id);
+  return !!el&&el.getAttribute('aria-disabled')==='true';
+}
+
 function resync(reason){
   if(resyncing)return; resyncing=true; resyncBuf=[]; resyncBufFull=false;
   return fetch('/snapshot').then(r=>r.json()).then(s=>{
@@ -610,6 +648,7 @@ function resync(reason){
     renderHistory(s.history);
     setRunning(!!s.running);
     planMode=!!s.plan; updateModeButtons();
+    applyCapabilities(s.capabilities,s.engine);
     // 待办的审批 / 提问要重新显示出来 —— 它们正是最不能丢的那一类。
     (s.pendingApprovals||[]).forEach(a=>showApproval(a));
     (s.pendingAsks||[]).forEach(a=>showAsk(a));
@@ -768,10 +807,10 @@ btnStop.onclick=()=>post('/cancel');
 $('#btn-auto').onclick=()=>setMode('auto');
 $('#btn-plan').onclick=()=>setPlan(!planMode);
 $('#btn-bypass').onclick=()=>setBypass(!bypassMode);
-$('#btn-new').onclick=()=>{if(running)return;post('/new').then(()=>{log.innerHTML='';log.appendChild(welcome);welcome.style.display='';loadSessions();});};
-$('#btn-compact').onclick=()=>{if(!running)post('/compact');};
-$('#btn-rewind').onclick=()=>openRewindPicker();
-$('#btn-tree').onclick=()=>{post('/submit',{input:'/tree'});};
+$('#btn-new').onclick=()=>{if(running||gatedIsBlocked('btn-new'))return;post('/new').then(()=>{log.innerHTML='';log.appendChild(welcome);welcome.style.display='';loadSessions();});};
+$('#btn-compact').onclick=()=>{if(!running&&!gatedIsBlocked('btn-compact'))post('/compact');};
+$('#btn-rewind').onclick=()=>{if(!gatedIsBlocked('btn-rewind'))openRewindPicker();};
+$('#btn-tree').onclick=()=>{if(!gatedIsBlocked('btn-tree'))post('/submit',{input:'/tree'});};
 
 // welcome examples
 $$('.welcome__ex').forEach(btn=>{btn.onclick=()=>{input.value=btn.dataset.prompt;send();};});
