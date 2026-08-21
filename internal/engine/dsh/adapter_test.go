@@ -3,6 +3,7 @@ package dsh
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,5 +119,87 @@ func TestSupersededTurnIsReleased(t *testing.T) {
 	case <-old.done:
 	case <-time.After(time.Second):
 		t.Fatal("被取代的一轮应立刻结束,不能让等它的人永远挂住")
+	}
+}
+
+// —— AR-R04:取消之后,这个 sidecar 就是死的,必须说出来 ——
+
+// 之前:Cancel 杀掉子进程,但 Engine.started 已置位、无法重新 Boot,适配器却照旧
+// 接受下一轮并写进那个死掉的 LineClient —— 请求石沉大海,UI 还显示就绪。
+func TestTurnAfterCancelIsRefusedNotSilentlyHung(t *testing.T) {
+	a := newIdleAdapter(t)
+	tn := &turn{inner: a.inner, done: make(chan struct{})}
+	a.cur = tn
+	if err := tn.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	if dead, _ := a.inner.Dead(); !dead {
+		t.Fatal("取消一轮杀掉了进程,引擎必须被标记为终结")
+	}
+	h, err := a.Start(context.Background(), engine.TurnRequest{Input: "下一句"})
+	if err == nil {
+		t.Fatal("终结之后不该再接受新一轮 —— 那会写进一个死掉的连接然后静默挂住")
+	}
+	if h != nil {
+		t.Error("拒绝时不该返回句柄")
+	}
+	if !strings.Contains(err.Error(), "无法继续") {
+		t.Errorf("错误应说明该会话无法继续,拿到:%v", err)
+	}
+}
+
+// sidecar 自己死掉(不是我们杀的)也走同一条路。
+func TestSidecarDeathIsTerminalToo(t *testing.T) {
+	a := newIdleAdapter(t)
+	a.inner.markDead(errors.New("boom"))
+	if _, err := a.Start(context.Background(), engine.TurnRequest{}); err == nil {
+		t.Fatal("sidecar 已退出时不该接受新一轮")
+	}
+	if _, err := a.inner.Submit(context.Background(), "s", "hi"); err == nil {
+		t.Fatal("Submit 也必须拒绝,而不是写进死连接")
+	}
+}
+
+// 终结原因只记第一个:先被取消、随后读循环报 EOF,用户该看到的是"你取消了",
+// 不是"sidecar 莫名退出"。
+func TestTerminalCauseIsStable(t *testing.T) {
+	a := newIdleAdapter(t)
+	a.inner.markDead(errors.New("第一个原因"))
+	a.inner.markDead(errors.New("第二个原因"))
+	_, cause := a.inner.Dead()
+	if !strings.Contains(cause.Error(), "第一个") {
+		t.Fatalf("应保留最早的终结原因,拿到:%v", cause)
+	}
+}
+
+// —— AR-R06:子进程只拿到白名单里的环境变量 ——
+
+// 之前 childEnv 从 os.Environ() 起步,把本进程的全部秘密交给一个第三方子进程:
+// 其它 provider 的 key、项目 .env、CI 注入的凭据。dsh 一个都用不上。
+func TestChildEnvDoesNotLeakHostSecrets(t *testing.T) {
+	t.Setenv("SOME_OTHER_PROVIDER_API_KEY", "sk-should-not-leak")
+	t.Setenv("ONECREAT_GATEWAY_TOKEN", "gw-should-not-leak")
+	t.Setenv("PATH", "/usr/bin")
+
+	e, err := New(Options{
+		Cfg:          config.DSHConfig{BinPath: "x", GatewayBaseURL: "https://gw.invalid"},
+		CWD:          t.TempDir(),
+		GatewayToken: "the-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := e.childEnv()
+	joined := strings.Join(env, "\n")
+	for _, leak := range []string{"sk-should-not-leak", "gw-should-not-leak"} {
+		if strings.Contains(joined, leak) {
+			t.Errorf("宿主秘密泄漏进 sidecar 环境:%q", leak)
+		}
+	}
+	// 它真正需要的那些必须还在。
+	for _, want := range []string{"PATH=/usr/bin", "DEEPSEEK_API_KEY=the-token", "DEEPSEEK_BASE_URL=https://gw.invalid"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("sidecar 缺少必要的环境项 %q", want)
+		}
 	}
 }

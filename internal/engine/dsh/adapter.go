@@ -22,10 +22,22 @@ import (
 //
 //   - approval:dsh 在自己的进程里跑自己的工具,OneCreat 的权限门够不着它;
 //   - resume / fork:会话日志在 dsh 那边,OneCreat 侧的消息日志不是它的真源,
-//     照着本地日志 rewind / branch 只会让两边悄悄对不上。
+//     照着本地日志 rewind / branch 只会让两边悄悄对不上;
+//   - hosted-tools:**这一条是安全边界,不是功能多寡。** dsh 在自己的进程里跑自己的
+//     工具,等它把 tool/call 推过来时,文件已经写完、shell 已经跑过了 —— 权限门、
+//     plan mode 只读门、PreToolUse hook、写前检查点、证据链全都够不着。事后看一眼
+//     不叫门禁。装配根据此 fail-closed(见 boot.selectEngine),在 dsh 协议支持把工具
+//     调用委托回 OneCreat 执行之前,这个引擎不允许被启用。
 //
 // 与其假装支持然后静默走样,不如在这里说实话,让上层能拒绝。
 var caps = engine.Set{engine.CapStreaming: true}
+
+// Name 是 dsh 引擎在配置与会话记录里的名字。
+const Name = "dsh"
+
+// Capabilities 返回 dsh 引擎的能力集合,不需要先构造适配器。装配根用它做
+// fail-closed 判断 —— 复用同一份声明,不另写一套。
+func Capabilities() engine.Set { return caps }
 
 // AdapterOptions 配置一个 dsh 引擎适配器。
 type AdapterOptions struct {
@@ -83,6 +95,9 @@ func (a *Adapter) Boot(ctx context.Context) error { return a.inner.Start(ctx) }
 // Shutdown 关闭 sidecar(装配方把它挂在会话作用域上)。
 func (a *Adapter) Shutdown(ctx context.Context) error { return a.inner.Shutdown(ctx) }
 
+// EngineName 实现 engine.Named。
+func (a *Adapter) EngineName() string { return Name }
+
 // Supports 声明能力。
 func (a *Adapter) Supports(c engine.Capability) bool { return caps.Supports(c) }
 
@@ -91,6 +106,12 @@ func (a *Adapter) Capabilities() engine.Set { return caps }
 
 // Start 把这一轮的文本入队给 dsh,立刻返回句柄。
 func (a *Adapter) Start(ctx context.Context, req engine.TurnRequest) (engine.TurnHandle, error) {
+	// 终结过的 sidecar 不能再开新一轮 —— dsh 没有 mid-turn 取消,取消就是杀进程,
+	// 而这条 stdio 连接承载的会话随之消失。这里明确拒绝,而不是让下一轮写进一个
+	// 死掉的 LineClient 然后静默挂住(AR-R04)。调用方应当重建这个会话。
+	if dead, cause := a.inner.Dead(); dead {
+		return nil, cause
+	}
 	t := &turn{inner: a.inner, done: make(chan struct{})}
 	a.mu.Lock()
 	prev := a.cur
@@ -170,7 +191,10 @@ func (t *turn) Wait(ctx context.Context) error {
 	case <-t.done:
 		return t.err
 	case err := <-t.inner.Died():
-		t.finish(fmt.Errorf("dsh 引擎:sidecar 中途退出: %w", err))
+		// 读循环终止 = 子进程没了。标记终结,后续的 Start 会明确拒绝而不是挂住。
+		died := fmt.Errorf("dsh 引擎:sidecar 中途退出: %w", err)
+		t.inner.markDead(died)
+		t.finish(died)
 		<-t.done
 		return t.err
 	case <-ctx.Done():

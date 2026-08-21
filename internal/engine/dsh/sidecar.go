@@ -18,6 +18,9 @@ import (
 // defaultStartupTimeout 是等 initialize 握手完成的默认超时。
 const defaultStartupTimeout = 30 * time.Second
 
+// errKilled 是"这个 sidecar 是被我们主动杀掉的"的终结原因。
+var errKilled = errors.New("dsh 引擎:sidecar 已被终止(取消一轮只能杀进程,该会话无法继续)")
+
 // Options 配置一个 dsh sidecar 引擎实例。
 type Options struct {
 	// Cfg 是 [dsh] 配置段(bin_path/args/gateway 等)。
@@ -49,6 +52,11 @@ type Engine struct {
 	mu      sync.Mutex
 	running bool
 	started bool
+	// dead 一旦置起就不再放下:sidecar 已经死了(被取消杀掉,或自己退出)。
+	// 这个进程再也不会响应 —— 继续往旧的 LineClient 写请求,只会让下一轮静默
+	// 挂住,而 UI 还显示一切正常。见 AR-R04。
+	dead   bool
+	deadBy error
 }
 
 // New 构造引擎(尚未拉起进程)。BinPath 为空则报错。
@@ -137,9 +145,31 @@ func (e *Engine) modelPlaceholder() string {
 	return "onecreat"
 }
 
-// childEnv 组装子进程环境:注入网关 base URL + token(从环境,不落盘)。
+// inheritedEnvVars 是 sidecar 允许从宿主进程继承的变量白名单。
+//
+// 之前这里是 `os.Environ()` —— 把本进程的**全部**秘密交给一个第三方子进程:其它
+// provider 的 API key、项目 .env 里的东西、CI/宿主注入的凭据。dsh 一个都用不上。
+// 白名单只留它真正需要的:找得到自己的运行时、解析得了 DNS、写得进临时目录。
+var inheritedEnvVars = []string{
+	"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ",
+	"TMPDIR", "TEMP", "TMP",
+	// Windows 上没有这些就连子进程都拉不起来。
+	"SystemRoot", "SystemDrive", "windir", "COMSPEC", "PATHEXT",
+	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData", "ProgramFiles",
+	"NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+	// 代理设置:没有它们,受限网络里的 sidecar 直接连不上网关。
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "no_proxy",
+}
+
+// childEnv 组装子进程环境:白名单继承 + 注入网关 base URL / token(从不落盘)。
 func (e *Engine) childEnv() []string {
-	env := os.Environ()
+	var env []string
+	for _, k := range inheritedEnvVars {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
 	if e.opts.Cfg.GatewayBaseURL != "" {
 		env = append(env, "DEEPSEEK_BASE_URL="+e.opts.Cfg.GatewayBaseURL)
 	}
@@ -155,6 +185,10 @@ func (e *Engine) childEnv() []string {
 
 // Submit 把一段文本作为 user message 入队到指定会话,返回 dsh 的 messageId。
 func (e *Engine) Submit(ctx context.Context, sessionID, text string) (string, error) {
+	if dead, cause := e.Dead(); dead {
+		// 绝不往一个死掉的 LineClient 写:那会让这一轮静默挂住,而 UI 还显示就绪。
+		return "", cause
+	}
 	if e.rpc == nil {
 		return "", errors.New("dsh 引擎:未启动")
 	}
@@ -203,8 +237,27 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	return e.Kill()
 }
 
-// Kill 强制结束子进程(幂等)。
+// markDead 记下"这个 sidecar 不能再用了"(只记第一个原因)。
+func (e *Engine) markDead(cause error) {
+	e.mu.Lock()
+	if !e.dead {
+		e.dead, e.deadBy = true, cause
+	}
+	e.running = false
+	e.mu.Unlock()
+}
+
+// Dead 报告 sidecar 是否已经终结,并给出原因。终结是**不可逆**的:dsh 没有
+// mid-turn 取消,取消只能杀进程,而杀掉之后这条 stdio 连接和它承载的会话就没了。
+func (e *Engine) Dead() (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.dead, e.deadBy
+}
+
+// Kill 强制结束子进程(幂等),并把引擎标记为终结。
 func (e *Engine) Kill() error {
+	e.markDead(errKilled)
 	e.mu.Lock()
 	cmd := e.cmd
 	e.mu.Unlock()

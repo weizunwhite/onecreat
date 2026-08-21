@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/engine"
 )
 
 // ParseBranchTarget parses the arguments after "/branch". A leading positive
@@ -191,6 +192,9 @@ func (c *Controller) Fork(turn int) (string, error) {
 }
 
 func (c *Controller) ForkNamed(turn int, name string) (string, error) {
+	if err := c.requireCap("分叉会话", engine.CapFork); err != nil {
+		return "", c.rewindFail(err)
+	}
 	if c.executor == nil {
 		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
@@ -244,6 +248,9 @@ func (c *Controller) ForkNamed(turn int, name string) (string, error) {
 // Branch copies the current conversation into a child branch and switches to it.
 // Unlike Fork, it branches at the current tip and does not require a checkpoint.
 func (c *Controller) Branch(name string) (string, error) {
+	if err := c.requireCap("新建分支", engine.CapFork); err != nil {
+		return "", c.rewindFail(err)
+	}
 	if c.executor == nil {
 		return "", c.rewindFail(fmt.Errorf("branch unavailable"))
 	}
@@ -299,6 +306,9 @@ func (c *Controller) Branches() ([]agent.BranchInfo, error) {
 }
 
 func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
+	if err := c.requireCap("切换分支", engine.CapFork); err != nil {
+		return agent.BranchInfo{}, c.rewindFail(err)
+	}
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("usage: /switch <branch id|name>"))

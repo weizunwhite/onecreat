@@ -179,8 +179,11 @@ func New(opts Options) *Controller {
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
 	}
+	// 引擎只解析一次:它同时决定"谁来跑这一轮"和"这条会话记在哪个引擎名下",
+	// 解析两次就会造出两个不同的实例,也就是两个真源。
+	eng := resolveEngine(opts)
 	c := &Controller{
-		engine:        resolveEngine(opts),
+		engine:        eng,
 		executor:      opts.Executor,
 		sink:          sink,
 		approvals:     newApprovalBroker(sink, opts.Policy, opts.Hooks),
@@ -199,7 +202,7 @@ func New(opts Options) *Controller {
 		jobs:          opts.Jobs,
 		reg:           opts.Registry,
 		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
-		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.WorkspaceRoot, opts.Executor),
+		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.WorkspaceRoot, engineNameOf(eng), opts.Executor),
 		turn:          newTurnState(sink, opts.Executor),
 		gateway:       opts.Gateway,
 		wsRoot:        opts.WorkspaceRoot,
@@ -344,6 +347,15 @@ func resolveEngine(opts Options) engine.TurnEngine {
 	return nil
 }
 
+// engineNameOf 返回引擎名;没有引擎时(部分测试路径)按内置内核记账,与本次改动
+// 之前的行为一致 —— 这个函数只负责别把 dsh 记成 native,不负责新增失败模式。
+func engineNameOf(e engine.TurnEngine) string {
+	if e == nil {
+		return session.EngineNative
+	}
+	return engine.NameOf(e)
+}
+
 // runEngineTurn 把一轮交给引擎并等它跑完。这是 Controller 与「谁来跑」之间的
 // **唯一**接触点 —— 上面那些策略代码永远不该知道底下是 native 还是 dsh。
 func (c *Controller) runEngineTurn(ctx context.Context, input string) error {
@@ -373,6 +385,11 @@ func (c *Controller) EnableInteractiveApproval() {
 // Compact runs one compaction pass on the executor's session on demand.
 // instructions is optional `/compact <focus>` guidance steering what to keep.
 func (c *Controller) Compact(ctx context.Context, instructions string) error {
+	// 压缩重写的是 OneCreat 这边的消息日志。日志不在这边的引擎,压它没有意义,
+	// 而且会让本地影子与引擎真实上下文进一步分叉。
+	if err := c.requireCap("压缩上下文", engine.CapResume); err != nil {
+		return err
+	}
 	if c.executor == nil {
 		return nil
 	}
@@ -407,6 +424,9 @@ func (c *Controller) maybeSessionStart(ctx context.Context) {
 // resets the executor to a clean session carrying the same system prompt. It
 // ends the old session and starts the new one for lifecycle hooks.
 func (c *Controller) NewSession() error {
+	if err := c.requireCap("新建会话", engine.CapResume); err != nil {
+		return err
+	}
 	if c.executor == nil {
 		return nil
 	}
@@ -454,6 +474,9 @@ func (c *Controller) rewindFail(err error) error {
 // unavailable for turns inherited from a resumed session (code rewind still works).
 // Frontends re-render their transcript from History after the call.
 func (c *Controller) Rewind(turn int, scope RewindScope) error {
+	if err := c.requireCap("回退会话", engine.CapFork); err != nil {
+		return c.rewindFail(err)
+	}
 	if !c.ckpt.Available() || c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
@@ -759,6 +782,11 @@ func (c *Controller) Memory() *memory.Set { return c.memory.Set() }
 // Resume seeds the session from a loaded transcript and pins the active file to
 // its path so auto-save keeps appending there.
 func (c *Controller) Resume(s *agent.Session, path string) {
+	// 没有返回值可用,所以把拒绝显式说出来 —— 静默不做事正是本次要消灭的形态。
+	if err := c.requireCap("恢复历史会话", engine.CapResume); err != nil {
+		c.noticeUnsupported(err)
+		return
+	}
 	c.session.Adopt(s, path)
 	c.ckpt.Rebind(path)
 }

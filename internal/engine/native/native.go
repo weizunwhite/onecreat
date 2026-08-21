@@ -20,7 +20,13 @@ var caps = engine.Set{
 	engine.CapApproval:  true,
 	engine.CapResume:    true,
 	engine.CapFork:      true,
+	// 工具就在这个进程里、由 agent.Agent 经 toolpolicy 流水线执行 —— 权限门、
+	// plan mode、hook、写前检查点、证据链一条都不少。
+	engine.CapHostedTools: true,
 }
+
+// Name 是内置引擎在配置与会话记录里的名字。
+const Name = "native"
 
 // Engine 是内置内核的 TurnEngine 适配器。
 type Engine struct {
@@ -29,6 +35,9 @@ type Engine struct {
 
 // New 包一个 runner(executor 或 coordinator)成 TurnEngine。
 func New(r agent.Runner) *Engine { return &Engine{runner: r} }
+
+// EngineName 实现 engine.Named。
+func (e *Engine) EngineName() string { return Name }
 
 // Supports 声明内置内核的能力。
 func (e *Engine) Supports(c engine.Capability) bool { return caps.Supports(c) }

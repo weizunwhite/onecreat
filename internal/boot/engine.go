@@ -36,6 +36,16 @@ type engineSpec struct {
 	Scope *runtime.Session
 }
 
+// dshProbe 让 fail-closed 检查复用 dsh 适配器**真实的**能力声明,而不是在这里
+// 另写一份判断 —— 那就成了第二个真源,dsh 哪天真支持了,这里会忘记放行。
+type dshProbe struct{}
+
+func (dshProbe) Start(context.Context, engine.TurnRequest) (engine.TurnHandle, error) {
+	return nil, nil
+}
+func (dshProbe) EngineName() string                { return dsh.Name }
+func (dshProbe) Supports(c engine.Capability) bool { return dsh.Capabilities().Supports(c) }
+
 // selectEngine 按 cfg.Engine 装配回合引擎。
 //
 // 配置错误一律在**装配期**炸出来,不留到用户敲下第一句话:未知的引擎名是错误,
@@ -47,6 +57,23 @@ func selectEngine(ctx context.Context, spec engineSpec) (engine.TurnEngine, erro
 		return native.New(spec.Runner), nil
 
 	case "dsh":
+		// fail-closed(AR-R01)。dsh 在自己的进程里跑自己的工具:等它把 tool/call
+		// 推过来时,文件已经写完、shell 已经跑过了。也就是说这条路径上
+		// **权限门、plan mode 只读门、PreToolUse hook、写前检查点、证据链全部落空**
+		// —— 事后看一眼不叫门禁。
+		//
+		// 这不是"少一个功能"可以在 UI 上标一下就算了的事,是安全与产品诚实性问题:
+		// 用户以为 OneCreat 在替他把关,实际上没有。所以在 dsh 协议能把工具调用委托
+		// 回 OneCreat 执行(即引擎能声明 CapHostedTools)之前,装配直接失败。
+		//
+		// 有意**不**提供 "developer preview" 之类的开关绕过它 —— 一个能被一行配置
+		// 关掉的安全门,等于没有门。
+		if err := engine.Require(dshProbe{}, "执行工具调用", engine.CapHostedTools); err != nil {
+			return nil, fmt.Errorf("engine = \"dsh\" 暂不可用:%w\n"+
+				"  dsh 的工具跑在它自己的进程里,OneCreat 的权限门 / plan mode / PreToolUse hook /\n"+
+				"  写前检查点 / 证据链都够不着它。在 dsh 协议支持把工具调用委托回 OneCreat 执行\n"+
+				"  之前,启用它等于悄悄关掉这些保护。请改回 engine = \"native\"。", err)
+		}
 		var token string
 		if spec.Gateway != nil {
 			// 网关 token 只能问 account.Gateway 要 —— 直接读环境变量会撞穿

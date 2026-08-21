@@ -38,13 +38,20 @@ type sessionStore struct {
 	workspace string
 	// registry owns session identity and metadata; nil when persistence is off.
 	registry *session.Registry
+	// engineName 是这条会话**实际**由哪个引擎跑的。之前这里硬编码 session.EngineNative
+	// —— 于是一条 dsh 会话会被登记成 native,而它的 transcript 根本不在这个文件里
+	// (AR-R03)。引擎名必须来自装配根的真实选择,不能从 *agent.Agent 猜。
+	engineName string
 
 	mu   sync.Mutex
 	path string
 }
 
-func newSessionStore(dir, path, workspace string, exec *agent.Agent) *sessionStore {
-	s := &sessionStore{dir: dir, path: path, workspace: workspace, exec: exec}
+func newSessionStore(dir, path, workspace, engineName string, exec *agent.Agent) *sessionStore {
+	if engineName == "" {
+		engineName = session.EngineNative
+	}
+	s := &sessionStore{dir: dir, path: path, workspace: workspace, engineName: engineName, exec: exec}
 	if dir != "" {
 		s.registry = session.Open(dir)
 	}
@@ -58,7 +65,7 @@ func (s *sessionStore) register(path string) {
 	if s.registry == nil || path == "" {
 		return
 	}
-	if _, err := s.registry.Ensure(path, s.workspace, session.EngineNative); err != nil {
+	if _, err := s.registry.Ensure(path, s.workspace, s.engineName); err != nil {
 		slog.Warn("control: register session", "path", path, "err", err)
 	}
 }

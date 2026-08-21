@@ -69,7 +69,59 @@ const (
 	CapResume Capability = "resume"
 	// CapFork:可以从历史某一点分叉出一条新会话(rewind / branch 依赖它)。
 	CapFork Capability = "fork"
+	// CapHostedTools:工具由 **OneCreat 这一侧**执行,因此每一次调用都真的经过
+	// `internal/toolpolicy` 那条流水线 —— 权限门、plan mode 只读门、PreToolUse
+	// hook、写前检查点、证据链。
+	//
+	// 这不是"少一个功能",是安全边界。一个自己在别的进程里跑工具的引擎(dsh 就是)
+	// 拿不到这一条:它的 `tool/call` 事件推到 OneCreat 时,文件已经写完、shell 已经
+	// 跑过了,事后再看一眼不叫门禁。装配根必须据此 fail-closed,见
+	// `boot.selectEngine`。
+	CapHostedTools Capability = "hosted-tools"
 )
+
+// UnsupportedError 是"这个引擎干不了这件事"的类型化错误。
+//
+// 它必须在**任何状态被修改之前**返回 —— 半路失败会留下 native 影子状态被改过、
+// 而引擎那边一无所知的局面,那正是最难查的一类 bug。
+type UnsupportedError struct {
+	Engine     string     // 引擎名,给人看
+	Capability Capability // 缺哪个能力
+	Operation  string     // 用户想做的那件事,如 "fork"
+}
+
+func (e *UnsupportedError) Error() string {
+	return "引擎 " + e.Engine + " 不支持 " + e.Operation +
+		"(缺少能力 " + string(e.Capability) + ")"
+}
+
+// Unsupported 构造一个 UnsupportedError。
+func Unsupported(engineName, operation string, c Capability) error {
+	return &UnsupportedError{Engine: engineName, Capability: c, Operation: operation}
+}
+
+// Named 是可选接口:引擎自报名字,用于错误信息与会话记录里的 engine 字段。
+// 不实现则按 "unknown" 处理。
+type Named interface {
+	EngineName() string
+}
+
+// NameOf 返回引擎的名字。
+func NameOf(e TurnEngine) string {
+	if n, ok := e.(Named); ok {
+		return n.EngineName()
+	}
+	return "unknown"
+}
+
+// Require 在 e 不支持 c 时返回 UnsupportedError,否则返回 nil。调用方应当在做**任何**
+// 修改之前调用它。
+func Require(e TurnEngine, operation string, c Capability) error {
+	if Supports(e, c) {
+		return nil
+	}
+	return Unsupported(NameOf(e), operation, c)
+}
 
 // Capable 是可选的能力声明接口。引擎实现它来自报能力;不实现的引擎一律按「什么
 // 可选能力都没有」处理。
@@ -93,7 +145,7 @@ func (s Set) Supports(c Capability) bool { return s[c] }
 // 会让日志和测试都抖)。
 func (s Set) Names() []string {
 	var out []string
-	for _, c := range []Capability{CapStreaming, CapApproval, CapResume, CapFork} {
+	for _, c := range []Capability{CapStreaming, CapApproval, CapResume, CapFork, CapHostedTools} {
 		if s[c] {
 			out = append(out, string(c))
 		}
