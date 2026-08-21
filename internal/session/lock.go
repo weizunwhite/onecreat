@@ -15,15 +15,22 @@ package session
 //
 //   - **陈旧锁会被抢走。** 持锁进程被 kill -9 时,锁文件会留下。超过 staleAfter 就
 //     强行接管 —— 否则一次崩溃会让这台机器上的会话元数据永久只读。
+//   - **平台差异要显式处理。** Windows 上「已经有人持锁」不一定报 EEXIST:释放方
+//     `os.Remove` 之后文件会短暂进入 delete-pending 状态,这期间 `CreateFile` 返回
+//     ERROR_ACCESS_DENIED。只认 `os.IsExist` 的话,这条路径会直接放弃取锁 ——
+//     **锁在 Windows 上等于不存在**。见 contendedOn。
 //   - **拿不到锁时放行,而不是报错。** 这些都是用户触发的低频动作(改个标题)。
 //     为了一个卡住的锁去失败一次重命名,比那个锁本来要防的问题更烦人。真走到这一步
 //     会记一条 warn。
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -55,6 +62,25 @@ func (r *Registry) withFileLock(fn func() error) error {
 	return fn()
 }
 
+// contended 报告 err 是不是「有别人正持着锁,等一下再来」,而不是「这把锁根本拿不到」。
+func contended(err error) bool { return contendedOn(runtime.GOOS, err) }
+
+// contendedOn 是 contended 把平台注入进来的版本,好让 Windows 那条分支在**每个**平台上
+// 都被测到。不这么做的话它只有 Windows CI 才验证得了 —— 而这个 bug 恰恰是本地只做交叉
+// 编译、没跑过 Windows 运行期才漏掉的(CI run 32441069610 attempt 2 抓到)。
+func contendedOn(goos string, err error) bool {
+	// 所有平台通用的形态:O_EXCL 撞上已存在的文件。
+	if errors.Is(err, fs.ErrExist) {
+		return true
+	}
+	// Windows 独有:锁文件处于 delete-pending 时,打开它报的是 access denied 而不是
+	// exists。这是个微秒级的瞬态窗口,重试正是对的处理。
+	//
+	// 只在 Windows 上这么放宽:unix 上的权限错误是真故障(目录只读之类),把它当成
+	// 锁竞争会白等 2 秒再静默 fail-open,把一个明确的错误拖成一个难查的行为。
+	return goos == "windows" && errors.Is(err, fs.ErrPermission)
+}
+
 // acquireLock 反复尝试原子地创建锁文件,直到成功或超时。
 func (r *Registry) acquireLock() (func(), error) {
 	if r.dir == "" {
@@ -72,7 +98,7 @@ func (r *Registry) acquireLock() (func(), error) {
 			f.Close()
 			return func() { os.Remove(path) }, nil
 		}
-		if !os.IsExist(err) {
+		if !contended(err) {
 			return nil, err
 		}
 		// 已经有人持锁。它是活的还是遗留物?
