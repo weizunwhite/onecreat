@@ -15,8 +15,27 @@ newline-delimited JSON-RPC over stdio 驱动它(见 `internal/engine/dsh`)。
 
 所有 `@deepseek-ai/dsh-*` 依赖锁到 **`0.1.0-rc.8`**,`pnpm-lock.yaml` 入仓。
 **升级 dsh 版本是一件独立的任务**:改版本 → 跑 `pnpm typecheck` →
-跑 `go test ./internal/engine/dsh/...` → 用 `reasonix run --engine dsh` 过一遍
-1A/1B 验收,全绿才提交。
+跑 `go test ./internal/engine/dsh/...` → **过下面的门禁必过项** → 用
+`reasonix run --engine dsh` 过一遍 1A/1B 验收,全绿才提交。
+
+#### 升级必过项(真 sidecar,不能跳)
+
+```sh
+pnpm -C dsh install --frozen-lockfile
+ONECREAT_DSH_E2E=1 go test ./internal/engine/dsh/ -run 'Gate|Tier|Reasoning' -v -count=1 -timeout 300s
+```
+
+三组分别钉住:**门禁**(`Gate*`:deny / ask 批 / ask 拒 / 计划模式 / 取消 fail-closed
+——工具执行前的单一决策点还在,被拒的调用文件真的不落地)、**档位与凭证轮换**
+(`Tier*`:上游收到的是用户选的档位,轮换后的 token 进得去子进程)、**CoT 每轮回传**
+(`Reasoning*`:rc.8 的升级动机)。
+
+为什么这三组必须用**真** sidecar:门禁的另一半在 JS 里——dsh-tools 的调度器在派发
+之前跑 `tools/pre-execute` waterfall。纯 Go 的 wire 单测用假 sidecar,只能证明 Go
+半边回了什么帧,证明不了"文件真的没被写"。dsh 是 developer preview、明说 rc 之间
+可能破坏兼容,所以每次升级都要由它们自动复证语义没变。用的是 httptest 假网关,
+**不需要任何真实凭证**。背景见
+[`docs/dsh调研/07_门禁缺口解决报告与收口执行方案.md`](../docs/dsh调研/07_门禁缺口解决报告与收口执行方案.md)。
 
 ### 升级记录
 

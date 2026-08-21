@@ -107,6 +107,7 @@ rewind 成功,fork/摘要/对话回退明确"暂不支持" / 2.7 serve·acp·cli
 | 风险 | 应对 |
 |---|---|
 | dsh 预览期破坏性变更 | 锁精确版本;升级当独立任务做,过 G1 冒烟才换版本 |
+| 门禁语义随上游变化(权限/计划模式/写前快照在 JS 半边失效而无人察觉) | **已钉(2026-08-21)**:真 sidecar e2e `internal/engine/dsh/e2e_gate_test.go`(07 Step 1)覆盖 deny / ask 批 / ask 拒 / 计划模式 / 取消 fail-closed,并列为 `dsh/README.md` 的**升级必过项**。假 sidecar 单测证明不了"文件真的没被写" |
 | provider 只有 DeepSeek,网关兼容性未知 | Phase 0.2 前置验证,不通直接停 |
 | 模型名泄漏(错误体/日志/UI) | Go 驱动层兜底过滤 + 前端不渲染;是 SaaS 硬红线 |
 | 桌面端体积/启动:Go 单二进制 → 捆 Node | 参考 Tauri 版 5MB 方案(按需自举下载运行时);Windows 后置 |

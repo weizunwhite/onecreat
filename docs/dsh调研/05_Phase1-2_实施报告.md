@@ -280,6 +280,10 @@ $ ./bin/reasonix run "用一句话回答:1+1=?"     # 不带 --engine,走 native
 > 2. 修掉两个网关路径的真 bug:wire model 之前恒为占位符、**没把用户选的档位传给网关**
 >    (现改读 `ONECREAT_TIER`);登录 token 刷新**传不进子进程**(现补 `onecreat/credentials.set`,
 >    每轮 prompt 前按需补发),否则约 50 分钟后 dsh 模式必然 `! AUTH: invalid token`。
+> 3. **门禁收口见 [07](07_门禁缺口解决报告与收口执行方案.md)**(2026-08-21)。本报告里"门禁靠 Go 半边单测 +
+>    一次手工 Web 验证"的状态**已过时**:`internal/engine/dsh/e2e_gate_test.go` 用真 sidecar + 假网关
+>    钉死了 deny / ask 批 / ask 拒 / 计划模式 / 取消 fail-closed 五条,`internal/boot/dshengine_test.go`
+>    表驱动钉住 `dshDecider`,并已写进 `dsh/README.md` 的升级必过项。
 
 ### 没做到(诚实清单)
 
