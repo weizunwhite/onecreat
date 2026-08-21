@@ -65,6 +65,15 @@ type Record struct {
 	// Title is the user's chosen name ("" = fall back to a preview of the
 	// transcript, which is the engine's business).
 	Title string `json:"title,omitempty"`
+	// Ephemeral marks a session whose transcript OneCreat cannot read: the engine
+	// keeps the conversation in its own process, so there is no file here to
+	// reopen. The record still exists — it carries the identity, the project and
+	// the real engine name — but a frontend must show it as ephemeral and must not
+	// offer history/resume/fork on it (复核 AR-R03)。
+	//
+	// 不把这类会话直接从索引里抹掉:那样会连「这条会话属于哪个引擎、哪个项目」都丢掉,
+	// 而复核要的是 Registry 记录**真实**引擎与稳定 ID,只是别谎称本地有转录文本。
+	Ephemeral bool `json:"ephemeral,omitempty"`
 	// Kind marks a vertical surface the session actually used ("hardware"),
 	// for grouping in the history sidebar. Empty = an ordinary conversation.
 	Kind      string    `json:"kind,omitempty"`
@@ -179,6 +188,18 @@ func (r *Registry) save() error {
 // workspace and engine are only applied at creation — which project and which
 // runtime a conversation belongs to is decided once.
 func (r *Registry) Ensure(store, workspace, engine string) (Record, error) {
+	return r.ensure(store, workspace, engine, false)
+}
+
+// EnsureEphemeral is Ensure for an engine that keeps the transcript in its own
+// process: the record carries identity, project and engine, but is marked
+// Ephemeral so nothing offers to reopen a file that was never written
+// (复核 AR-R03)。
+func (r *Registry) EnsureEphemeral(store, workspace, engine string) (Record, error) {
+	return r.ensure(store, workspace, engine, true)
+}
+
+func (r *Registry) ensure(store, workspace, engine string, ephemeral bool) (Record, error) {
 	if strings.TrimSpace(store) == "" {
 		return Record{}, fmt.Errorf("session: empty store reference")
 	}
@@ -186,7 +207,7 @@ func (r *Registry) Ensure(store, workspace, engine string) (Record, error) {
 	defer r.mu.Unlock()
 	var out Record
 	err := r.withFileLock(func() error {
-		rec, err := r.ensureLocked(store, workspace, engine)
+		rec, err := r.ensureLocked(store, workspace, engine, ephemeral)
 		out = rec
 		return err
 	})
@@ -195,7 +216,7 @@ func (r *Registry) Ensure(store, workspace, engine string) (Record, error) {
 
 // ensureLocked 是 Ensure 的实体。调用方持有 r.mu **和**索引文件锁 —— 「读整份 →
 // 改一条 → 写回整份」必须整体互斥,否则并发的另一个 owner 会拿旧快照覆盖回来。
-func (r *Registry) ensureLocked(store, workspace, engine string) (Record, error) {
+func (r *Registry) ensureLocked(store, workspace, engine string, ephemeral bool) (Record, error) {
 	r.sync()
 	if id, ok := r.byStore[storeKey(store)]; ok {
 		rec := r.index[id]
@@ -207,6 +228,9 @@ func (r *Registry) ensureLocked(store, workspace, engine string) (Record, error)
 		if rec.Engine == "" {
 			rec.Engine, changed = orNative(engine), true
 		}
+		if rec.Ephemeral != ephemeral {
+			rec.Ephemeral, changed = ephemeral, true
+		}
 		if !changed {
 			return rec, nil
 		}
@@ -216,6 +240,7 @@ func (r *Registry) ensureLocked(store, workspace, engine string) (Record, error)
 	now := time.Now().UTC()
 	rec := Record{
 		ID: newID(store), Engine: orNative(engine), Store: store,
+		Ephemeral: ephemeral,
 		Workspace: workspace, CreatedAt: now, UpdatedAt: now,
 	}
 	r.put(rec)

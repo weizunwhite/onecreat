@@ -38,6 +38,14 @@ type sessionStore struct {
 	workspace string
 	// registry owns session identity and metadata; nil when persistence is off.
 	registry *session.Registry
+	// persists 表示 OneCreat 这侧的消息日志**就是**这条会话的真源,因此该落盘。
+	//
+	// 判据是引擎的 CapResume ——「引擎的会话状态可以从 OneCreat 侧的消息日志恢复」。
+	// 不声明它的引擎(dsh 今天就是)在自己的进程里维护会话,我们手上这份只是渲染用的
+	// 影子。把影子写成 .jsonl 会造出一个**看起来像转录文本的赝品**:磁盘上有文件、
+	// 历史面板列得出来、打开却是空的或残缺的 —— 复核 AR-R03 的原话是「不得双写或用空
+	// native JSONL 冒充 dsh」。
+	persists bool
 	// engineName 是这条会话**实际**由哪个引擎跑的。之前这里硬编码 session.EngineNative
 	// —— 于是一条 dsh 会话会被登记成 native,而它的 transcript 根本不在这个文件里
 	// (AR-R03)。引擎名必须来自装配根的真实选择,不能从 *agent.Agent 猜。
@@ -47,11 +55,11 @@ type sessionStore struct {
 	path string
 }
 
-func newSessionStore(dir, path, workspace, engineName string, exec *agent.Agent) *sessionStore {
+func newSessionStore(dir, path, workspace, engineName string, persists bool, exec *agent.Agent) *sessionStore {
 	if engineName == "" {
 		engineName = session.EngineNative
 	}
-	s := &sessionStore{dir: dir, path: path, workspace: workspace, engineName: engineName, exec: exec}
+	s := &sessionStore{dir: dir, path: path, workspace: workspace, engineName: engineName, persists: persists, exec: exec}
 	if dir != "" {
 		s.registry = session.Open(dir)
 	}
@@ -65,7 +73,14 @@ func (s *sessionStore) register(path string) {
 	if s.registry == nil || path == "" {
 		return
 	}
-	if _, err := s.registry.Ensure(path, s.workspace, s.engineName); err != nil {
+	// 引擎自己持有转录文本时,这条记录标成 ephemeral:身份、项目、真实引擎名都留着
+	// (复核要的正是这三样),但没有可重开的文件 —— 前端据此不提供 history/resume/fork,
+	// 也不会打开一个我们从未写过的 .jsonl(AR-R03)。
+	ensure := s.registry.Ensure
+	if !s.persists {
+		ensure = s.registry.EnsureEphemeral
+	}
+	if _, err := ensure(path, s.workspace, s.engineName); err != nil {
 		slog.Warn("control: register session", "path", path, "err", err)
 	}
 }
@@ -105,6 +120,11 @@ func (s *sessionStore) SaveActivity() error {
 }
 
 func (s *sessionStore) save(markActivity bool) error {
+	// 引擎自己持有会话时,这份日志不是真源,不写(AR-R03)。返回 nil 而不是报错:
+	// 调用方(每轮结束的自动保存)没有做错任何事,这条会话就是 ephemeral 的。
+	if !s.persists {
+		return nil
+	}
 	s.mu.Lock()
 	path := s.path
 	s.mu.Unlock()

@@ -208,7 +208,7 @@ func New(opts Options) *Controller {
 		jobs:          opts.Jobs,
 		reg:           opts.Registry,
 		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
-		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.WorkspaceRoot, engineNameOf(eng), opts.Executor),
+		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.WorkspaceRoot, engineNameOf(eng), enginePersistsTranscript(eng), opts.Executor),
 		turn:          newTurnState(sink, opts.Executor, opts.Scope),
 		gateway:       opts.Gateway,
 		wsRoot:        opts.WorkspaceRoot,
@@ -360,6 +360,19 @@ func engineNameOf(e engine.TurnEngine) string {
 		return session.EngineNative
 	}
 	return engine.NameOf(e)
+}
+
+// enginePersistsTranscript 报告 OneCreat 这侧的消息日志是不是这条会话的真源 ——
+// 也就是该不该把它写成一份转录文本。判据是 CapResume,它的定义就是这件事,所以不
+// 另造一个能力常量。
+//
+// nil 与 engineNameOf 用同一个约定:没接引擎的测试路径按内置内核记账,行为与本次
+// 改动之前一致 —— 这个函数只负责别替不落盘的引擎伪造转录文本,不负责新增失败模式。
+func enginePersistsTranscript(e engine.TurnEngine) bool {
+	if e == nil {
+		return true
+	}
+	return engine.Supports(e, engine.CapResume)
 }
 
 // runEngineTurn 把一轮交给引擎并等它跑完。这是 Controller 与「谁来跑」之间的
