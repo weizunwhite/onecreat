@@ -48,6 +48,11 @@ const (
 // OneCreat 桥接通知。每条出站通知带一个 id,Go 侧用同一个 id 回一条应答通知。
 // (用通知对而不是 server→client 请求,是为了让 Go 侧的 LineClient 保持只需
 // 处理"响应 + 通知"两种入站帧。)
+//
+// 入站请求的处理约定:正因为上面这条,这条 wire 上**没有**任何 sidecar→Go 的请求,
+// Go 侧也不实现任何入站业务方法。真收到一帧既有 id 又有 method 的入站请求,
+// LineClient 一律回 -32601 method not found(见 linerpc.go 的 readLoop)——
+// 静默当通知吞掉会让发起方永远等不到回复,挂死比快速失败难查得多。
 const (
 	NotifyApprovalRequest    = "onecreat/approval.request"     // dsh → Go
 	NotifyApprovalResolve    = "onecreat/approval.resolve"     // Go → dsh
