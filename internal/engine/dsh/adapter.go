@@ -112,6 +112,13 @@ func (a *Adapter) Start(ctx context.Context, req engine.TurnRequest) (engine.Tur
 	if dead, cause := a.inner.Dead(); dead {
 		return nil, cause
 	}
+	// 网关 token 刷新之后,这个进程还拿着启动时烤进环境的那一份 —— 协议里没有换
+	// token 的方法,所以走复核给的第二条路:标成终结,由调用方重建(AR-R06 后半)。
+	// 放在 Dead 检查之后:已经终结的会话该报它自己的原因,不该被这条盖掉。
+	if a.inner.tokenChanged(ctx) {
+		a.inner.markDead(errTokenRefreshed)
+		return nil, errTokenRefreshed
+	}
 	t := &turn{inner: a.inner, done: make(chan struct{})}
 	a.mu.Lock()
 	prev := a.cur

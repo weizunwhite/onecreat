@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/account"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 )
@@ -32,6 +33,17 @@ type Options struct {
 	// GatewayToken 是网关鉴权 token(从环境取,调用方读 Cfg.GatewayTokenEnv 传入)。
 	// 绝不落盘、不进日志。
 	GatewayToken string
+	// Credentials 是**活的**凭据源(可空)。它存在的理由是 token 会被刷新,而这个
+	// sidecar 拿不到新的:token 在 Boot 时烤进子进程环境,进程一起来那份环境就冻住了,
+	// dsh 协议里也没有「换个 token」的方法(见 §22)。
+	//
+	// 复核 AR-R06 给的是两条路 —— 「必须能到达运行中的 dsh,**或**触发受控滚动重启」。
+	// 第一条在这个协议上不存在通道,所以走第二条:每轮开始前比一次,变了就把引擎标成
+	// 终结,由调用方重建。不修的话失败形态是最糟的那种 —— sidecar 拿着过期 token 去打
+	// 网关,用户看到一串没有解释的鉴权错误,而真正的原因一个字都没有。
+	//
+	// 为空时行为与改动前完全一致,不新增任何失败模式。
+	Credentials account.CredentialSource
 	// SecretsToScrub 是要兜底擦除的真实 provider/model/URL 串(从运行时注入)。
 	SecretsToScrub []string
 	// OnTurnEnd 在 dsh 推来 turn/end 时调用(可空)。这是这个协议里唯一的「一轮
@@ -58,6 +70,9 @@ type Engine struct {
 	// 挂住,而 UI 还显示一切正常。见 AR-R04。
 	dead   bool
 	deadBy error
+	// bootToken 是**烤进子进程环境的那一份** token。它是比较的基准,而不是"当前
+	// 应该用的 token" —— 后者由 Credentials 给出。两者不同就说明这个进程落后了。
+	bootToken string
 }
 
 // New 构造引擎(尚未拉起进程)。BinPath 为空则报错。
@@ -174,9 +189,9 @@ func (e *Engine) childEnv() []string {
 	if e.opts.Cfg.GatewayBaseURL != "" {
 		env = append(env, "DEEPSEEK_BASE_URL="+e.opts.Cfg.GatewayBaseURL)
 	}
-	if e.opts.GatewayToken != "" {
+	if tok := e.tokenForBoot(); tok != "" {
 		// dsh 的 deepseek adapter 默认读 DEEPSEEK_API_KEY 作为 Bearer。
-		env = append(env, "DEEPSEEK_API_KEY="+e.opts.GatewayToken)
+		env = append(env, "DEEPSEEK_API_KEY="+tok)
 	}
 	if e.opts.CWD != "" {
 		env = append(env, "DSH_CWD="+e.opts.CWD)
@@ -236,6 +251,42 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 		cancel()
 	}
 	return e.Kill()
+}
+
+// tokenForBoot 决定烤进子进程的那份 token,并记下它作为后续比较的基准。
+// 有活的凭据源就用它当下的值,否则退回构造时传入的静态串(改动前的行为)。
+func (e *Engine) tokenForBoot() string {
+	tok := e.opts.GatewayToken
+	if e.opts.Credentials != nil {
+		if v, err := e.opts.Credentials.Token(context.Background()); err == nil && v != "" {
+			tok = v
+		}
+	}
+	e.mu.Lock()
+	e.bootToken = tok
+	e.mu.Unlock()
+	return tok
+}
+
+// errTokenRefreshed 是"网关 token 变了,这个进程还拿着旧的"的终结原因。
+var errTokenRefreshed = errors.New("dsh 引擎:网关 token 已刷新,而 sidecar 的凭据在启动时就固定了 —— 该会话需要重建(受控滚动重启)")
+
+// tokenChanged 报告凭据源给出的 token 是否已经和启动时烤进子进程的那份不一样了。
+//
+// 取不到 token 时返回 false:凭据源临时不可用不该把一个正常会话打死,那会把一次网络
+// 抖动变成"会话没了"。真正过期的 token 会在网关那侧以 401 收场,不会被这里放过。
+func (e *Engine) tokenChanged(ctx context.Context) bool {
+	if e.opts.Credentials == nil {
+		return false
+	}
+	now, err := e.opts.Credentials.Token(ctx)
+	if err != nil || now == "" {
+		return false
+	}
+	e.mu.Lock()
+	boot := e.bootToken
+	e.mu.Unlock()
+	return boot != "" && now != boot
 }
 
 // markDead 记下"这个 sidecar 不能再用了"(只记第一个原因)。
