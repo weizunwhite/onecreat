@@ -2,6 +2,7 @@ package dsh
 
 import (
 	"encoding/json"
+	"strings"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -28,6 +29,27 @@ const (
 	EvRequestContext = "request/context" // 含真实 provider/model → 脱敏
 	EvTodoWrite      = "todo/write"
 )
+
+// durableStatePrefixes 是 dsh 的**状态**事件族 —— 它们描述的不是流式文本,而是这一轮
+// 做了什么(待办清单、步骤进度、上下文压缩)。
+//
+// 这些还没有可核实的映射:OneCreat 侧的 todo / 证据链由自己的工具写,而 dsh 在别的
+// 进程里跑自己的工具;compaction 的载荷形状本仓库也无从核对。**但"不知道怎么映射"
+// 不等于可以当没发生**(复核 AR-R08.3:「不得默认静默丢弃 todo/step/compaction 状态」)。
+// 用户看着模型写了一份计划、界面上什么都没有,是这里最坏的失败形态 —— 它不报错。
+//
+// 所以降级成一条带类型名的 Notice:信息量不足,但至少是**可见**的,而且等上游形状
+// 确定后,把某一族换成真映射就是在下面加一个 case。
+var durableStatePrefixes = []string{"todo/", "step/", "compaction/"}
+
+func isDurableState(typ string) bool {
+	for _, p := range durableStatePrefixes {
+		if strings.HasPrefix(typ, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // Map 把一条 dsh 会话事件映射成零或多条 internal/event.Event。
 //
@@ -126,6 +148,11 @@ func Map(raw RawSessionEvent) []event.Event {
 
 	case EvToolResult:
 		var d struct {
+			// callId / name:结果必须能对回是哪一次调用。一轮里可以有多个并行工具
+			// 调用,而结果可能乱序到达 —— 少了这两个字段,前端只能按到达顺序猜,猜错
+			// 会把一个失败的结果挂到别的调用卡片上(复核 AR-R08.2)。
+			CallID  string `json:"callId"`
+			Name    string `json:"name"`
 			Message struct {
 				Content []struct {
 					Type string `json:"type"`
@@ -146,14 +173,24 @@ func Map(raw RawSessionEvent) []event.Event {
 				out += c.Text
 			}
 		}
-		ev := event.Event{Kind: event.ToolResult, Tool: event.Tool{Output: out}}
+		ev := event.Event{Kind: event.ToolResult, Tool: event.Tool{
+			ID: d.CallID, Name: d.Name, Output: out,
+		}}
 		if d.Error != nil {
 			ev.Tool.Err = d.Error.Name + ": " + d.Error.Code
 		}
 		return []event.Event{ev}
 
 	default:
-		// 其它 durable 事件(step/*、todo/write、compaction/* 等)本 spike 暂不映射。
+		// 状态事件降级成一条可见的通知,而不是悄悄消失(AR-R08.3)。
+		if isDurableState(raw.Type) {
+			return []event.Event{{
+				Kind:  event.Notice,
+				Level: event.LevelInfo,
+				Text:  "dsh 状态事件 " + raw.Type + " 暂未映射为 OneCreat 事件(内容未展示)",
+			}}
+		}
+		// 其余未知类型:可能是高频的新增流式事件,不往 UI 上灌通知。
 		return nil
 	}
 }
