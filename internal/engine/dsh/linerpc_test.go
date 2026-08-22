@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -117,4 +118,62 @@ func asRPCError(err error, out **rpcError) bool {
 		return true
 	}
 	return false
+}
+
+// TestLineClientRejectsInboundRequest:入站**请求**(既有 id 又有 method)必须被
+// 回一条 -32601,而不是当通知静默吞掉。
+//
+// 今天 sidecar 从不发请求(需要 Go 回话的地方一律用带 id 的通知对),所以这条现在
+// 不影响任何行为。它防的是以后:上游哪天开始发请求,静默按通知处理 = 对方永远等不到
+// 回复 = 挂死;回 -32601 让它快速失败。
+func TestLineClientRejectsInboundRequest(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	notifCh := make(chan string, 4)
+	NewLineClient(clientConn, clientConn, func(method string, _ json.RawMessage) {
+		notifCh <- method
+	})
+
+	enc := json.NewEncoder(serverConn)
+	replies := make(chan rpcFrame, 4)
+	go func() {
+		sc := bufio.NewScanner(serverConn)
+		for sc.Scan() {
+			var f rpcFrame
+			if err := json.Unmarshal(sc.Bytes(), &f); err != nil {
+				continue
+			}
+			replies <- f
+		}
+	}()
+
+	// 从 sidecar 侧发一条 server→client 请求。
+	id := int64(7)
+	if err := enc.Encode(rpcRequest{JSONRPC: jsonrpcVersion, ID: &id, Method: "sidecar/whatever"}); err != nil {
+		t.Fatalf("发请求: %v", err)
+	}
+
+	select {
+	case f := <-replies:
+		if f.ID == nil || *f.ID != id {
+			t.Fatalf("回帧的 id 不对: %+v", f.ID)
+		}
+		if f.Error == nil || f.Error.Code != -32601 {
+			t.Fatalf("期望 -32601,得到 %+v", f.Error)
+		}
+		if !strings.Contains(f.Error.Message, "sidecar/whatever") {
+			t.Fatalf("错误消息里应带上未知方法名,得到 %q", f.Error.Message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("入站请求被静默吞掉了(没有回 -32601)")
+	}
+
+	// 而且不能顺带把它当通知派发出去。
+	select {
+	case m := <-notifCh:
+		t.Fatalf("入站请求不该走通知回调,却派发了 %q", m)
+	case <-time.After(200 * time.Millisecond):
+	}
 }

@@ -13,6 +13,14 @@ import (
 // jsonrpc 版本常量。
 const jsonrpcVersion = "2.0"
 
+// rpcResponse 是一帧出站响应。目前只用来回错误 —— 我们不实现任何入站业务方法
+// (见 readLoop 的第三种入站帧)。
+type rpcResponse struct {
+	JSONRPC string    `json:"jsonrpc"`
+	ID      int64     `json:"id"`
+	Error   *rpcError `json:"error"`
+}
+
 // rpcRequest 是一帧出站请求(有 id)或通知(无 id)。
 type rpcRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
@@ -90,6 +98,12 @@ func (c *LineClient) readLoop(r io.Reader) {
 		switch {
 		case f.ID != nil && (f.Result != nil || f.Error != nil):
 			c.deliver(*f.ID, f)
+		case f.ID != nil && f.Method != "":
+			// 入站**请求**(既有 id 又有 method)。今天 sidecar 从不发请求 —— 需要
+			// Go 回话的地方一律用"带 id 的通知对"(见 protocol.go)。但若上游哪天
+			// 开始发,静默按通知处理 = 它永远等不到回复 = 挂死。回 -32601 让它快速
+			// 失败。这里**不**实现任何业务方法:要加方法得先想清楚它属不属于这条 wire。
+			c.respondError(*f.ID, -32601, "method not found: "+f.Method)
 		case f.Method != "":
 			if c.onNotify != nil {
 				c.onNotify(f.Method, f.Params)
@@ -172,6 +186,18 @@ func (c *LineClient) Call(ctx context.Context, method string, params, result int
 		}
 		return nil
 	}
+}
+
+// respondError 回一帧错误响应。best-effort:写失败说明流已经断了,那边的等待
+// 反正也会因为 EOF 结束,没有可做的补救。
+func (c *LineClient) respondError(id int64, code int, msg string) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = c.enc.Encode(rpcResponse{
+		JSONRPC: jsonrpcVersion,
+		ID:      id,
+		Error:   &rpcError{Code: code, Message: msg},
+	})
 }
 
 // write 串行化一帧到底层流(一帧一行,json.Encoder 自带换行)。
