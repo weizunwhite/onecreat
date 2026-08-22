@@ -29,7 +29,6 @@ const defaultStartupTimeout = 60 * time.Second
 // gatewayTierEnv 是"当前选中档位"的进程环境变量,值形如 tier-1 / tier-2 / tier-3。
 // 与 native 路径同一个字符串(desktop/accounts_app.go 的 gatewayEnvTier 写它,
 // internal/boot/boot.go 的 applyOnecreatGateway 读它),别新造名字。
-const gatewayTierEnv = "ONECREAT_TIER"
 
 // dsh 子进程里承载连接事实的两个环境变量名。必须与 dsh/plugins/gateway 的
 // DEFAULT_BASE_URL_ENV / DEFAULT_API_KEY_ENV 以及 profile 里的配置一致 ——
@@ -140,6 +139,9 @@ type Options struct {
 	// Ledger 是证据记账的注入点;引擎消费 dsh 的 tool/call、tool/result、todo/write
 	// 事件喂它。零值 = 不记账。
 	Ledger Recorder
+	// TierFunc 返回当前订阅档位("tier-1" / "tier-2" …),网关模式下作为下发给
+	// dsh 的 wire model。nil = 没有档位(退回 ModelPlaceholder)。
+	TierFunc func() string
 	// Stderr 是 sidecar 诊断输出的去处(nil = 只留尾缓冲,不外泄)。
 	Stderr io.Writer
 }
@@ -323,17 +325,28 @@ func (e *Engine) Start(ctx context.Context) error {
 	return nil
 }
 
+// tier 是 TierFunc 的 nil 安全包装。
+func (e *Engine) tier() string {
+	if e.opts.TierFunc == nil {
+		return ""
+	}
+	return e.opts.TierFunc()
+}
+
 // wireModel 返回下发给 dsh 的 wire model。网关模式永远是档位占位符(真实模型由
 // 平台按 token/档位映射,客户端不该也不能知道);直连模式才是真实模型 id。
 //
-// 网关模式下优先取 ONECREAT_TIER —— 平台网关就是按 "tier-N" 映射模型与计费的
+// 网关模式下优先取**当前档位** —— 平台网关就是按 "tier-N" 映射模型与计费的
 // (native 路径见 internal/boot/boot.go 的 applyOnecreatGateway,同一个来源)。
-// 不读它就等于"用户选了旗舰、请求里却写着 onecreat":要么被网关拒,要么切档不生效。
-// 档位由桌面端登录/切档时写进进程环境(desktop/accounts_app.go),切档会重建
-// controller → 重新 spawn sidecar → 这里重新读到新档位。
+// 不取它就等于"用户选了旗舰、请求里却写着 onecreat":要么被网关拒,要么切档不生效。
+//
+// 档位经 Options.TierFunc 注入,由装配根从 *account.Gateway 取(Plan 09:账号是个
+// 对象,不是进程环境总线)。这里**不**读 ONECREAT_TIER —— 引擎层直接读它会绕过
+// account 边界,而且用 const 间接读还正好躲过 account/boundary_test 的字面量扫描。
+// 传函数而不是快照的理由与凭证一致:切档后不必重建引擎也能读到新值。
 func (e *Engine) wireModel() string {
 	if e.opts.Gateway {
-		if tier := strings.TrimSpace(os.Getenv(gatewayTierEnv)); tier != "" {
+		if tier := strings.TrimSpace(e.tier()); tier != "" {
 			return tier
 		}
 		if e.opts.Cfg.ModelPlaceholder != "" {

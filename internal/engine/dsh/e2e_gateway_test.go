@@ -46,9 +46,9 @@ func TestGatewayTierAndTokenRotation(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ONECREAT_GATEWAY_TOKEN", "t1")
-	t.Setenv(gatewayTierEnv, "tier-2")
 	eng, err := New(Options{
-		Gateway: true,
+		Gateway:  true,
+		TierFunc: staticTier("tier-2"),
 		// RuntimeDir 留空:resolveRuntimeDir 从 cwd 逐级向上找仓库根的 dsh/。
 		Cfg:         config.DSHConfig{ModelPlaceholder: "onecreat"},
 		CWD:         t.TempDir(),

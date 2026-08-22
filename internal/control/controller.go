@@ -406,7 +406,12 @@ func (c *Controller) EnableInteractiveApproval() {
 func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	// 压缩重写的是 OneCreat 这边的消息日志。日志不在这边的引擎,压它没有意义,
 	// 而且会让本地影子与引擎真实上下文进一步分叉。
-	if err := c.requireCap("压缩上下文", engine.CapResume); err != nil {
+	//
+	// 判据是 CapFork 而不是 CapResume:这两件事在 dsh 出现之后不再是同一件 ——
+	// resume 只要求"引擎能从一个会话标识接着跑"(dsh 能),重写消息日志则要求
+	// "OneCreat 侧的日志就是模型可见历史的真源"(dsh 不是)。CapFork 表达的正是
+	// 后者,见 engine.CapFork 与 dsh 的能力声明。
+	if err := c.requireCap("压缩上下文", engine.CapFork); err != nil {
 		return err
 	}
 	if c.executor == nil {
@@ -502,8 +507,13 @@ func (c *Controller) rewindFail(err error) error {
 // unavailable for turns inherited from a resumed session (code rewind still works).
 // Frontends re-render their transcript from History after the call.
 func (c *Controller) Rewind(turn int, scope RewindScope) error {
-	if err := c.requireCap("回退会话", engine.CapFork); err != nil {
-		return c.rewindFail(err)
+	// 只有"回退对话"需要能力:它重写 OneCreat 侧的消息日志。**代码回退不需要** ——
+	// checkpoint 是 Go 侧按文件存的,与引擎把历史放在哪儿无关,所以在 dsh 引擎下
+	// 照样可用。把两者一起挡掉会白白关掉一个本来能用的功能。
+	if scope != RewindCode {
+		if err := c.requireCap("回退会话", engine.CapFork); err != nil {
+			return c.rewindFail(err)
+		}
 	}
 	if !c.ckpt.Available() || c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
@@ -556,6 +566,10 @@ func (c *Controller) SummarizeUpTo(ctx context.Context, turn int) error {
 }
 
 func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error {
+	// 与 Compact 同一个理由:它重写 OneCreat 侧的消息日志。
+	if err := c.requireCap("摘要历史", engine.CapFork); err != nil {
+		return c.rewindFail(err)
+	}
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}

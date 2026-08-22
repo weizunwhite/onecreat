@@ -50,9 +50,9 @@ func TestReasoningPassedBackOnPlainTurn(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ONECREAT_GATEWAY_TOKEN", "t1")
-	t.Setenv(gatewayTierEnv, "tier-2")
 	eng, err := New(Options{
 		Gateway:     true,
+		TierFunc:    staticTier("tier-2"),
 		Cfg:         config.DSHConfig{ModelPlaceholder: "onecreat"},
 		CWD:         t.TempDir(),
 		Sink:        event.Discard,

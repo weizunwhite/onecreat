@@ -121,6 +121,7 @@ func buildDSHEngine(deps dshEngineDeps) (*dsh.Engine, error) {
 		BaseURL:        baseURL,
 		APIKeyFunc:     apiKeyFunc,
 		SecretsToScrub: secrets,
+		TierFunc:       dshTierFunc(gw, gateway),
 		HardwareMCP:    resolveHardwareMCPBin(),
 		SessionRoot:    filepath.Join(config.SessionDir(), "dsh"),
 		Session:        deps.Session,
@@ -262,4 +263,14 @@ func dshToolInvoker(reg *tool.Registry, led *evidence.Ledger) dsh.ToolInvoker {
 		}
 		return out, err
 	}
+}
+
+// dshTierFunc 交出"当前档位"的取值函数。档位是账号状态,只能问 *account.Gateway 要
+// —— 引擎层直接读 ONECREAT_TIER 会绕过 Plan 09 的 account 边界。传函数而不是快照,
+// 于是切档之后不必重建引擎也能读到新值。
+func dshTierFunc(gw *account.Gateway, gateway bool) func() string {
+	if !gateway || gw == nil {
+		return nil
+	}
+	return gw.Tier
 }

@@ -613,9 +613,13 @@ function renderHistory(ms){
 // 正是那条 turn_done,界面就永远转圈。缓冲之后按序号重放,快照已含的丢弃。
 // 依赖引擎能力的入口:哪个按钮需要哪条能力,以及做不到时该怎么解释。
 // 一处集中,不在四个按钮上各写一遍 —— 那种写法加第五个入口时必然漏掉。
+// 注意 btn-compact 看的是 fork 而不是 resume:压缩重写的是 OneCreat 侧的消息日志,
+// 要求"本地日志就是模型可见历史的真源"——这正是 CapFork 的语义。resume 只表示
+// "引擎能从一个会话标识接着跑",两者在 dsh 出现之后不再是同一件事(后端同口径,
+// 见 control.Controller.Compact)。
 const CAP_GATED=[
   {id:'btn-new',     cap:'resume', what:'新建会话'},
-  {id:'btn-compact', cap:'resume', what:'压缩上下文'},
+  {id:'btn-compact', cap:'fork',   what:'压缩上下文'},
   {id:'btn-rewind',  cap:'fork',   what:'回退会话'},
   {id:'btn-tree',    cap:'fork',   what:'查看分支'},
 ];

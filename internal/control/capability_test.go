@@ -15,7 +15,9 @@ import (
 	"reasonix/internal/engine"
 )
 
-// limitedEngine 只支持 streaming —— 也就是 dsh 今天的形状。
+// limitedEngine 只支持 streaming。它**不是**某个真引擎的画像(dsh 如今声明
+// streaming/approval/resume/gated-tools),而是"能力矩阵最贫瘠的那一端"的桩:
+// 用它才能证明每一个会改写会话状态的入口都真的问过能力。
 type limitedEngine struct{ fakeEngine }
 
 func (*limitedEngine) Supports(c engine.Capability) bool { return c == engine.CapStreaming }
@@ -34,9 +36,21 @@ func unsupportedOps(c *Controller) map[string]func() error {
 		"ForkNamed":    func() error { _, err := c.ForkNamed(1, "x"); return err },
 		"Branch":       func() error { _, err := c.Branch("x"); return err },
 		"SwitchBranch": func() error { _, err := c.SwitchBranch("x"); return err },
-		"Rewind":       func() error { return c.Rewind(1, RewindCode) },
+		"Rewind":       func() error { return c.Rewind(1, RewindConversation) },
+		"RewindBoth":   func() error { return c.Rewind(1, RewindBoth) },
+		"Summarize":    func() error { return c.SummarizeFrom(context.Background(), 1) },
 		"NewSession":   func() error { return c.NewSession() },
 		"Compact":      func() error { return c.Compact(context.Background(), "") },
+	}
+}
+
+// 代码回退**不**看能力:checkpoint 是 Go 侧按文件存的,与引擎把历史放在哪儿无关。
+// 把它一起挡掉会白白关掉一个本来能用的功能,所以这里明确锁住"它不是能力拒绝"。
+func TestCodeRewindDoesNotRequireACapability(t *testing.T) {
+	err := newLimitedController(t).Rewind(1, RewindCode)
+	var ue *engine.UnsupportedError
+	if errors.As(err, &ue) {
+		t.Fatalf("代码回退不该因为引擎能力被拒:%v", err)
 	}
 }
 

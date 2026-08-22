@@ -108,9 +108,9 @@ func newGateHarness(t *testing.T, fill func(h *gateHarness, o *Options)) *gateHa
 	t.Cleanup(srv.Close)
 
 	t.Setenv("ONECREAT_GATEWAY_TOKEN", "t1")
-	t.Setenv(gatewayTierEnv, "tier-2")
 	opts := Options{
 		Gateway:     true,
+		TierFunc:    staticTier("tier-2"),
 		Cfg:         config.DSHConfig{ModelPlaceholder: "onecreat"},
 		CWD:         cwd,
 		Sink:        event.Discard,

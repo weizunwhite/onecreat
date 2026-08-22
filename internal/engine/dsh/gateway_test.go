@@ -15,11 +15,14 @@ import (
 	"reasonix/internal/evidence"
 )
 
+// staticTier 是固定档位的注入桩(生产里由 boot 从 *account.Gateway 取)。
+func staticTier(t string) func() string { return func() string { return t } }
+
 // 网关模式:wire model 必须是用户当前选中的档位 —— 平台网关就是按 tier-N 映射
 // 真实模型与计费的。下发占位符会让"切档"完全不生效(甚至被网关拒)。
 func TestWireModelGatewayUsesTier(t *testing.T) {
-	t.Setenv(gatewayTierEnv, "tier-3")
-	eng, err := New(Options{Gateway: true, Cfg: config.DSHConfig{ModelPlaceholder: "onecreat"}})
+	eng, err := New(Options{Gateway: true, TierFunc: staticTier("tier-3"),
+		Cfg: config.DSHConfig{ModelPlaceholder: "onecreat"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -30,8 +33,7 @@ func TestWireModelGatewayUsesTier(t *testing.T) {
 
 // 没设档位(过渡期 / 旧会话)时回退占位符,绝不回退成真实模型名。
 func TestWireModelGatewayFallsBackToPlaceholder(t *testing.T) {
-	t.Setenv(gatewayTierEnv, "")
-	eng, err := New(Options{Gateway: true, Cfg: config.DSHConfig{
+	eng, err := New(Options{Gateway: true, TierFunc: staticTier(""), Cfg: config.DSHConfig{
 		ModelPlaceholder: "onecreat", DirectModel: "deepseek-v4-flash",
 	}})
 	if err != nil {
@@ -47,10 +49,10 @@ func TestWireModelGatewayFallsBackToPlaceholder(t *testing.T) {
 	}
 }
 
-// 直连模式(用户自己的 key)不受 ONECREAT_TIER 影响:那时下发的就是真实模型 id。
+// 直连模式(用户自己的 key)不受档位影响:那时下发的就是真实模型 id。
 func TestWireModelDirectIgnoresTier(t *testing.T) {
-	t.Setenv(gatewayTierEnv, "tier-2")
-	eng, err := New(Options{Gateway: false, Cfg: config.DSHConfig{DirectModel: "deepseek-v4-flash"}})
+	eng, err := New(Options{Gateway: false, TierFunc: staticTier("tier-2"),
+		Cfg: config.DSHConfig{DirectModel: "deepseek-v4-flash"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

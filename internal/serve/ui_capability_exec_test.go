@@ -50,20 +50,21 @@ const $ = (sel) => nodes[sel.replace('#','')] || null;
 
 const fail = (m) => { console.error('FAIL: ' + m); process.exitCode = 1; };
 
-// 1. 一个什么都不支持的引擎:四个入口全部禁用,且都带原因。
-applyCapabilities({streaming:true, resume:false, fork:false}, 'dsh');
+// 1. 一个只会流式、别的都不支持的引擎:四个入口全部禁用,且都带原因。
+applyCapabilities({streaming:true, resume:false, fork:false}, 'limited');
 for (const id of Object.keys(nodes)) {
   if (nodes[id].getAttribute('aria-disabled') !== 'true') fail(id + ' 没有被禁用');
   if (!nodes[id].classes.has('is-unsupported')) fail(id + ' 少了视觉状态');
   const title = nodes[id].getAttribute('title');
-  if (!title || !title.includes('dsh')) fail(id + ' 没说明原因(title=' + title + ')');
+  if (!title || !title.includes('limited')) fail(id + ' 没说明原因(title=' + title + ')');
   if (!gatedIsBlocked(id)) fail(id + ' 的点击拦截没生效');
 }
 
-// 2. 只支持 resume:new/compact 放行,rewind/tree 仍禁用。分组必须真的按能力走。
-applyCapabilities({resume:true, fork:false}, 'half');
+// 2. 只支持 resume(= dsh 今天的形状):新建会话放行;压缩 / 回退 / 分支仍禁用。
+// 分组必须真的按能力走 —— 压缩看的是 fork,不是 resume(它重写本地消息日志)。
+applyCapabilities({streaming:true, approval:true, resume:true, fork:false}, 'dsh');
 if (gatedIsBlocked('btn-new')) fail('resume 可用时 btn-new 仍被挡');
-if (gatedIsBlocked('btn-compact')) fail('resume 可用时 btn-compact 仍被挡');
+if (!gatedIsBlocked('btn-compact')) fail('fork 不可用时 btn-compact 应被挡');
 if (!gatedIsBlocked('btn-rewind')) fail('fork 不可用时 btn-rewind 应被挡');
 if (!gatedIsBlocked('btn-tree')) fail('fork 不可用时 btn-tree 应被挡');
 
