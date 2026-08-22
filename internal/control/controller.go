@@ -12,23 +12,20 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 
+	"reasonix/internal/account"
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
 	"reasonix/internal/checkpoint"
-	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
-	"reasonix/internal/diff"
+	"reasonix/internal/engine"
+	"reasonix/internal/engine/native"
 	"reasonix/internal/event"
 	"reasonix/internal/hook"
 	"reasonix/internal/jobs"
@@ -37,6 +34,8 @@ import (
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/runtime"
+	"reasonix/internal/session"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
@@ -44,23 +43,38 @@ import (
 // Controller drives one chat session. Construct with New; drive with the command
 // methods; observe through the Sink passed in Options.
 type Controller struct {
-	runner   agent.Runner
+	// engine 是「谁来跑这一轮」的唯一答案(A14 / Plan 12)。Controller 之上的
+	// 一切 —— 记忆、证据、权限、计费、检查点 —— 对内置 Go 内核和 dsh sidecar
+	// 一视同仁;它们的差别只在这一个字段后面。
+	engine   engine.TurnEngine
 	executor *agent.Agent
 	sink     event.Sink
-	policy   permission.Policy
+
+	// approvals owns every "stop and ask the human" interaction — tool-approval
+	// prompts, the `ask` tool's questions, session grants, YOLO/bypass and the
+	// just-approved-plan window (see approval.go). The Controller only forwards.
+	approvals *approvalBroker
 
 	label        string
 	systemPrompt string
-	sessionDir   string
-	host         *plugin.Host
-	commands     []command.Command
-	skills       []skill.Skill
-	hooks        *hook.Runner // session hook runner; nil-safe (no hooks configured)
-	mem          *memory.Set
-	cleanup      func()
-	autoPlan     string
-	classifier   autoPlanClassifier
-	startedOnce  bool // guards the one-shot SessionStart hook on first turn
+	// session owns where the conversation persists and the auto-save that keeps
+	// it there (see session_store.go). It does not own the message log — that is
+	// the agent's Session, single-writer by design.
+	session  *sessionStore
+	commands []command.Command
+	skills   []skill.Skill
+	hooks    *hook.Runner // session hook runner; nil-safe (no hooks configured)
+	// memory owns the session's memory snapshot and the notes queued to ride the
+	// next turn (see memory.go). A mid-session write must never touch the
+	// cache-stable system prefix.
+	memory     *memoryService
+	cleanup    func()
+	autoPlan   string
+	classifier autoPlanClassifier
+	// startedOnce guards the one-shot SessionStart hook on the first turn. It is a
+	// CompareAndSwap rather than sync.Once on purpose: the original semantics let a
+	// second caller return immediately instead of blocking until the hook finishes.
+	startedOnce atomic.Bool
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -74,97 +88,50 @@ type Controller struct {
 	// Close cancels its still-running jobs.
 	jobs *jobs.Manager
 
-	// reg is the live tool registry the executor reads each turn; pluginCtx is the
-	// session-scoped context a hot-added stdio server binds its subprocess to.
-	// Together they let AddMCPServer connect a server mid-session and have its tools
-	// available on the next turn (see AddMCPServer / RemoveMCPServer).
-	reg       *tool.Registry
-	pluginCtx context.Context
+	// mcp owns this session's MCP servers: the plugin host, the live tool registry
+	// the executor reads each turn, and the context hot-added stdio servers bind
+	// their subprocesses to (see mcp.go). Connecting a server mid-session makes its
+	// tools available on the next turn.
+	mcp *mcpService
+	// reg is kept for ToolNames (a read-only status readout).
+	reg *tool.Registry
 
-	// Checkpoints (snapshot-based rewind). cp is the per-session store rebound when
-	// the session path changes; cpRoot is the workspace root used to guard restore
-	// writes. cpTurn is the monotonic turn counter (decoupled from the store so it
-	// never collides after a restructure); cpBound[turn] records len(Session.Messages)
-	// at that turn's start — the truncation boundary for a conversation rewind/fork.
-	// Boundaries are persisted in each checkpoint and rebuilt from the store on
-	// resume (so a reopened session can still rewind conversation / fork), but
-	// dropped after a summarize restructures the log so those operations report
-	// "unavailable" rather than mis-truncating; code rewind (file-based) is unaffected.
-	cp      *checkpoint.Store
-	cpRoot  string
-	cpTurn  int
-	cpBound map[int]int
+	// gateway is the platform account this session signs its model requests with
+	// (nil / inactive = signed out, talking to a configured provider directly).
+	// It is held, not read from the environment: a token refresh updates the same
+	// object every live session shares (Plan 09 / A12).
+	gateway *account.Gateway
 
-	// engine 非 nil 表示跑在非 native 引擎上(dsh sidecar)。native 路径下永远是
-	// nil,所有 `if c.engine != nil` 分支都不进,行为与迁移前完全一致。
-	engine EngineBackend
+	// ckpt owns snapshot-based rewind: the per-session checkpoint store, the
+	// monotonic turn counter and the turn→message-index boundaries (see
+	// checkpoints.go). wsRoot is this session's workspace root — the checkpoint
+	// service confines restore writes to it, and it is also the project directory
+	// workspace-scoped subprocesses (CodeGraph) are pinned to.
+	ckpt   *checkpointService
+	wsRoot string
 
-	// promptMu serialises approval prompts so at most one is outstanding at a
-	// time (parallel read-only tool calls don't normally gate, writers run
-	// serially — but this keeps the contract explicit). Held across the blocking
-	// wait, so it must never be taken by the Approve command path.
-	promptMu sync.Mutex
-
-	// mu guards the run state and approval bookkeeping; every critical section
-	// under it is short and non-blocking.
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	running bool
-	// busy 标记一个「独占重写会话日志」的操作正在进行(compact/summarize/new/rewind/
-	// fork/branch/switch)。它与 running(turn 进行中)互斥:任一进行中,runGuarded 就
-	// 不启动新 turn,这些 op 之间也互斥。既有守卫只挡 turn→op(op 入口查 running),这里
-	// 补上 op→turn —— 堵住「op 在飞行中(尤其 summarize 的多秒摘要网络调用)时,并发的
-	// 一轮 turn 经 runGuarded 启动、Session.Add 追加消息,随后 op 基于旧快照的
-	// Replace/SetSession 把整轮静默覆盖丢掉」的窗口(B2 的反向)。
-	busy     bool
-	planMode bool
-	// coachPreamble 是会话级「协作模式」persona(如学生引导 / 老师助手):一段
-	// 由前端选定的口径文案,Compose 把它作为 <coaching-style> 块随每个 turn 注入
-	// (发给模型、不进缓存系统前缀),空串=默认无 persona。XML 包裹使其在侧栏
-	// 预览里被自动剥掉,不污染会话标题。
-	coachPreamble string
-	sessionPath   string
-	approvals     map[string]chan approvalReply
-	asks          map[string]chan []event.AskAnswer
-	// pendingApprovals/pendingAsks 保存「已发出、尚未应答」的提示原始载荷,供切回标签时
-	// 重放(桌面多标签:后台标签的审批事件在它无人订阅时发出,切回来需要补发)(A2)。
-	pendingApprovals map[string]event.Approval
-	pendingAsks      map[string]event.Ask
-	granted          map[string]bool
-	nextID           int
-	// turn counts model turns this session, passed to hooks in their payload.
-	turn int
-	// autoApprove auto-allows writer tool calls without prompting. Set only while
-	// executing a just-approved plan: approving the plan is the go-ahead, so the
-	// model shouldn't re-prompt for every write of the work it just got cleared to
-	// do. Deny rules still bite (those never reach the approver). Reset when the
-	// execution turn returns.
-	autoApprove bool
-
-	// bypass is "YOLO" mode: while set, every approval prompt is auto-allowed for
-	// the rest of the session (writers and bash run without asking). It is a
-	// deliberate, session-scoped opt-in (the --dangerously-skip-permissions flag or
-	// a runtime toggle), never persisted. Deny rules are unaffected — they're
-	// resolved before the approver, so a denied tool is still blocked in YOLO mode.
-	bypass bool
-
-	// pendingMemory holds memory notes added mid-session (via "#" quick-add or a
-	// memory edit) that haven't yet been folded into a turn. Compose drains it
-	// onto the next outgoing turn — never into the cache-stable system prefix — so
-	// a fresh memory takes effect this session without busting the prompt cache;
-	// it joins the prefix naturally on the next session.
-	pendingMemory []string
-}
-
-type approvalReply struct {
-	allow   bool
-	session bool
+	// turn arbitrates who may touch the conversation right now (a model turn vs an
+	// exclusive log-rewriting operation) and carries the per-turn runtime flags —
+	// plan mode and the coaching persona, injected at Compose time and never part
+	// of the cached system prefix (see turn_state.go).
+	turn *turnState
 }
 
 // Options carries the already-built pieces setup assembles. Lifecycle metadata
 // lets the controller mint and rotate session files; Host/Commands are surfaced
 // to frontends that resolve MCP prompts and slash commands.
 type Options struct {
+	// Engine 是这个会话的回合引擎。留空则用 Runner 包一个内置引擎。
+	//
+	// 两个字段不是两个真源:New 在构造时就把它们收敛成唯一的 Controller.engine,
+	// Engine 优先。Runner 是「用内置 Go 内核」的简写,绝大多数调用方(和全部
+	// 既有测试)只需要它。
+	// Scope 是这个会话的 runtime.Session(Plan 03 的四级作用域里的第三级)。
+	// 传了它,每一轮就在它下面开一个 runtime.Turn:回合资源挂在 Turn 上,关闭会话
+	// 会自动取消在途的那一轮(AR-R12)。留空则退回 context.Background() 派生,
+	// 即接线之前的行为。
+	Scope        *runtime.Session
+	Engine       engine.TurnEngine
 	Runner       agent.Runner
 	Executor     *agent.Agent
 	Sink         event.Sink
@@ -190,14 +157,18 @@ type Options struct {
 	// context; both are needed for hot-adding MCP servers via AddMCPServer.
 	Registry  *tool.Registry
 	PluginCtx context.Context
-	// WorkspaceRoot is the project root checkpoint restores are confined to ("" =
-	// no confinement). Frontends pass the cwd they launched the session in.
+	// Gateway is the platform account this session signs model requests with.
+	// nil means signed out / not a platform deployment.
+	Gateway *account.Gateway
+
+	// WorkspaceRoot is this session's project root: checkpoint restores are
+	// confined to it ("" = no confinement) and workspace-scoped subprocesses are
+	// pinned to it. boot.Build fills it from its workspace.Context, so a frontend
+	// holding several projects at once gets one root per session rather than the
+	// shared process working directory.
 	WorkspaceRoot string
 	AutoPlan      string
 	Classifier    autoPlanClassifier
-	// Engine 非 nil 时把引擎自有状态的命令(取消/计划模式/会话切换/关闭)分流给它。
-	// native 引擎留空。
-	Engine EngineBackend
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -214,170 +185,50 @@ func New(opts Options) *Controller {
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
 	}
+	// 引擎只解析一次:它同时决定"谁来跑这一轮"和"这条会话记在哪个引擎名下",
+	// 解析两次就会造出两个不同的实例,也就是两个真源。
+	eng := resolveEngine(opts)
 	c := &Controller{
-		runner:           opts.Runner,
-		executor:         opts.Executor,
-		sink:             sink,
-		policy:           opts.Policy,
-		label:            opts.Label,
-		systemPrompt:     opts.SystemPrompt,
-		sessionDir:       opts.SessionDir,
-		sessionPath:      opts.SessionPath,
-		host:             opts.Host,
-		commands:         opts.Commands,
-		skills:           opts.Skills,
-		hooks:            opts.Hooks,
-		mem:              opts.Memory,
-		cleanup:          opts.Cleanup,
-		engine:           opts.Engine,
-		autoPlan:         normalizeAutoPlan(opts.AutoPlan),
-		classifier:       classifier,
-		balanceURL:       opts.BalanceURL,
-		balanceKey:       opts.BalanceKey,
-		balanceClient:    opts.BalanceClient,
-		jobs:             opts.Jobs,
-		reg:              opts.Registry,
-		pluginCtx:        pluginCtx,
-		cpRoot:           opts.WorkspaceRoot,
-		approvals:        map[string]chan approvalReply{},
-		asks:             map[string]chan []event.AskAnswer{},
-		pendingApprovals: map[string]event.Approval{},
-		pendingAsks:      map[string]event.Ask{},
-		granted:          map[string]bool{},
-	}
-	// 引擎后端(dsh)也要知道当前会话文件,以便派生它那边的会话 id(Resume 靠它对上)。
-	c.engineBind(opts.SessionPath)
-	if c.engine != nil {
-		// 文件级 checkpoint 保留 Go 实现:sidecar 每次执行工具前回调这里做快照。
-		c.engine.SetPreEdit(c.enginePreEdit)
+		engine:        eng,
+		executor:      opts.Executor,
+		sink:          sink,
+		approvals:     newApprovalBroker(sink, opts.Policy, opts.Hooks),
+		label:         opts.Label,
+		systemPrompt:  opts.SystemPrompt,
+		commands:      opts.Commands,
+		skills:        opts.Skills,
+		hooks:         opts.Hooks,
+		memory:        newMemoryService(opts.Memory),
+		cleanup:       opts.Cleanup,
+		autoPlan:      normalizeAutoPlan(opts.AutoPlan),
+		classifier:    classifier,
+		balanceURL:    opts.BalanceURL,
+		balanceKey:    opts.BalanceKey,
+		balanceClient: opts.BalanceClient,
+		jobs:          opts.Jobs,
+		reg:           opts.Registry,
+		mcp:           newMCPService(sink, opts.Host, opts.Registry, pluginCtx, opts.WorkspaceRoot),
+		session:       newSessionStore(opts.SessionDir, opts.SessionPath, opts.WorkspaceRoot, engineNameOf(eng), enginePersistsTranscript(eng), opts.Executor),
+		turn:          newTurnState(sink, opts.Executor, opts.Scope),
+		gateway:       opts.Gateway,
+		wsRoot:        opts.WorkspaceRoot,
+		ckpt:          newCheckpointService(opts.WorkspaceRoot),
 	}
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
-	c.rebindCheckpoints(opts.SessionPath)
+	c.ckpt.Rebind(opts.SessionPath)
 	if c.executor != nil {
-		c.executor.SetPreEditHook(func(ch diff.Change) {
-			if c.cp != nil {
-				c.cp.Snapshot(ch)
-			}
-		})
-		c.executor.SetMemoryQueue(c)
+		// 两条属于产品策略、由装配层接上的缝(见 internal/toolpolicy):写工具执行前
+		// 把文件原内容快照进 checkpoint;记忆工具把「本轮生效」的注记排进下一轮。
+		pol := c.executor.Policy()
+		pol.PreEdit = c.ckpt.Snapshot
+		pol.Memory = c.memory
 		// 压缩(自动或手动)会原地重写日志、改变消息下标 → 失效 checkpoint 边界(B1)。
-		c.executor.SetOnCompact(c.InvalidateCheckpoints)
+		c.executor.SetOnCompact(c.ckpt.Invalidate)
 	}
 	return c
 }
 
-// InvalidateCheckpoints 清空 turn→消息下标的映射(cpBound)。任何压缩 / 摘要重写了日志
-// 后调用它,使「仅对话」rewind 与 fork 退化为「不可用」而不是用陈旧下标静默切错;新的
-// turn 会重建边界。cpTurn 保持单调,避免与磁盘上的 checkpoint 编号冲突(B1)。
-func (c *Controller) InvalidateCheckpoints() {
-	c.mu.Lock()
-	c.cpBound = map[int]int{}
-	turn := c.cpTurn // 只有 turn>=cpTurn(压缩后新起的)边界才可信;之前的 MsgIndex 都陈旧
-	cp := c.cp
-	c.mu.Unlock()
-	// 把"边界失效"持久化,让它跨 resume 生效:否则 rebindCheckpoints 会从磁盘 checkpoint 的
-	// 陈旧 MsgIndex 无条件重填 cpBound,resume 后对压缩前 turn 做对话 rewind 会静默截到错误位置。
-	if cp != nil {
-		cp.InvalidateBounds(turn)
-	}
-}
-
-// ckptDir derives a session's checkpoint directory from its file path
-// (…/<id>.jsonl → …/<id>.ckpt). Empty path → empty (in-memory checkpoints).
-func ckptDir(sessionPath string) string {
-	if sessionPath == "" {
-		return ""
-	}
-	return strings.TrimSuffix(sessionPath, ".jsonl") + ".ckpt"
-}
-
-// rebindCheckpoints points the store at the (possibly new) session, loading any
-// checkpoints already on disk, and resets the turn boundaries. Called on
-// construction and whenever the session path changes (NewSession/Resume/SetSessionPath).
-func (c *Controller) rebindCheckpoints(sessionPath string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cp = checkpoint.New(ckptDir(sessionPath), c.cpRoot)
-	c.cpTurn = c.cp.NextTurn() // continue numbering past any checkpoints on disk
-	c.cpBound = c.cp.Bounds()  // rebuilt from persisted checkpoints so a resumed
-	if c.cpBound == nil {      // session can still rewind conversation / fork
-		c.cpBound = map[int]int{}
-	}
-	// 丢弃被压缩失效的陈旧边界:压缩原地重写了日志,压缩前 turn 的 MsgIndex 已失真。这些
-	// checkpoint 的文件快照(代码 rewind)仍有效,只是对话边界不可信——所以只剔 MsgIndex,
-	// 不删 checkpoint。剔掉后这些 turn 的对话 rewind 会诚实报"不可用",而非静默切错位置。
-	if min := c.cp.MinValidBoundTurn(); min > 0 {
-		for t := range c.cpBound {
-			if t < min {
-				delete(c.cpBound, t)
-			}
-		}
-	}
-}
-
-// beginCheckpoint opens a checkpoint for the turn about to run, recording the
-// current message count as the conversation-rewind boundary. Called at the top of
-// runTurn, before the user message is appended.
-func (c *Controller) beginCheckpoint(input string) {
-	if c.cp == nil || c.executor == nil {
-		return
-	}
-	c.mu.Lock()
-	turn := c.cpTurn
-	c.cpTurn++
-	msgIndex := len(c.executor.Session().Messages)
-	c.cpBound[turn] = msgIndex
-	c.mu.Unlock()
-	c.cp.Begin(turn, input, msgIndex)
-}
-
 // --- commands (frontend → controller) ---
-
-// runGuarded runs body on a background goroutine under a fresh cancellable
-// context, guarding against concurrent turns and emitting a TurnDone event when
-// it finishes (Err set on failure; nil also for a user Cancel). A no-op if a
-// turn is already in flight.
-func (c *Controller) runGuarded(body func(ctx context.Context) error) {
-	c.mu.Lock()
-	if c.running || c.busy {
-		c.mu.Unlock()
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
-	c.running = true
-	c.mu.Unlock()
-
-	go func() {
-		defer cancel()
-		err := body(ctx)
-		c.mu.Lock()
-		c.running = false
-		c.cancel = nil
-		c.mu.Unlock()
-		c.sink.Emit(event.Event{Kind: event.TurnDone, Err: err})
-	}()
-}
-
-// tryBeginExclusive 原子地尝试进入「独占重写会话日志」临界区:若已有 turn 运行(running)
-// 或已有另一个独占 op(busy),返回 false;否则置 busy 返回 true。成功的调用方必须
-// defer endExclusive()。配合 runGuarded 同时检查 running||busy,使 turn 与 compact/
-// summarize/new/rewind/fork/branch/switch 严格互斥(见 busy 字段说明)。
-func (c *Controller) tryBeginExclusive() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.running || c.busy {
-		return false
-	}
-	c.busy = true
-	return true
-}
-
-func (c *Controller) endExclusive() {
-	c.mu.Lock()
-	c.busy = false
-	c.mu.Unlock()
-}
 
 // Send starts a turn with an uncomposed message. The controller applies
 // auto-plan, plan-mode, memory, and background-job framing inside the async turn
@@ -391,7 +242,7 @@ func (c *Controller) Send(input string) {
 // resolved @-reference payloads so referenced file contents cannot inflate the
 // complexity score.
 func (c *Controller) SendWithRaw(input, raw string) {
-	c.runGuarded(func(ctx context.Context) error { return c.runTurnWithRaw(ctx, input, raw) })
+	c.turn.Guarded(func(ctx context.Context) error { return c.runTurnWithRaw(ctx, input, raw) })
 }
 
 // planApprovalTool is the Tool name on the ApprovalRequest the controller emits
@@ -420,59 +271,47 @@ func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) erro
 	c.maybeSessionStart(ctx)
 	c.maybeAutoPlan(ctx, raw)
 	input = c.Compose(input)
-	startMessages := c.messageCount()
-	defer c.snapshotActivityIfChanged(startMessages)
+	startMessages := c.session.MessageCount()
+	defer c.session.SaveActivityIfChanged(startMessages)
 	// Open a checkpoint for this turn before the user message is appended, so the
 	// recorded message boundary precedes it and pre-edit snapshots land here.
-	c.beginCheckpoint(input)
+	c.beginTurnCheckpoint(input)
 	// UserPromptSubmit / Stop hooks bracket the whole turn (incl. the plan
 	// research + approved-execution sub-turns below): a gating UserPromptSubmit
 	// aborts before any model call; Stop fires once when the turn returns.
 	if c.hooks.Enabled() {
-		c.mu.Lock()
-		c.turn++
-		turn := c.turn
-		c.mu.Unlock()
+		turn := c.turn.NextTurn()
 		if block, _ := c.hooks.PromptSubmit(ctx, input, turn); block {
 			return nil // the hook's notify callback already surfaced the reason
 		}
-		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.History()), turn) }()
+		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), turn) }()
 	}
-	if err := c.runner.Run(ctx, input); err != nil {
+	if err := c.runEngineTurn(ctx, input); err != nil {
 		return err
 	}
-	c.mu.Lock()
-	plan := c.planMode
-	c.mu.Unlock()
-	if !plan {
+	if !c.turn.PlanMode() {
 		return nil
 	}
-	proposal := lastAssistantText(c.History())
+	proposal := lastAssistantText(c.session.History())
 	if proposal == "" {
 		return nil // no substantive proposal to gate
 	}
 	// The plan is already visible as the assistant's answer, so the request
 	// carries no subject — it's purely the gate.
-	allow, _, err := c.requestApproval(ctx, planApprovalTool, "")
+	allow, _, err := c.approvals.Request(ctx, planApprovalTool, "")
 	if err != nil {
 		return err
 	}
 	if !allow {
 		return nil // keep planning; plan mode stays on
 	}
-	c.SetPlanMode(false)
+	c.turn.SetPlanMode(false)
 	c.seedPlanTodos(proposal)
 	// The plan is the go-ahead: don't re-prompt for each write of the approved
 	// work. Auto-approve writers for the duration of this execution turn only.
-	c.mu.Lock()
-	c.autoApprove = true
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		c.autoApprove = false
-		c.mu.Unlock()
-	}()
-	return c.runner.Run(ctx, planApprovedMessage)
+	c.approvals.SetAutoApprove(true)
+	defer c.approvals.SetAutoApprove(false)
+	return c.runEngineTurn(ctx, planApprovedMessage)
 }
 
 // lastAssistantText returns the content of the most recent assistant message with
@@ -486,239 +325,68 @@ func lastAssistantText(msgs []provider.Message) string {
 	return ""
 }
 
-// Submit is the one-call entry for a simple frontend: it takes raw user input
-// and does everything — slash-command dispatch, @-reference expansion, plan-mode
-// composition — emitting all output as events. The HTTP/SSE server uses this so
-// a browser client only POSTs the typed line.
-//
-// Slash commands route to the matching primitive: /compact and /new run their
-// session op and emit a Notice; /mcp__server__prompt and custom /commands
-// resolve to a turn; an unknown slash emits a Notice. Anything else is a normal
-// turn with its @-references resolved first.
-func (c *Controller) Submit(input string) {
-	trimmed := strings.TrimSpace(input)
-	switch {
-	case trimmed == "/compact" || strings.HasPrefix(trimmed, "/compact "):
-		focus := strings.TrimSpace(strings.TrimPrefix(trimmed, "/compact"))
-		go func() {
-			if err := c.Compact(context.Background(), focus); err != nil {
-				c.notice("compaction failed: " + err.Error())
-			} else {
-				c.notice("compacted")
-				if err := c.Snapshot(); err != nil {
-					slog.Warn("controller: snapshot after compact", "err", err)
-				}
-			}
-		}()
-	case trimmed == "/new":
-		go func() {
-			if err := c.NewSession(); err != nil {
-				c.notice("new session failed: " + err.Error())
-			} else {
-				c.notice("new session")
-			}
-		}()
-	case strings.HasPrefix(trimmed, "#"):
-		// "#<note>" quick-adds a memory line — same shortcut as the chat TUI, so
-		// the desktop and HTTP frontends (which route raw input through Submit)
-		// get it for free. It never starts a model turn.
-		note := strings.TrimSpace(trimmed[1:])
-		if note == "" {
-			c.notice("nothing to remember")
-			return
-		}
-		if path, err := c.QuickAdd(memory.ScopeProject, note); err != nil {
-			c.notice("memory: " + err.Error())
-		} else {
-			c.notice("remembered → " + path)
-		}
-	case strings.HasPrefix(trimmed, "/mcp__"):
-		c.runGuarded(func(ctx context.Context) error {
-			sent, found, err := c.MCPPrompt(ctx, trimmed)
-			if err != nil {
-				return err
-			}
-			if !found {
-				c.notice("unknown command: " + trimmed)
-				return nil
-			}
-			return c.runTurnWithRaw(ctx, sent, sent)
-		})
-	case strings.HasPrefix(trimmed, "/"):
-		if ref, ok := FileRefLine(trimmed); ok {
-			c.runRefTurn(ref)
-			return
-		}
-		// Read-only management verbs (/model /memory /skill /hooks /mcp) emit a
-		// listing Notice, so Submit-based frontends (desktop, HTTP) get them with
-		// no extra wiring. (The chat TUI handles these itself with richer output.)
-		fields := strings.Fields(trimmed)
-		switch fields[0] {
-		case "/tree":
-			c.notice(c.BranchTreeText())
-			return
-		case "/branch":
-			args := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
-			if turn, name, fromTurn, err := ParseBranchTarget(args); err != nil {
-				c.notice(err.Error())
-			} else if fromTurn {
-				if _, err := c.ForkNamed(turn-1, name); err != nil {
-					c.notice(err.Error())
-				}
-			} else {
-				if _, err := c.Branch(name); err != nil {
-					c.notice(err.Error())
-				}
-			}
-			return
-		case "/switch":
-			ref := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
-			if _, err := c.SwitchBranch(ref); err != nil {
-				c.notice(err.Error())
-			}
-			return
-		}
-		if c.managementNotice(trimmed) {
-			return
-		}
-		// A custom command wins over a skill of the same name; both resolve to a
-		// turn. (Built-in slash verbs like /compact are handled above.)
-		if sent, ok := c.CustomCommand(trimmed); ok {
-			c.runGuarded(func(ctx context.Context) error {
-				return c.runTurnWithRaw(ctx, sent, sent)
-			})
-			return
-		}
-		if sent, ok := c.RunSkill(trimmed); ok {
-			c.runGuarded(func(ctx context.Context) error {
-				return c.runTurnWithRaw(ctx, sent, sent)
-			})
-			return
-		}
-		c.notice("unknown command: " + trimmed)
-	default:
-		c.runRefTurn(input)
-	}
-}
-
-// runRefTurn resolves a line's @references into a context block and starts a
-// turn with it prepended (or the raw line when nothing resolved).
-func (c *Controller) runRefTurn(input string) {
-	c.runGuarded(func(ctx context.Context) error {
-		block, errs := c.ResolveRefs(ctx, input)
-		for _, e := range errs {
-			c.notice(e)
-		}
-		sent := input
-		if block != "" {
-			sent = "Referenced context:\n\n" + block + "\n\n" + input
-		}
-		return c.runTurnWithRaw(ctx, sent, input)
-	})
-}
-
-// notice emits an informational Notice event.
-func (c *Controller) notice(text string) {
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
-}
-
 // Run executes a turn synchronously, returning the agent's error. Used by the
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) error {
 	c.maybeSessionStart(ctx)
-	startMessages := c.messageCount()
-	defer c.snapshotActivityIfChanged(startMessages)
+	startMessages := c.session.MessageCount()
+	defer c.session.SaveActivityIfChanged(startMessages)
 	if c.hooks.Enabled() {
-		c.turn++
-		if block, _ := c.hooks.PromptSubmit(ctx, input, c.turn); block {
+		turn := c.turn.NextTurn()
+		if block, _ := c.hooks.PromptSubmit(ctx, input, turn); block {
 			return nil
 		}
-		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.History()), c.turn) }()
+		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.session.History()), turn) }()
 	}
-	return c.runner.Run(ctx, input)
+	return c.runEngineTurn(ctx, input)
 }
 
-// Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
-// unblocks via the cancelled context.
-// EngineName 报告本 Controller 实际跑在哪个底层引擎上:"dsh"(sidecar)或 "native"。
-// 以运行时装配为准(flag / ONECREAT_ENGINE / 配置的最终结果),供前端状态栏显示,
-// 免得测试时分不清在测哪个引擎。
-func (c *Controller) EngineName() string {
-	if c.engine != nil {
-		return "dsh"
+// resolveEngine 把 Options 里那两种写法收敛成唯一的引擎。
+func resolveEngine(opts Options) engine.TurnEngine {
+	if opts.Engine != nil {
+		return opts.Engine
 	}
-	return "native"
+	if opts.Runner != nil {
+		return native.New(opts.Runner)
+	}
+	return nil
 }
 
-func (c *Controller) Cancel() {
-	c.mu.Lock()
-	cancel := c.cancel
-	engine := c.engine
-	c.mu.Unlock()
-	// dsh 引擎:先经 wire 让 sidecar 自己收敛这一轮(它有真正的 abort 接缝),
-	// 再取消 Go 侧 context —— 两者都要,前者停模型/工具,后者解阻塞在审批上的 goroutine。
-	if engine != nil {
-		_ = engine.Cancel()
+// engineNameOf 返回引擎名;没有引擎时(部分测试路径)按内置内核记账,与本次改动
+// 之前的行为一致 —— 这个函数只负责别把 dsh 记成 native,不负责新增失败模式。
+func engineNameOf(e engine.TurnEngine) string {
+	if e == nil {
+		return session.EngineNative
 	}
-	if cancel != nil {
-		cancel()
-	}
+	return engine.NameOf(e)
 }
 
-// Running reports whether a turn is currently in flight.
-func (c *Controller) Running() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.running
+// enginePersistsTranscript 报告 OneCreat 这侧的消息日志是不是这条会话的真源 ——
+// 也就是该不该把它写成一份转录文本。判据是 CapResume,它的定义就是这件事,所以不
+// 另造一个能力常量。
+//
+// nil 与 engineNameOf 用同一个约定:没接引擎的测试路径按内置内核记账,行为与本次
+// 改动之前一致 —— 这个函数只负责别替不落盘的引擎伪造转录文本,不负责新增失败模式。
+func enginePersistsTranscript(e engine.TurnEngine) bool {
+	if e == nil {
+		return true
+	}
+	return engine.Supports(e, engine.CapResume)
 }
 
-// Approve answers a pending ApprovalRequest by ID: allow runs the call, session
-// also remembers a grant for the rest of the session so the same tool+subject
-// isn't re-prompted. Unknown/expired IDs are ignored.
-func (c *Controller) Approve(id string, allow, session bool) {
-	c.mu.Lock()
-	reply := c.approvals[id]
-	delete(c.approvals, id)
-	delete(c.pendingApprovals, id)
-	c.mu.Unlock()
-	if reply != nil {
-		reply <- approvalReply{allow: allow, session: session} // buffered, never blocks
+// runEngineTurn 把一轮交给引擎并等它跑完。这是 Controller 与「谁来跑」之间的
+// **唯一**接触点 —— 上面那些策略代码永远不该知道底下是 native 还是 dsh。
+func (c *Controller) runEngineTurn(ctx context.Context, input string) error {
+	h, err := c.engine.Start(ctx, engine.TurnRequest{Input: input})
+	if err != nil {
+		return err
 	}
-}
-
-// PendingApprovals 返回当前已发出、尚未应答的审批请求(用于切回标签时重放),按 id 升序。
-func (c *Controller) PendingApprovals() []event.Approval {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]event.Approval, 0, len(c.pendingApprovals))
-	for _, a := range c.pendingApprovals {
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool { return idLess(out[i].ID, out[j].ID) })
-	return out
-}
-
-// PendingAsks 返回当前已发出、尚未应答的 ask 请求(用于切回标签时重放),按 id 升序。
-func (c *Controller) PendingAsks() []event.Ask {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]event.Ask, 0, len(c.pendingAsks))
-	for _, a := range c.pendingAsks {
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool { return idLess(out[i].ID, out[j].ID) })
-	return out
-}
-
-// idLess 按数值比较审批/ask 的字符串 id(它们是自增计数的十进制串),回退到字典序。
-func idLess(a, b string) bool {
-	ai, aerr := strconv.Atoi(a)
-	bi, berr := strconv.Atoi(b)
-	if aerr == nil && berr == nil {
-		return ai < bi
-	}
-	return a < b
+	// 正常跑完时 Cancel 是空操作;只有 ctx 被取消时它才真正生效。取消的触发源
+	// 仍然只有 ctx 一个,Cancel 只是把它传达给那些不会随 ctx 一起死的引擎
+	// (dsh sidecar 是独立进程,ctx 取消它一无所知)。
+	defer func() { _ = h.Cancel() }()
+	return h.Wait(ctx)
 }
 
 // EnableInteractiveApproval swaps the executor's gate for one that routes "ask"
@@ -728,97 +396,18 @@ func idLess(a, b string) bool {
 // a nil asker from setup.
 func (c *Controller) EnableInteractiveApproval() {
 	if c.executor != nil {
-		c.executor.SetGate(permission.NewGate(c.policy, gateApprover{c}))
+		c.executor.SetGate(c.approvals.Gate())
 		c.executor.SetAsker(c)
 	}
-	// dsh 引擎:同一个开关也把 sidecar 的审批桥接到前端。没调用它的 headless 路径
-	// 保持 approver=nil,于是 Ask 按 native 的"非交互保持自主"语义放行。
-	if c.engine != nil {
-		c.engine.SetApprover(c.RequestApproval)
-	}
-}
-
-// Ask implements agent.Asker: it emits an AskRequest and blocks until
-// AnswerQuestion(ID, …) answers or ctx is cancelled. promptMu serialises it
-// against tool-approval prompts so at most one user prompt is outstanding.
-func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error) {
-	c.promptMu.Lock()
-	defer c.promptMu.Unlock()
-
-	c.mu.Lock()
-	c.nextID++
-	id := strconv.Itoa(c.nextID)
-	reply := make(chan []event.AskAnswer, 1)
-	c.asks[id] = reply
-	ask := event.Ask{ID: id, Questions: questions}
-	c.pendingAsks[id] = ask // 记录未应答的 ask,供切回标签时重放(A2)
-	c.mu.Unlock()
-
-	c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: ask})
-
-	select {
-	case ans := <-reply:
-		return ans, nil
-	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.asks, id)
-		delete(c.pendingAsks, id)
-		c.mu.Unlock()
-		return nil, ctx.Err()
-	}
-}
-
-// AnswerQuestion resolves a pending AskRequest by ID with the user's selections.
-// Unknown/expired IDs are ignored.
-func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
-	c.mu.Lock()
-	reply := c.asks[id]
-	delete(c.asks, id)
-	delete(c.pendingAsks, id)
-	c.mu.Unlock()
-	if reply != nil {
-		reply <- answers // buffered, never blocks
-	}
-}
-
-// SetPlanMode flips the executor's read-only gate without touching the
-// cache-stable prompt prefix, and remembers the state so Compose can prepend the
-// plan-mode marker to outgoing turns.
-func (c *Controller) SetPlanMode(v bool) {
-	c.mu.Lock()
-	c.planMode = v
-	c.mu.Unlock()
-	if c.executor != nil {
-		c.executor.SetPlanMode(v)
-	}
-	if c.engine != nil {
-		_ = c.engine.SetPlanMode(v)
-	}
-}
-
-// PlanMode reports whether outgoing turns currently receive the plan-mode
-// marker. Frontends use it after Compose because auto-plan may flip the mode.
-func (c *Controller) PlanMode() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.planMode
-}
-
-// SetCoachMode sets the session-level coaching persona (an empty string clears
-// it). Compose injects the preamble as a <coaching-style> block on each turn —
-// session-scoped, never the cached system prefix — so switching takes effect
-// immediately without busting the prompt cache.
-func (c *Controller) SetCoachMode(preamble string) {
-	c.mu.Lock()
-	c.coachPreamble = strings.TrimSpace(preamble)
-	c.mu.Unlock()
 }
 
 // Compact runs one compaction pass on the executor's session on demand.
 // instructions is optional `/compact <focus>` guidance steering what to keep.
 func (c *Controller) Compact(ctx context.Context, instructions string) error {
-	if c.engineActive() {
-		return engineUnsupported("手动压缩")
+	// 压缩重写的是 OneCreat 这边的消息日志。日志不在这边的引擎,压它没有意义,
+	// 而且会让本地影子与引擎真实上下文进一步分叉。
+	if err := c.requireCap("压缩上下文", engine.CapResume); err != nil {
+		return err
 	}
 	if c.executor == nil {
 		return nil
@@ -826,31 +415,36 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	// turn 进行中、或另一个会话重写 op 进行中,都拒绝:compact() 会 Snapshot→多秒摘要
 	// 网络调用→整体 Replace,期间并发的 turn(Session.Add)会被基于旧快照的 Replace
 	// 整轮覆盖丢掉(B2 双向)。守卫覆盖整个 Snapshot→summarize→Replace 跨度。
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.busyNotice("正在运行中,请等当前轮结束再压缩")
 	}
-	defer c.endExclusive()
+	defer c.turn.EndExclusive()
 	return c.executor.CompactNow(ctx, instructions)
 }
+
+// BusyError 是「有回合在跑,现在不能做这件事」的类型化错误。
+//
+// 它与 engine.UnsupportedError 必须能被区分开:一个是**待会儿可以再来**的状态冲突,
+// 另一个是这个引擎**永远做不到**。传输层据此给出不同的状态码(见 internal/serve),
+// 混成一个码等于告诉客户端「分不清该不该重试」。
+type BusyError struct{ Msg string }
+
+func (e *BusyError) Error() string { return e.Msg }
 
 // busyNotice 在有 turn 运行时拒绝「会重写整个会话」的操作:发一条 Warn Notice(前端
 // 即便吞掉返回的 error 也能看到原因),并返回该错误(B2)。
 func (c *Controller) busyNotice(msg string) error {
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
-	return fmt.Errorf("%s", msg)
+	return &BusyError{Msg: msg}
 }
 
 // maybeSessionStart fires the SessionStart hook exactly once per session, lazily
 // on the first turn — by then the sink/notify is wired, and a resumed session
 // fires it too (its first post-resume turn).
 func (c *Controller) maybeSessionStart(ctx context.Context) {
-	c.mu.Lock()
-	if c.startedOnce {
-		c.mu.Unlock()
+	if !c.startedOnce.CompareAndSwap(false, true) {
 		return
 	}
-	c.startedOnce = true
-	c.mu.Unlock()
 	c.hooks.SessionStart(ctx)
 }
 
@@ -858,30 +452,28 @@ func (c *Controller) maybeSessionStart(ctx context.Context) {
 // resets the executor to a clean session carrying the same system prompt. It
 // ends the old session and starts the new one for lifecycle hooks.
 func (c *Controller) NewSession() error {
+	if err := c.requireCap("新建会话", engine.CapResume); err != nil {
+		return err
+	}
 	if c.executor == nil {
 		return nil
 	}
 	// turn 进行中、或另一个会话重写 op 进行中,都拒绝:Snapshot→SetSession 换会话指针,
 	// 期间并发的 turn(Session.Add)会落到混合状态/被丢掉(B2 双向)。
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.busyNotice("正在运行中,请等当前轮结束再新建会话")
 	}
-	defer c.endExclusive()
-	if err := c.Snapshot(); err != nil {
+	defer c.turn.EndExclusive()
+	if err := c.session.Save(); err != nil {
 		return err
 	}
 	c.hooks.SessionEnd(context.Background())
-	if c.sessionDir != "" {
-		c.mu.Lock()
-		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
-		c.mu.Unlock()
+	if c.session.dir != "" {
+		c.session.SetPath(agent.NewSessionPath(c.session.dir, c.label))
 	}
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
-	c.engineBind(c.SessionPath())
-	c.rebindCheckpoints(c.SessionPath())
-	c.mu.Lock()
-	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
-	c.mu.Unlock()
+	c.ckpt.Rebind(c.session.Path())
+	c.startedOnce.Store(true) // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.hooks.SessionStart(context.Background())
 	return nil
 }
@@ -894,20 +486,6 @@ const (
 	RewindConversation                    // message log only
 	RewindBoth                            // both
 )
-
-// Checkpoints lists the session's rewind points (one per user turn), oldest first.
-func (c *Controller) Checkpoints() []checkpoint.Meta {
-	// Resume/SetSessionPath 会在 c.mu 下替换 c.cp;裸读指针与之构成数据竞争(桌面端
-	// "打开 rewind 抽屉" 与 "恢复历史会话" 是不同 goroutine)。照 InvalidateCheckpoints
-	// 的写法:锁内捕获 cp 后解锁再用(cp.List 自带内部锁,不必持 c.mu)。
-	c.mu.Lock()
-	cp := c.cp
-	c.mu.Unlock()
-	if cp == nil {
-		return nil
-	}
-	return cp.List()
-}
 
 // rewindFail emits the error as a Warn notice (so a frontend that swallows the
 // returned error — e.g. the desktop bridge's .catch — still shows the user why
@@ -924,22 +502,20 @@ func (c *Controller) rewindFail(err error) error {
 // unavailable for turns inherited from a resumed session (code rewind still works).
 // Frontends re-render their transcript from History after the call.
 func (c *Controller) Rewind(turn int, scope RewindScope) error {
-	if c.engineActive() && scope != RewindCode {
-		return engineUnsupported("对话回退")
+	if err := c.requireCap("回退会话", engine.CapFork); err != nil {
+		return c.rewindFail(err)
 	}
-	if c.cp == nil || c.executor == nil {
+	if !c.ckpt.Available() || c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.rewindFail(fmt.Errorf("cannot rewind while another operation is running"))
 	}
-	defer c.endExclusive()
-	c.mu.Lock()
-	boundary, hasBound := c.cpBound[turn]
-	c.mu.Unlock()
+	defer c.turn.EndExclusive()
+	boundary, hasBound := c.ckpt.Bound(turn)
 
 	if scope == RewindCode || scope == RewindBoth {
-		written, deleted, err := c.cp.RestoreCode(turn)
+		written, deleted, err := c.ckpt.RestoreCode(turn)
 		if err != nil {
 			return c.rewindFail(fmt.Errorf("rewind code: %w", err))
 		}
@@ -955,230 +531,14 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 		if !c.executor.Session().Truncate(boundary) {
 			return c.rewindFail(fmt.Errorf("无法回退到 turn %d:会话已被压缩或边界失效", turn))
 		}
-		c.mu.Lock()
-		c.cpTurn = turn // renumber future turns from here; later turns are gone
-		for k := range c.cpBound {
-			if k >= turn {
-				delete(c.cpBound, k)
-			}
-		}
-		cp := c.cp
-		c.mu.Unlock()
-		// 删掉被回退掉的 turn(>=turn)的废弃 checkpoint(内存 + 磁盘)。否则复用 turn 号后
-		// RestoreCode / Bounds 会取到废弃时间线的同号快照——按旧内容覆盖,甚至(废弃快照记录
-		// 的是"文件新建",Content==nil)静默删除当前时间线合法存在的文件。
-		if cp != nil {
-			cp.Prune(turn)
-		}
-		if err := c.Snapshot(); err != nil {
+		c.ckpt.TruncateFrom(turn)
+		if err := c.session.Save(); err != nil {
 			slog.Warn("controller: snapshot after rewind", "err", err)
 		}
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: fmt.Sprintf("rewound conversation to turn %d", turn)})
 	}
 	return nil
-}
-
-// Fork branches the conversation at the start of turn into a NEW session file,
-// preserving the current one as the branch point, and switches to the branch. Code
-// is untouched (it's a conversation operation). Like a conversation rewind it needs
-// the live boundary, so it is unavailable for resumed-session turns and refused
-// while a turn runs. Returns the new session path.
-func (c *Controller) Fork(turn int) (string, error) {
-	if c.engineActive() {
-		return "", engineUnsupported("分叉会话")
-	}
-	return c.ForkNamed(turn, "")
-}
-
-func (c *Controller) ForkNamed(turn int, name string) (string, error) {
-	if c.engineActive() {
-		return "", engineUnsupported("分叉会话")
-	}
-	if c.executor == nil {
-		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
-	}
-	if c.sessionDir == "" {
-		return "", c.rewindFail(fmt.Errorf("fork needs session persistence, which is disabled"))
-	}
-	if !c.tryBeginExclusive() {
-		return "", c.rewindFail(fmt.Errorf("cannot fork while another operation is running"))
-	}
-	defer c.endExclusive()
-	c.mu.Lock()
-	boundary, hasBound := c.cpBound[turn]
-	c.mu.Unlock()
-	if !hasBound {
-		return "", c.rewindFail(fmt.Errorf("fork unavailable for turn %d (resumed session)", turn))
-	}
-
-	// Persist the current conversation first so the branch point survives, then
-	// seed a fresh session with the messages up to the fork and switch to it.
-	if err := c.Snapshot(); err != nil {
-		slog.Warn("controller: pre-fork snapshot", "err", err)
-	}
-	parentPath := c.SessionPath()
-	parentID := agent.BranchID(parentPath)
-	src := c.executor.Session().Snapshot()
-	if boundary > len(src) {
-		boundary = len(src)
-	}
-	forked := append([]provider.Message(nil), src[:boundary]...)
-	sess := agent.NewSession("")
-	sess.Messages = forked
-
-	newPath := agent.NewSessionPath(c.sessionDir, c.label)
-	if err := sess.Save(newPath); err != nil {
-		return "", c.rewindFail(err)
-	}
-	if err := agent.SaveBranchMeta(newPath, agent.BranchMeta{
-		Name:             strings.TrimSpace(name),
-		ParentID:         parentID,
-		ForkTurn:         turn,
-		ForkMessageIndex: boundary,
-	}); err != nil {
-		return "", c.rewindFail(err)
-	}
-	c.executor.SetSession(sess)
-	c.mu.Lock()
-	c.sessionPath = newPath
-	c.mu.Unlock()
-	c.rebindCheckpoints(newPath)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("forked conversation at turn %d into a new session", turn)})
-	return newPath, nil
-}
-
-// Branch copies the current conversation into a child branch and switches to it.
-// Unlike Fork, it branches at the current tip and does not require a checkpoint.
-func (c *Controller) Branch(name string) (string, error) {
-	if c.engineActive() {
-		return "", engineUnsupported("新建分支")
-	}
-	if c.executor == nil {
-		return "", c.rewindFail(fmt.Errorf("branch unavailable"))
-	}
-	if c.sessionDir == "" {
-		return "", c.rewindFail(fmt.Errorf("branch needs session persistence, which is disabled"))
-	}
-	if !c.tryBeginExclusive() {
-		return "", c.rewindFail(fmt.Errorf("cannot branch while another operation is running"))
-	}
-	defer c.endExclusive()
-	if !c.executor.Session().HasContent() {
-		return "", c.rewindFail(fmt.Errorf("nothing to branch yet"))
-	}
-	if err := c.Snapshot(); err != nil {
-		return "", c.rewindFail(err)
-	}
-	parentPath := c.SessionPath()
-	parentID := agent.BranchID(parentPath)
-	src := c.executor.Session().Snapshot()
-	branched := append([]provider.Message(nil), src...)
-	sess := agent.NewSession("")
-	sess.Messages = branched
-
-	newPath := agent.NewSessionPath(c.sessionDir, c.label)
-	if err := sess.Save(newPath); err != nil {
-		return "", c.rewindFail(err)
-	}
-	if err := agent.SaveBranchMeta(newPath, agent.BranchMeta{
-		Name:             strings.TrimSpace(name),
-		ParentID:         parentID,
-		ForkTurn:         -1,
-		ForkMessageIndex: len(branched),
-	}); err != nil {
-		return "", c.rewindFail(err)
-	}
-	c.executor.SetSession(sess)
-	c.mu.Lock()
-	c.sessionPath = newPath
-	c.mu.Unlock()
-	c.rebindCheckpoints(newPath)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
-	return newPath, nil
-}
-
-// Branches lists saved conversation branches in this controller's session dir.
-func (c *Controller) Branches() ([]agent.BranchInfo, error) {
-	if c.sessionDir == "" {
-		return nil, fmt.Errorf("session persistence is disabled")
-	}
-	if err := c.Snapshot(); err != nil {
-		return nil, err
-	}
-	return agent.ListBranches(c.sessionDir)
-}
-
-func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
-	if c.engineActive() {
-		return agent.BranchInfo{}, engineUnsupported("切换分支")
-	}
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("usage: /switch <branch id|name>"))
-	}
-	if !c.tryBeginExclusive() {
-		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("cannot switch branches while another operation is running"))
-	}
-	defer c.endExclusive()
-	branches, err := c.Branches()
-	if err != nil {
-		return agent.BranchInfo{}, c.rewindFail(err)
-	}
-	match, err := resolveBranch(branches, ref)
-	if err != nil {
-		return agent.BranchInfo{}, c.rewindFail(err)
-	}
-	loaded, err := agent.LoadSession(match.Path)
-	if err != nil {
-		return agent.BranchInfo{}, c.rewindFail(err)
-	}
-	if c.executor != nil {
-		c.executor.SetSession(loaded)
-	}
-	c.mu.Lock()
-	c.sessionPath = match.Path
-	c.mu.Unlock()
-	c.rebindCheckpoints(match.Path)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
-	return match, nil
-}
-
-func resolveBranch(branches []agent.BranchInfo, ref string) (agent.BranchInfo, error) {
-	refLower := strings.ToLower(ref)
-	var matches []agent.BranchInfo
-	for _, b := range branches {
-		nameLower := strings.ToLower(strings.TrimSpace(b.Name))
-		switch {
-		case b.ID == ref || strings.EqualFold(b.ID, ref):
-			return b, nil
-		case b.Name != "" && nameLower == refLower:
-			matches = append(matches, b)
-		case strings.HasPrefix(strings.ToLower(b.ID), refLower):
-			matches = append(matches, b)
-		case strings.HasPrefix(strings.ToLower(shortBranchID(b.ID)), refLower):
-			matches = append(matches, b)
-		case b.Path == ref:
-			return b, nil
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0], nil
-	}
-	if len(matches) > 1 {
-		return agent.BranchInfo{}, fmt.Errorf("branch %q is ambiguous", ref)
-	}
-	return agent.BranchInfo{}, fmt.Errorf("branch %q not found", ref)
-}
-
-func branchDisplayName(b agent.BranchInfo) string {
-	if strings.TrimSpace(b.Name) != "" {
-		return fmt.Sprintf("%s (%s)", b.Name, b.ID)
-	}
-	return b.ID
 }
 
 // SummarizeFrom compresses the conversation from turn onward into one summary;
@@ -1196,19 +556,14 @@ func (c *Controller) SummarizeUpTo(ctx context.Context, turn int) error {
 }
 
 func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error {
-	if c.engineActive() {
-		return engineUnsupported("摘要会话")
-	}
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	if !c.tryBeginExclusive() {
+	if !c.turn.TryBeginExclusive() {
 		return c.rewindFail(fmt.Errorf("cannot summarize while another operation is running"))
 	}
-	defer c.endExclusive()
-	c.mu.Lock()
-	boundary, hasBound := c.cpBound[turn]
-	c.mu.Unlock()
+	defer c.turn.EndExclusive()
+	boundary, hasBound := c.ckpt.Bound(turn)
 	if !hasBound {
 		return c.rewindFail(fmt.Errorf("summarize unavailable for turn %d (resumed session)", turn))
 	}
@@ -1226,111 +581,10 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	// 会从磁盘 checkpoint 的陈旧 MsgIndex 无条件回填 cpBound,对 summarize 前的 turn 做对话
 	// rewind 会静默切到错误偏移(悬空 tool_calls → 请求 OpenAI 兼容端点 400)。
 	c.InvalidateCheckpoints()
-	if err := c.Snapshot(); err != nil {
+	if err := c.session.Save(); err != nil {
 		slog.Warn("controller: post-summarize snapshot", "err", err)
 	}
 	return nil
-}
-
-// Resume seeds the session from a loaded transcript and pins the active file to
-// its path so auto-save keeps appending there.
-func (c *Controller) Resume(s *agent.Session, path string) {
-	if c.executor != nil {
-		c.executor.SetSession(s)
-	}
-	c.mu.Lock()
-	c.sessionPath = path
-	c.mu.Unlock()
-	c.engineBind(path)
-	c.rebindCheckpoints(path)
-}
-
-// Snapshot writes the executor's conversation to the active session file. No-op
-// when persistence is unavailable or the session has never been used (no user
-// interaction). Called after every turn so a crash loses at most one in-flight
-// prompt.
-func (c *Controller) Snapshot() error {
-	return c.snapshot(false)
-}
-
-// SnapshotActivity writes the active conversation and marks the session as
-// recently active. Use it only after a real user/model turn changes the
-// transcript; switch/close snapshots should call Snapshot so they do not reorder
-// recent-session pickers.
-func (c *Controller) SnapshotActivity() error {
-	return c.snapshot(true)
-}
-
-func (c *Controller) snapshot(markActivity bool) error {
-	c.mu.Lock()
-	path := c.sessionPath
-	c.mu.Unlock()
-	if c.executor == nil || path == "" {
-		return nil
-	}
-	s := c.executor.Session()
-	if !s.HasContent() {
-		return nil
-	}
-	if !markActivity {
-		if _, err := agent.EnsureBranchMeta(path); err != nil {
-			return err
-		}
-	}
-	if err := s.Save(path); err != nil {
-		return err
-	}
-	if markActivity {
-		return agent.TouchBranchMeta(path)
-	}
-	return nil
-}
-
-func (c *Controller) messageCount() int {
-	if c.executor == nil {
-		return 0
-	}
-	return len(c.executor.Session().Snapshot())
-}
-
-func (c *Controller) snapshotActivityIfChanged(startMessages int) {
-	if c.messageCount() <= startMessages {
-		return
-	}
-	if err := c.SnapshotActivity(); err != nil {
-		slog.Warn("controller: activity snapshot", "err", err)
-	}
-}
-
-// SetSessionPath pins where auto-save lands (a fresh session file minted by the
-// caller when no resume path applies).
-func (c *Controller) SetSessionPath(p string) {
-	c.mu.Lock()
-	c.sessionPath = p
-	c.mu.Unlock()
-	c.engineBind(p)
-	c.rebindCheckpoints(p)
-}
-
-// SessionDir reports the directory new session files land in ("" disables
-// persistence), so the caller can decide whether to mint a path.
-func (c *Controller) SessionDir() string { return c.sessionDir }
-
-// SessionPath reports the file the current conversation auto-saves to ("" when
-// persistence is disabled), so a history view can mark the active session.
-func (c *Controller) SessionPath() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.sessionPath
-}
-
-// History returns the executor's current message log (for repopulating a
-// resumed frontend's view).
-func (c *Controller) History() []provider.Message {
-	if c.executor == nil {
-		return nil
-	}
-	return c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
 }
 
 // ContextSnapshot returns (promptTokens, contextWindow) from the most recent
@@ -1384,218 +638,26 @@ func (c *Controller) Balance(ctx context.Context) (*billing.Balance, error) {
 	return billing.FetchWithClient(ctx, c.balanceClient, c.balanceURL, c.balanceKey)
 }
 
-// Host returns the running MCP host (nil when no plugins), for frontends that
-// list servers / resolve MCP prompts.
-func (c *Controller) Host() *plugin.Host { return c.host }
-
 // Commands returns the loaded custom slash commands.
 func (c *Controller) Commands() []command.Command { return c.commands }
 
 // Skills returns the discoverable skills (for the slash menu and `/skill`).
 func (c *Controller) Skills() []skill.Skill { return c.skills }
 
+// ToolNames lists the tools this session can call. It makes the composition
+// root's decisions observable — which optional services (LSP, CodeGraph, plugin
+// tiers) were actually wired into this session — without exposing the mutable
+// registry itself.
+func (c *Controller) ToolNames() []string {
+	if c.reg == nil {
+		return nil
+	}
+	return c.reg.Names()
+}
+
 // HookRunner returns the session's hook runner (nil-safe; may hold zero hooks),
 // so a frontend can list the active hooks via `/hooks`.
 func (c *Controller) HookRunner() *hook.Runner { return c.hooks }
-
-// AddMCPServer connects an MCP server live and persists it to the config file. Its
-// tools are registered immediately and become available on the next turn (the
-// agent reads the registry per turn). The raw entry — ${VARS} intact — is what's
-// written to disk; the live connection uses the expanded form. Returns the number
-// of tools the server exposed. A save failure after a successful connect is
-// reported but non-fatal: the server still works this session.
-func (c *Controller) AddMCPServer(e config.PluginEntry) (int, error) {
-	n, err := c.connectMCPServer(e)
-	if err != nil {
-		return 0, err
-	}
-	// 持久化到【用户级】配置(和桌面设置面板 applyConfigChange 同一层单文件编辑),而不是
-	// SourcePath 偏好的项目级 onecreat.toml。写项目级会把全量合并快照落进项目文件,之后
-	// 遮蔽用户级配置的所有修改(默认模型 / provider / system_prompt)静默失效。项目级 MCP
-	// 隔离应走 .mcp.json,不经这里。
-	path := config.UserConfigPath()
-	if path == "" {
-		return n, fmt.Errorf("connected, but cannot resolve user config path to save")
-	}
-	cfg := config.LoadForEdit(path)
-	if err := cfg.UpsertPlugin(e); err != nil {
-		return n, fmt.Errorf("connected, but config rejected the entry: %w", err)
-	}
-	if err := cfg.SaveTo(path); err != nil {
-		return n, fmt.Errorf("connected, but saving config failed: %w", err)
-	}
-	return n, nil
-}
-
-// ConnectMCPServer connects an MCP server for this controller only. It does not
-// write the entry to config, so UI affordances such as a one-click hardware
-// assistant can expose tools to the current conversation without changing the
-// user's persistent MCP list.
-func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) {
-	return c.connectMCPServer(e)
-}
-
-func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {
-	exp := e.ExpandedPlugin()
-	return c.connectMCPSpec(plugin.Spec{
-		Name:    exp.Name,
-		Type:    exp.Type,
-		Command: exp.Command,
-		Args:    exp.Args,
-		Env:     exp.Env,
-		URL:     exp.URL,
-		Headers: exp.Headers,
-	})
-}
-
-func (c *Controller) connectMCPSpec(s plugin.Spec) (int, error) {
-	if c.host == nil {
-		c.host = plugin.NewHost()
-	}
-	tools, err := c.host.Add(c.pluginCtx, s)
-	if err != nil {
-		return 0, err
-	}
-	if c.reg != nil {
-		c.reg.RemovePrefix(plugin.ToolPrefix(s.Name))
-		for _, t := range tools {
-			c.reg.Add(t)
-		}
-	}
-	return len(tools), nil
-}
-
-func (c *Controller) ConfiguredMCPNames() []string {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(cfg.Plugins))
-	for _, p := range cfg.Plugins {
-		names = append(names, p.Name)
-	}
-	return names
-}
-
-func (c *Controller) DisconnectedMCPNames() []string {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil
-	}
-	connected := map[string]bool{}
-	if c.host != nil {
-		for _, name := range c.host.ServerNames() {
-			connected[name] = true
-		}
-	}
-	var names []string
-	for _, p := range cfg.Plugins {
-		if !connected[p.Name] {
-			names = append(names, p.Name)
-		}
-	}
-	return names
-}
-
-func (c *Controller) ConnectConfiguredMCPServer(name string) (int, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return 0, err
-	}
-	for _, p := range cfg.Plugins {
-		if p.Name == name {
-			return c.connectMCPServer(p)
-		}
-	}
-	if name == "codegraph" {
-		return c.connectCodegraphMCPServer(cfg)
-	}
-	return 0, fmt.Errorf("no configured MCP server named %q", name)
-}
-
-func (c *Controller) connectCodegraphMCPServer(cfg *config.Config) (int, error) {
-	if !cfg.Codegraph.Enabled {
-		return 0, fmt.Errorf("codegraph is disabled in config")
-	}
-	bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
-	if !ok {
-		return 0, fmt.Errorf("codegraph is not installed")
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return 0, err
-	}
-	if err := codegraph.EnsureInit(c.pluginCtx, bin, cwd); err != nil {
-		return 0, fmt.Errorf("codegraph init: %w", err)
-	}
-	return c.connectMCPSpec(plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: cwd})
-}
-
-// RemoveMCPServer disconnects a live MCP server — its tools vanish from the next
-// turn — and removes it from the config file. It reports whether a live server was
-// disconnected; an error only when the name is neither connected nor in config (or
-// the config save fails). The persistence target follows the entry's source:
-// user-level toml → edit the user file; project-level onecreat.toml/reasonix.toml →
-// surgically drop just that [[plugins]] block from the project file (never a full
-// snapshot, which would shadow the user's config — the 1b regression); .mcp.json →
-// disconnect for this session only and tell the user to edit that file (not ours).
-func (c *Controller) RemoveMCPServer(name string) (disconnected bool, err error) {
-	if c.host != nil {
-		if prefix, ok := c.host.Remove(name); ok {
-			disconnected = true
-			if c.reg != nil {
-				c.reg.RemovePrefix(prefix)
-			}
-		}
-	}
-
-	// 持久化按来源分流,走与 `reasonix mcp remove` CLI 共享的同一函数(消灭第二份实现)。
-	outcome, perr := config.RemovePluginPersisted(name)
-	if perr != nil {
-		return disconnected, perr
-	}
-	switch outcome {
-	case config.PluginFromMCPJSON:
-		// .mcp.json 不由我们写回。本会话已断开,发 notice 告知需手动编辑,不再静默复活。
-		if !disconnected && c.reg != nil {
-			c.reg.RemovePrefix(plugin.ToolPrefix(name))
-		}
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-			Text: fmt.Sprintf("已断开 %q(本会话);它声明在项目根 .mcp.json 里,需手动编辑该文件才能永久移除", name)})
-		return disconnected, nil
-	case config.PluginRemovedUser, config.PluginRemovedProject:
-		if !disconnected && c.reg != nil {
-			c.reg.RemovePrefix(plugin.ToolPrefix(name))
-		}
-		return disconnected, nil
-	default: // PluginNotFound
-		if !disconnected {
-			return false, fmt.Errorf("no MCP server named %q", name)
-		}
-		return disconnected, nil
-	}
-}
-
-// DisconnectMCPServer disconnects a live server for this session without touching
-// config — the connector toggle's "off". Its tools vanish next turn; it reconnects
-// on the next session start, or now via ConnectConfiguredMCPServer (the "on").
-// Reports whether a live server was actually disconnected.
-func (c *Controller) DisconnectMCPServer(name string) bool {
-	disconnected := false
-	if c.host != nil {
-		if prefix, ok := c.host.Remove(name); ok {
-			disconnected = true
-			if c.reg != nil {
-				c.reg.RemovePrefix(prefix)
-			}
-		}
-	}
-	removedPlaceholder := 0
-	if !disconnected && c.reg != nil {
-		removedPlaceholder = c.reg.RemovePrefix(plugin.ToolPrefix(name))
-	}
-	return disconnected || removedPlaceholder > 0
-}
 
 // Label returns the human-readable model label, e.g. "deepseek-flash".
 func (c *Controller) Label() string { return c.label }
@@ -1615,18 +677,11 @@ func (c *Controller) SystemPrompt() string { return c.systemPrompt }
 // no handle left to stop it.
 func (c *Controller) Close() {
 	c.Cancel()
-	c.mu.Lock()
-	started := c.startedOnce
-	c.mu.Unlock()
-	if started {
+	if c.startedOnce.Load() {
 		c.hooks.SessionEnd(context.Background())
 	}
 	if c.jobs != nil {
 		c.jobs.Close() // cancel any still-running background jobs
-	}
-	if c.engine != nil {
-		// 关掉 sidecar 子进程;不关就会留下 node 残留(每 tab 一个)。
-		_ = c.engine.Close()
 	}
 	if c.cleanup != nil {
 		c.cleanup()
@@ -1642,22 +697,6 @@ func (c *Controller) Jobs() []jobs.View {
 	return c.jobs.Running()
 }
 
-// SetBypass turns YOLO/bypass mode on or off for the session: while on, every
-// approval prompt is auto-allowed (writers and bash run without asking). Deny
-// rules still block. Runtime-only — never written to config.
-func (c *Controller) SetBypass(on bool) {
-	c.mu.Lock()
-	c.bypass = on
-	c.mu.Unlock()
-}
-
-// Bypass reports whether YOLO/bypass mode is on, for the status-bar indicator.
-func (c *Controller) Bypass() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.bypass
-}
-
 // --- memory ---
 //
 // c.mem is treated as an immutable snapshot guarded by c.mu: reads take the lock
@@ -1667,300 +706,169 @@ func (c *Controller) Bypass() bool {
 // prefix on the next session). All of these are no-ops returning "" when memory
 // is disabled.
 
-// QuickAdd appends a one-line note to the doc-memory file for scope (project
-// REASONIX.md by default) — the write side of "#<note>". Returns the file written.
-func (c *Controller) QuickAdd(scope memory.Scope, note string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.mem == nil {
-		return "", nil
-	}
-	path := c.mem.DocPath(scope)
-	if path == "" {
-		return "", fmt.Errorf("no target file for memory scope %q", scope)
-	}
-	if err := memory.AppendDoc(path, note); err != nil {
-		return "", err
-	}
-	c.pendingMemory = append(c.pendingMemory, note)
-	c.refreshMemoryLocked()
-	return path, nil
-}
-
-// SaveDoc overwrites a recognized memory doc with body — the save side of the
-// desktop panel's in-place editor. Returns the file written.
-func (c *Controller) SaveDoc(path, body string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.mem == nil {
-		return "", nil
-	}
-	written, err := c.mem.WriteDoc(path, body)
-	if err != nil {
-		return "", err
-	}
-	// Inject the new content once on the next turn: the cached prefix still holds
-	// the pre-edit version this session, so handing the model the current text
-	// avoids a stale-guidance gap until the next session re-folds it into the
-	// prefix. Trimmed to a single tail note (drained by Compose), not per-turn.
-	c.pendingMemory = append(c.pendingMemory,
-		"Memory file "+written+" was just edited. Its current contents:\n"+strings.TrimSpace(body))
-	c.refreshMemoryLocked()
-	return written, nil
-}
-
-// ForgetMemory deletes a saved auto-memory by name — the panel/TUI delete action,
-// the manual counterpart to the model's `forget` tool. It queues a turn-tail note
-// so the deletion applies this session (the cached prefix still lists the fact
-// until the next session re-folds the index).
-func (c *Controller) ForgetMemory(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.mem == nil {
-		return nil
-	}
-	if err := c.mem.Store.Delete(name); err != nil {
-		return err
-	}
-	c.pendingMemory = append(c.pendingMemory,
-		"Deleted memory \""+name+"\" — disregard its line still shown in the saved-memories index until next session.")
-	c.refreshMemoryLocked()
-	return nil
-}
-
-// QueueMemory implements memory.Queue: when the model runs the remember/forget
-// tool, the tool calls this with a note that rides the next turn so the change
-// applies this session without touching the cache-stable prefix. It also
-// refreshes the snapshot a memory panel reads.
-func (c *Controller) QueueMemory(note string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.pendingMemory = append(c.pendingMemory, note)
-	c.refreshMemoryLocked()
-}
-
-// Memory returns the loaded memory snapshot (nil when memory is disabled), for
-// frontends that surface a memory panel or the /memory command. The returned
-// *Set is immutable — mutations go through QuickAdd / SaveDoc.
-func (c *Controller) Memory() *memory.Set {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.mem
-}
-
-// refreshMemoryLocked re-discovers memory from disk so a later Memory() reflects
-// a just-applied write. Caller holds c.mu.
-func (c *Controller) refreshMemoryLocked() {
-	if c.mem == nil {
-		return
-	}
-	c.mem = memory.Load(memory.Options{CWD: c.mem.CWD, UserDir: c.mem.UserDir})
-}
-
 // --- approval bridge (agent gate → events) ---
 
-// gateApprover adapts the Controller to permission.Approver. It is distinct
-// from the public Approve command (different signature, different direction).
-type gateApprover struct{ c *Controller }
+// --- approvals / asks (forwarded to approvalBroker; see approval.go) ---
 
-func (g gateApprover) Approve(ctx context.Context, tool, subject string, args json.RawMessage) (bool, bool, error) {
-	// Auto-allow without prompting while executing a just-approved plan (the plan
-	// was the approval) or while YOLO/bypass mode is on. Deny rules already bit
-	// before this point, so they still block.
-	g.c.mu.Lock()
-	auto := g.c.autoApprove || g.c.bypass
-	g.c.mu.Unlock()
-	if auto {
-		return true, false, nil
-	}
-	return g.c.requestApproval(ctx, tool, subject)
+// Approve answers a pending approval prompt by id.
+func (c *Controller) Approve(id string, allow, session bool) { c.approvals.Resolve(id, allow, session) }
+
+// PendingApprovals 返回当前已发出、尚未应答的审批请求(用于切回标签时重放)。
+func (c *Controller) PendingApprovals() []event.Approval { return c.approvals.PendingApprovals() }
+
+// PendingAsks 返回当前已发出、尚未应答的 ask 请求(用于切回标签时重放)。
+func (c *Controller) PendingAsks() []event.Ask { return c.approvals.PendingAsks() }
+
+// Ask implements agent.Asker so the `ask` tool can question the user.
+func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error) {
+	return c.approvals.Ask(ctx, questions)
 }
 
-type seedTodo struct {
-	Content string `json:"content"`
-	Status  string `json:"status"`
-	Level   int    `json:"level,omitempty"`
+// AnswerQuestion resolves a pending AskRequest by ID with the user's selections.
+func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
+	c.approvals.AnswerQuestion(id, answers)
 }
 
-// seedPlanTodos turns an approved plan into a starter task list and emits it as a
-// synthetic todo_write event, so the live task panel populates the instant the
-// user approves — a structural guarantee, not a prompt the model might ignore.
-// The model still flips item status as it works (only it knows its own
-// progress); this just makes the list exist. No-op when the plan has no list.
-func (c *Controller) seedPlanTodos(plan string) {
-	args := PlanTodosJSON(plan)
-	if args == "" {
+// SetBypass turns YOLO/bypass mode on or off for the session.
+func (c *Controller) SetBypass(on bool) { c.approvals.SetBypass(on) }
+
+// Bypass reports whether YOLO/bypass mode is on, for the status-bar indicator.
+func (c *Controller) Bypass() bool { return c.approvals.Bypass() }
+
+// --- checkpoints (forwarded to checkpointService; see checkpoints.go) ---
+
+// InvalidateCheckpoints drops the turn→message-index boundaries after something
+// rewrote the message log (compaction, summarize), so conversation rewind and
+// fork report "unavailable" instead of truncating to a stale index.
+func (c *Controller) InvalidateCheckpoints() { c.ckpt.Invalidate() }
+
+// Checkpoints lists the session's rewind points (one per user turn), oldest first.
+func (c *Controller) Checkpoints() []checkpoint.Meta { return c.ckpt.List() }
+
+// beginTurnCheckpoint opens a checkpoint for the turn about to run, recording the
+// current message count as the conversation-rewind boundary. Called at the top of
+// runTurn, before the user message is appended.
+func (c *Controller) beginTurnCheckpoint(input string) {
+	if c.executor == nil {
 		return
 	}
-	t := event.Tool{ID: "plan-seed", Name: "todo_write", Args: args, ReadOnly: true}
-	c.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: t})
-	t.Output = "task list seeded from the approved plan"
-	c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: t})
+	c.ckpt.Begin(input, len(c.executor.Session().Messages))
 }
 
-// PlanTodosJSON parses an approved plan's markdown into todo_write-shaped args
-// JSON ({"todos":[...]}), or "" when the plan has no list items. The exit_plan_mode
-// path seeds via seedPlanTodos (an event); a frontend whose own approval flow
-// bypasses exit_plan_mode (the chat TUI's text-plan approval) calls this directly
-// to render the same starter checklist. Shared parsing keeps the two consistent.
-func PlanTodosJSON(plan string) string {
-	items := parsePlanTodos(plan)
-	if len(items) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(map[string]any{"todos": items})
-	if err != nil {
-		return ""
-	}
-	return string(b)
+// --- MCP servers (forwarded to mcpService; see mcp.go) ---
+
+// Host returns the running MCP host (nil when no plugins), for frontends that
+// list servers / resolve MCP prompts.
+func (c *Controller) Host() *plugin.Host { return c.mcp.Host() }
+
+// AddMCPServer connects an MCP server live and persists it to the user config.
+func (c *Controller) AddMCPServer(e config.PluginEntry) (int, error) { return c.mcp.AddAndSave(e) }
+
+// ConnectMCPServer connects an MCP server for this session only (no config write).
+func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) { return c.mcp.Connect(e) }
+
+// ConfiguredMCPNames lists the servers declared in config.
+func (c *Controller) ConfiguredMCPNames() []string { return c.mcp.ConfiguredNames() }
+
+// DisconnectedMCPNames lists configured servers not connected this session.
+func (c *Controller) DisconnectedMCPNames() []string { return c.mcp.DisconnectedNames() }
+
+// ConnectConfiguredMCPServer connects a configured-but-disconnected server by name.
+func (c *Controller) ConnectConfiguredMCPServer(name string) (int, error) {
+	return c.mcp.ConnectConfigured(name)
 }
 
-// parsePlanTodos extracts a starter task list from an approved plan's markdown
-// list items (bulleted or numbered): the first is in_progress, the rest pending,
-// capped so a long plan can't flood the panel. It understands ONLY markdown lists
-// — an unambiguous, standard structure — and deliberately does not guess at prose,
-// tables, or arrow sequences (those need brittle, language-specific heuristics).
-// The plan-mode marker steers the model to present its plan as a list, so this
-// catches the normal case; anything it misses is covered by the model's own
-// todo_write calls as it executes.
-func parsePlanTodos(plan string) []seedTodo {
-	var todos []seedTodo
-	for _, raw := range strings.Split(plan, "\n") {
-		item, level, ok := listItem(raw)
-		if !ok {
-			continue
-		}
-		status := "pending"
-		if len(todos) == 0 {
-			status = "in_progress"
-		}
-		todos = append(todos, seedTodo{Content: item, Status: status, Level: level})
-		if len(todos) >= 20 {
-			break
-		}
-	}
-	return todos
+// RemoveMCPServer disconnects a server and removes it from config.
+func (c *Controller) RemoveMCPServer(name string) (bool, error) { return c.mcp.RemoveAndSave(name) }
+
+// DisconnectMCPServer disconnects a server for this session only.
+func (c *Controller) DisconnectMCPServer(name string) bool { return c.mcp.Disconnect(name) }
+
+// --- memory (forwarded to memoryService; see memory.go) ---
+
+// QuickAdd appends a one-line note to the doc-memory file for scope — the write
+// side of "#<note>". Returns the file written.
+func (c *Controller) QuickAdd(scope memory.Scope, note string) (string, error) {
+	return c.memory.QuickAdd(scope, note)
 }
 
-// listItem parses a markdown list line ("- x", "* x", "1. x", "2) x") into its
-// task text and a nesting level derived from leading indentation (0 for a
-// top-level item, 1 for an indented sub-step — capped at 1 since the plan is
-// two-level). ok is false when the line isn't a list item. Light inline-markdown
-// stripping keeps the checklist readable.
-func listItem(line string) (content string, level int, ok bool) {
-	trimmed := strings.TrimLeft(line, " \t")
-	if trimmed == "" {
-		return "", 0, false
+// SaveDoc overwrites a recognized memory doc with body. Returns the file written.
+func (c *Controller) SaveDoc(path, body string) (string, error) { return c.memory.SaveDoc(path, body) }
+
+// ForgetMemory deletes a saved auto-memory by name.
+func (c *Controller) ForgetMemory(name string) error { return c.memory.Forget(name) }
+
+// QueueMemory implements memory.Queue for callers that hold a *Controller.
+func (c *Controller) QueueMemory(note string) { c.memory.QueueMemory(note) }
+
+// Memory returns the loaded memory snapshot (nil when memory is disabled). The
+// returned *Set is immutable — mutations go through QuickAdd / SaveDoc.
+func (c *Controller) Memory() *memory.Set { return c.memory.Set() }
+
+// --- session persistence (forwarded to sessionStore; see session_store.go) ---
+
+// Resume seeds the session from a loaded transcript and pins the active file to
+// its path so auto-save keeps appending there.
+func (c *Controller) Resume(s *agent.Session, path string) {
+	// 没有返回值可用,所以把拒绝显式说出来 —— 静默不做事正是本次要消灭的形态。
+	if err := c.requireCap("恢复历史会话", engine.CapResume); err != nil {
+		c.noticeUnsupported(err)
+		return
 	}
-	indent := 0
-	for _, c := range line[:len(line)-len(trimmed)] {
-		if c == '\t' {
-			indent += 4
-		} else {
-			indent++
-		}
-	}
-	s := trimmed
-	// A numbered markdown heading ("### 1. Add the loader") is how models often
-	// write a phase even when asked for a list; strip the heading marker and
-	// treat it as a top-level phase. A heading without a number (a section
-	// title like "## Plan") falls through and is ignored.
-	heading := false
-	if h := strings.TrimLeft(s, "#"); h != s && strings.HasPrefix(h, " ") {
-		heading = true
-		s = strings.TrimSpace(h)
-	}
-	switch {
-	case strings.HasPrefix(s, "- "), strings.HasPrefix(s, "* "), strings.HasPrefix(s, "+ "):
-		s = s[2:]
-	default:
-		// numbered: leading digits, then "." or ")", then a space
-		i := 0
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-		if i == 0 || i+1 >= len(s) || (s[i] != '.' && s[i] != ')') || s[i+1] != ' ' {
-			return "", 0, false
-		}
-		s = s[i+2:]
-	}
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "[ ] ")
-	s = strings.TrimPrefix(s, "[x] ")
-	s = strings.ReplaceAll(s, "`", "")
-	s = strings.ReplaceAll(s, "**", "")
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", 0, false
-	}
-	if heading {
-		return s, 0, true // a heading is always a top-level phase
-	}
-	if indent >= 2 {
-		return s, 1, true
-	}
-	return s, 0, true
+	c.session.Adopt(s, path)
+	c.ckpt.Rebind(path)
 }
 
-// requestApproval emits an ApprovalRequest and blocks until Approve(ID, …)
-// answers or ctx is cancelled. A prior session grant for the same tool+subject
-// short-circuits. promptMu serialises outstanding prompts.
-func (c *Controller) requestApproval(ctx context.Context, tool, subject string) (bool, bool, error) {
-	key := tool + "\x00" + subject
-
-	c.mu.Lock()
-	// YOLO/bypass and the just-approved-plan window auto-allow every approval
-	// without prompting; the plan gate routes through here too, so this is what
-	// stops a bypass session from blocking on plan approval. Deny rules bit upstream.
-	if c.bypass || c.autoApprove || c.granted[key] {
-		c.mu.Unlock()
-		return true, false, nil
-	}
-	c.mu.Unlock()
-
-	c.promptMu.Lock()
-	defer c.promptMu.Unlock()
-
-	// Re-check the grant: a session grant may have landed while we queued behind
-	// another prompt for the same subject.
-	c.mu.Lock()
-	if c.granted[key] {
-		c.mu.Unlock()
-		return true, false, nil
-	}
-	c.nextID++
-	id := strconv.Itoa(c.nextID)
-	reply := make(chan approvalReply, 1)
-	c.approvals[id] = reply
-	approval := event.Approval{ID: id, Tool: tool, Subject: subject}
-	c.pendingApprovals[id] = approval // 记录未应答的审批,供切回标签时重放(A2)
-	c.mu.Unlock()
-
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: approval})
-	// The agent now needs the user's attention; a Notification hook can ping an
-	// external channel (desktop notice, phone) while the run blocks on the reply.
-	if subject != "" {
-		go c.hooks.Notification(ctx, "approval needed: "+tool+" "+subject)
-	} else {
-		go c.hooks.Notification(ctx, "approval needed: "+tool)
-	}
-
-	select {
-	case r := <-reply:
-		// Plan approvals are one-shot — never persist a session grant for them, or
-		// every future plan would auto-approve.
-		if r.allow && r.session && tool != planApprovalTool {
-			c.mu.Lock()
-			c.granted[key] = true
-			c.mu.Unlock()
-		}
-		// remember=false: session grants live here, not in the on-disk policy.
-		return r.allow, false, nil
-	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.approvals, id)
-		delete(c.pendingApprovals, id)
-		c.mu.Unlock()
-		return false, false, ctx.Err()
-	}
+// SetSessionPath pins where auto-save lands (a fresh session file minted by the
+// caller when no resume path applies).
+func (c *Controller) SetSessionPath(p string) {
+	c.session.SetPath(p)
+	c.ckpt.Rebind(p)
 }
+
+// Snapshot writes the executor's conversation to the active session file.
+func (c *Controller) Snapshot() error { return c.session.Save() }
+
+// SnapshotActivity writes the conversation and marks the session recently active.
+func (c *Controller) SnapshotActivity() error { return c.session.SaveActivity() }
+
+// SessionDir reports the directory new session files land in ("" disables
+// persistence), so the caller can decide whether to mint a path.
+func (c *Controller) SessionDir() string { return c.session.Dir() }
+
+// SessionPath reports the file the current conversation auto-saves to ("" when
+// persistence is disabled), so a history view can mark the active session.
+func (c *Controller) SessionPath() string { return c.session.Path() }
+
+// History returns the executor's current message log (for repopulating a
+// resumed frontend's view).
+func (c *Controller) History() []provider.Message { return c.session.History() }
+
+// --- turn arbitration (forwarded to turnState; see turn_state.go) ---
+
+// Cancel stops the in-flight turn, if any.
+func (c *Controller) Cancel() { c.turn.Cancel() }
+
+// Running reports whether a turn is in flight.
+func (c *Controller) Running() bool { return c.turn.Running() }
+
+// SetPlanMode flips the executor's read-only gate without touching the
+// cache-stable prompt prefix, and remembers the state so Compose can prepend the
+// plan-mode marker to outgoing turns.
+func (c *Controller) SetPlanMode(v bool) { c.turn.SetPlanMode(v) }
+
+// PlanMode reports whether plan mode is on.
+func (c *Controller) PlanMode() bool { return c.turn.PlanMode() }
+
+// SetCoachMode sets the session's coaching persona ("" clears it).
+func (c *Controller) SetCoachMode(preamble string) { c.turn.SetCoach(preamble) }
+
+// Gateway is the platform account this session runs under (nil when the caller
+// supplied none). Frontends use it to ask whether the account manages the model
+// choice, instead of sniffing the process environment.
+func (c *Controller) Gateway() *account.Gateway { return c.gateway }
+
+// SessionRecord is OneCreat's record for the active session: a stable identity,
+// the project it runs in, and which engine owns its transcript. Empty when
+// persistence is disabled.
+func (c *Controller) SessionRecord() (session.Record, bool) { return c.session.SessionRecord() }

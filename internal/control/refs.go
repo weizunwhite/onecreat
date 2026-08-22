@@ -76,8 +76,8 @@ func classifyRef(token string, known map[string]bool, exists func(string) bool) 
 // servers, and local paths that exist on disk.
 func (c *Controller) detectRefs(line string) []ref {
 	known := map[string]bool{}
-	if c.host != nil {
-		for _, n := range c.host.ServerNames() {
+	if c.mcp.host != nil {
+		for _, n := range c.mcp.host.ServerNames() {
 			known[n] = true
 		}
 	}
@@ -122,7 +122,7 @@ func (c *Controller) ResolveRefs(ctx context.Context, line string) (block string
 	for _, r := range c.detectRefs(line) {
 		switch r.kind {
 		case refResource:
-			text, err := c.host.ReadResource(ctx, r.server, r.uri)
+			text, err := c.mcp.host.ReadResource(ctx, r.server, r.uri)
 			if err != nil {
 				errs = append(errs, "@"+r.raw+" — "+err.Error())
 				continue

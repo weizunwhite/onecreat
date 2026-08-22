@@ -46,7 +46,11 @@ func newStdioTransport(ctx context.Context, s Spec) (*stdioTransport, error) {
 	if strings.TrimSpace(s.Command) == "" {
 		return nil, fmt.Errorf("stdio plugin %q: command is required", s.Name)
 	}
-	env := mergeEnv(os.Environ(), s.Env)
+	base := s.BaseEnv
+	if base == nil {
+		base = os.Environ()
+	}
+	env := mergeEnv(base, s.Env)
 	exe, env, err := resolveStdioExecutable(ctx, s, env)
 	if err != nil {
 		return nil, err

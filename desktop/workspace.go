@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"reasonix/internal/config"
+	"reasonix/internal/workspace"
 )
 
 // The desktop is a GUI app: launched from Finder or `open`, it starts with the
@@ -112,22 +113,38 @@ func rememberWorkspace(dir string) {
 	}
 }
 
-// ensureWorkspace establishes a writable working directory at startup: the
-// remembered folder if it's still a directory, else the home directory when the
-// current cwd isn't writable (the Finder/`open` "/" case). A writable cwd with no
-// remembered folder (e.g. `wails dev` in the repo) is left untouched.
-func ensureWorkspace() {
-	if ws := loadWorkspace(); ws != "" {
-		if info, err := os.Stat(ws); err == nil && info.IsDir() && os.Chdir(ws) == nil {
-			return
+// resolveStartupWorkspace picks the folder the app opens in: the remembered one
+// if it is still a directory, else the home directory when the current cwd isn't
+// writable (the Finder/`open` "/" case). A writable cwd with no remembered
+// folder (e.g. `wails dev` in the repo) is kept.
+//
+// It also chdirs there. That is deliberate and is *startup* compatibility, not
+// runtime state: the process should not sit in a read-only "/" for the parts of
+// the app that still resolve paths against the process cwd. Runtime workspace
+// identity is the returned Context — switching projects later re-points that
+// Context and never calls os.Chdir, so tabs can hold different roots at once.
+func resolveStartupWorkspace() workspace.Context {
+	if remembered := loadWorkspace(); remembered != "" {
+		if info, err := os.Stat(remembered); err == nil && info.IsDir() && os.Chdir(remembered) == nil {
+			if ws, err := workspace.New(remembered); err == nil {
+				return ws
+			}
 		}
 	}
-	if cwdWritable() {
-		return
+	if !cwdWritable() {
+		if home, err := os.UserHomeDir(); err == nil && os.Chdir(home) == nil {
+			if ws, err := workspace.New(home); err == nil {
+				return ws
+			}
+		}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		_ = os.Chdir(home)
+	// Whatever we ended up in is this launch's workspace; making it explicit here
+	// means every later reader asks the Context, not the process.
+	ws, err := workspace.Current()
+	if err != nil {
+		return workspace.Context{}
 	}
+	return ws
 }
 
 // cwdWritable reports whether the current directory accepts a file write — the

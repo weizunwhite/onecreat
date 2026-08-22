@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"reasonix/desktop/internal/tsgen"
 )
 
 // rpcFake 覆盖 App 上出现过的全部方法签名形态,用来单测反射分发/参数解码/返回值折叠,
@@ -23,6 +27,20 @@ func (rpcFake) Struct(n int) (map[string]int, error) { return map[string]int{"n"
 func (rpcFake) StructErr() (map[string]int, error)   { return nil, errors.New("坏了") }
 func (rpcFake) Boom()                                { panic("kaboom") }
 func (rpcFake) unexported() string                   { return "hidden" } //nolint:unused
+
+func methodSet(names ...string) map[string]struct{} {
+	out := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+func newFakeRPCServer() *rpcServer {
+	return newRPCServerWithMethods(rpcFake{}, methodSet(
+		"Echo", "Add", "Void", "Fail", "Ok", "Struct", "StructErr", "Boom",
+	))
+}
 
 func postRPC(t *testing.T, s *rpcServer, method, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -54,7 +72,7 @@ func decodeErr(t *testing.T, w *httptest.ResponseRecorder) string {
 }
 
 func TestRPCDecodesPositionalArgs(t *testing.T) {
-	s := newRPCServer(rpcFake{})
+	s := newFakeRPCServer()
 
 	w := postRPC(t, s, "Echo", `["你好"]`)
 	if w.Code != 200 {
@@ -74,7 +92,7 @@ func TestRPCDecodesPositionalArgs(t *testing.T) {
 }
 
 func TestRPCReturnSignatures(t *testing.T) {
-	s := newRPCServer(rpcFake{})
+	s := newFakeRPCServer()
 
 	// 无返回值 → result null
 	w := postRPC(t, s, "Void", `[]`)
@@ -112,7 +130,7 @@ func TestRPCReturnSignatures(t *testing.T) {
 }
 
 func TestRPCEmptyBodyMeansNoArgs(t *testing.T) {
-	s := newRPCServer(rpcFake{})
+	s := newFakeRPCServer()
 	w := postRPC(t, s, "Void", "")
 	if w.Code != 200 {
 		t.Fatalf("空 body 应等价于 []: 状态 %d body %s", w.Code, w.Body)
@@ -120,7 +138,7 @@ func TestRPCEmptyBodyMeansNoArgs(t *testing.T) {
 }
 
 func TestRPCUnknownMethod404(t *testing.T) {
-	s := newRPCServer(rpcFake{})
+	s := newFakeRPCServer()
 	if w := postRPC(t, s, "NoSuchThing", `[]`); w.Code != 404 {
 		t.Fatalf("未知方法应 404,拿到 %d", w.Code)
 	}
@@ -130,8 +148,18 @@ func TestRPCUnknownMethod404(t *testing.T) {
 	}
 }
 
+func TestRPCAllowlistRejectsUnlistedExportedMethod(t *testing.T) {
+	s := newRPCServerWithMethods(rpcFake{}, methodSet("Echo"))
+	if w := postRPC(t, s, "Add", `[1,2]`); w.Code != http.StatusNotFound {
+		t.Fatalf("导出但未 allowlist 的方法必须 404,拿到 %d", w.Code)
+	}
+	if w := postRPC(t, s, "Echo", `["ok"]`); w.Code != http.StatusOK {
+		t.Fatalf("allowlist 方法应可调用,拿到 %d", w.Code)
+	}
+}
+
 func TestRPCBadArgs400(t *testing.T) {
-	s := newRPCServer(rpcFake{})
+	s := newFakeRPCServer()
 	if w := postRPC(t, s, "Add", `[1]`); w.Code != 400 {
 		t.Fatalf("参数个数不对应 400,拿到 %d", w.Code)
 	}
@@ -147,7 +175,7 @@ func TestRPCBadArgs400(t *testing.T) {
 }
 
 func TestRPCRejectsNonPost(t *testing.T) {
-	s := newRPCServer(rpcFake{})
+	s := newFakeRPCServer()
 	req := httptest.NewRequest(http.MethodGet, "/rpc/Void", nil)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
@@ -157,7 +185,7 @@ func TestRPCRejectsNonPost(t *testing.T) {
 }
 
 func TestRPCPanicBecomes500(t *testing.T) {
-	s := newRPCServer(rpcFake{})
+	s := newFakeRPCServer()
 	w := postRPC(t, s, "Boom", `[]`)
 	if w.Code != 500 {
 		t.Fatalf("panic 应转成 500,拿到 %d", w.Code)
@@ -167,18 +195,23 @@ func TestRPCPanicBecomes500(t *testing.T) {
 	}
 }
 
-// TestAppMethodsAreRPCCompatible 守住「143 个方法零手写路由」这个前提:App 上不能
-// 出现反射分发处理不了的签名(可变参数 / 三个及以上返回值 / 第二返回值不是 error)。
-// 新增方法时如果破了这个约定,这里会红。
+// TestAppMethodsAreRPCCompatible 守住「零手写路由」这个前提:allowlist 里的每个方法
+// 都必须真实存在于 *App,且签名是反射分发能处理的(不能是可变参数 / 三个及以上返回值 /
+// 第二返回值不是 error)。
+//
+// 与收口前的区别:检查对象是显式的浏览器 API,不再是「全部导出方法」—— 现在可以有
+// 只给桌面用的导出辅助方法而不变成 HTTP 端点。
 func TestAppMethodsAreRPCCompatible(t *testing.T) {
 	tp := reflect.TypeOf(NewApp())
-	checked := 0
-	for i := 0; i < tp.NumMethod(); i++ {
-		m := tp.Method(i)
-		if rpcExcluded[m.Name] {
+	if len(rpcPublicMethods) < 100 {
+		t.Fatalf("RPC allowlist 只有 %d 项,疑似被意外截断", len(rpcPublicMethods))
+	}
+	for name := range rpcPublicMethods {
+		m, ok := tp.MethodByName(name)
+		if !ok {
+			t.Errorf("RPC allowlist 方法 %s 不存在于 *App", name)
 			continue
 		}
-		checked++
 		ft := m.Type
 		if ft.IsVariadic() {
 			t.Errorf("%s 是可变参数方法,RPC 分发不支持", m.Name)
@@ -194,8 +227,23 @@ func TestAppMethodsAreRPCCompatible(t *testing.T) {
 			t.Errorf("%s 有 %d 个返回值,RPC 分发不支持", m.Name, ft.NumOut())
 		}
 	}
-	if checked < 100 {
-		t.Fatalf("只扫到 %d 个 App 方法,反射方法表疑似坏了", checked)
+}
+
+// TestFrontendBindingsAreUpToDate replaces the old name-only comparison between
+// rpcPublicMethods and a hand-written AppBindings interface. The interface is now
+// generated from this package's own source, so the check is exact: regenerate in
+// memory and compare against the file on disk. A changed Go signature, a new
+// allowlist entry, or a hand edit of the generated file all fail here.
+func TestFrontendBindingsAreUpToDate(t *testing.T) {
+	want, err := tsgen.Generate(".")
+	if err != nil {
+		t.Fatalf("生成 bindings 失败: %v", err)
 	}
-	t.Logf("App 暴露给 RPC 的方法数: %d", checked)
+	got, err := os.ReadFile(tsgen.OutputFile)
+	if err != nil {
+		t.Fatalf("读取 %s: %v", tsgen.OutputFile, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s 已过期 —— 运行 `cd desktop && go generate ./...` 重新生成", tsgen.OutputFile)
+	}
 }

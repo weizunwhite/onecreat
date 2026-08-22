@@ -7,19 +7,14 @@ import (
 	"os"
 	"os/signal"
 
+	"reasonix/internal/account"
 	"reasonix/internal/acp"
-	"reasonix/internal/agent"
 	"reasonix/internal/boot"
-	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
-	"reasonix/internal/event"
 	"reasonix/internal/i18n"
-	"reasonix/internal/permission"
-	"reasonix/internal/plugin"
 	"reasonix/internal/sandbox"
-	"reasonix/internal/tool"
-	"reasonix/internal/tool/builtin"
+	"reasonix/internal/workspace"
 )
 
 // acpCommand runs Reasonix as an Agent Client Protocol agent: a stdio JSON-RPC
@@ -56,7 +51,10 @@ func acpCommand(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, fmt.Errorf("unknown model %q", modelName))
 		return 1
 	}
-	boot.ApplyOnecreatGateway(entry)
+	// ACP 是被编辑器拉起的子进程,没有自己的账号运行时:它继承启动时的环境变量一次
+	// (env 在这里是【传输格式】,不是状态总线),之后这个对象就是唯一真源。
+	gw := account.FromEnv()
+	boot.ApplyOnecreatGateway(entry, gw)
 	if err := entry.Validate(modelName); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
@@ -68,7 +66,7 @@ func acpCommand(args []string, version string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	factory := &acpFactory{cfg: cfg, model: modelName}
+	factory := &acpFactory{cfg: cfg, model: modelName, gateway: gw}
 	info := acp.AgentInfo{Name: "reasonix", Version: version}
 	if err := acp.Serve(ctx, os.Stdin, os.Stdout, factory, info); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
@@ -77,130 +75,55 @@ func acpCommand(args []string, version string) int {
 	return 0
 }
 
-// acpFactory builds one control.Controller per ACP session. It mirrors setup()'s
-// assembly, with two differences that make sessions independent: the built-in
-// tools are bound to the session's cwd via builtin.Workspace (so concurrent
-// sessions have separate path roots), and the client's per-session MCP servers
-// are connected alongside the config's own plugins.
+// acpFactory builds one control.Controller per ACP session.
+//
+// It owns no assembly of its own: every session goes through boot.Build, the
+// single composition root the desktop and the CLI already use. Before Plan 04
+// this file hand-assembled a parallel stack — provider, tool registry, MCP host,
+// permission policy, task tool, executor, planner coordinator, controller — with
+// comments like "mirror boot.Build" and "与 boot.Build 的门禁一致" marking every
+// rule that had to be copied. Those rules (gateway rewriting, the model-privacy
+// prompt, disabling the planner on the gateway path) are billing- and
+// IP-sensitive; keeping two copies in step by hand is how they drift.
 type acpFactory struct {
 	cfg   *config.Config
 	model string
+	// gateway 是本进程的账号(启动时从 env 导入一次)。每个 session 都拿同一个对象,
+	// 而不是各自去读环境变量。
+	gateway *account.Gateway
 }
 
-// NewSession assembles the per-session controller. Resources (MCP subprocesses)
-// are released via the controller's Cleanup, run on ctrl.Close().
+// NewSession assembles the per-session controller through boot.Build. Two
+// per-session inputs come from the ACP client:
+//
+//   - p.Cwd becomes the session's workspace, so concurrent sessions on different
+//     projects get independent path roots, config, memory and skills;
+//   - p.MCPServers are the servers the client declared in `session/new`, started
+//     alongside the configured ones.
+//
+// HostProvidesCodeIntel is set because the host is an editor: it already runs
+// language servers and its own index, so the agent does not start a second
+// CodeGraph daemon and LSP manager inside the session.
+//
+// Resources (MCP subprocesses and the rest) are released via the controller's
+// cleanup, run on ctrl.Close().
 func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*control.Controller, error) {
-	cfg := f.cfg
-	entry, ok := cfg.ResolveModel(f.model)
-	if !ok {
-		return nil, fmt.Errorf("unknown model %q", f.model)
-	}
-	// onecreat 网关模式:与 boot.Build 同一处理——把 provider 改走平台网关(登录 token 鉴权、
-	// 平台统一计费)。否则 ACP 这条平行装配会绕过档位计量直连厂商、甚至以命名 DEEPSEEK_API_KEY
-	// 的错误泄露厂商。非网关模式下 ApplyOnecreatGateway 为 no-op,行为不变(F1)。
-	boot.ApplyOnecreatGateway(entry)
-	gatewayActive := boot.OnecreatGatewayActive()
-	proxySpec := cfg.NetworkProxySpec()
-	execProv, err := boot.NewProviderWithProxy(entry, proxySpec)
+	// An empty Cwd yields the zero workspace — process-cwd tools, identical to a
+	// headless run. A cwd the client made up is a client error worth reporting.
+	ws, err := workspace.New(p.Cwd)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("session cwd %q: %w", p.Cwd, err)
 	}
-	sysPrompt, err := cfg.ResolveSystemPrompt()
-	if err != nil {
-		return nil, err
-	}
-	// 网关模式下追加模型隐私政策(与 chat 一致):问"你是什么模型"不得答真名。非网关不变。
-	if gatewayActive {
-		sysPrompt += "\n\n" + config.ModelPrivacyPolicy
-	}
-
-	// Built-ins rooted at the session cwd. Writes confine to that cwd by default
-	// (Workspace makes Dir the sole write root when WriteRoots is empty), which is
-	// the right scope for a client that opened the session on a project; an empty
-	// cwd falls back to process-cwd tools, identical to the headless run.
-	reg := tool.NewRegistry()
-	var writeRoots []string
-	if p.Cwd != "" {
-		writeRoots = []string{p.Cwd}
-	}
-	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: writeRoots, Network: cfg.Sandbox.Network}
-	ws := builtin.Workspace{Dir: p.Cwd, WriteRoots: writeRoots, Bash: bashSpec, Search: builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, nil)}
-	for _, t := range ws.Tools(cfg.Tools.Enabled...) {
-		reg.Add(t)
-	}
-
-	// MCP: the config's own plugins plus the servers the client passed in
-	// session/new, all connected for the session's lifetime.
-	cleanup := func() {}
-	var host *plugin.Host
-	specs := append(boot.PluginSpecs(cfg.AutoStartPlugins()), p.MCPServers...)
-	if len(specs) > 0 {
-		h, ptools := plugin.StartAvailable(ctx, specs)
-		host = h
-		cleanup = h.Close
-		for _, t := range ptools {
-			reg.Add(t)
-		}
-		// Mirror boot.Build: phase B (prompts + resources) is deferred to a
-		// background goroutine on the session ctx so the ACP path also sees
-		// non-empty Host.Prompts()/Resources() once the auxiliary surfaces
-		// stream in. Without this, MCPPrompt and @-ref consumers would stay
-		// empty for the session.
-		go h.StartPhaseB(ctx, p.Sink)
-		if text, ok := boot.MCPStartupNotice(h.Failures()); ok {
-			p.Sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: text})
-		}
-	}
-
-	maxSteps := cfg.Agent.MaxSteps
-	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
-	headlessGate := permission.NewGate(policy, nil)
-	reg.Add(agent.NewTaskTool(execProv, entry.Price, reg, maxSteps,
-		entry.ContextWindow, cfg.Agent.Temperature, config.ArchiveDir(), "", headlessGate))
-
-	executor := agent.New(execProv, reg, agent.NewSession(sysPrompt), agent.Options{
-		MaxSteps:      maxSteps,
-		Temperature:   cfg.Agent.Temperature,
-		Pricing:       entry.Price,
-		Gate:          headlessGate,
-		ContextWindow: entry.ContextWindow,
-		ArchiveDir:    config.ArchiveDir(),
-	}, p.Sink)
-
-	cmds, _ := command.Load(config.CommandDirs()...)
-
-	var runner agent.Runner = executor
-	label := entry.Model
-	// 网关模式下关掉 planner:planner 是独立 provider,不走网关(ApplyOnecreatGateway 只改主
-	// provider),会直连厂商 → 绕过计费 + 泄露厂商。与 boot.Build 的 !gatewayActive 门禁一致(F1)。
-	if pm := cfg.Agent.PlannerModel; pm != "" && !gatewayActive {
-		pe, ok := cfg.ResolveModel(pm)
-		if !ok {
-			cleanup()
-			return nil, fmt.Errorf("planner_model %q is not a configured provider", pm)
-		}
-		if pe.Model != entry.Model {
-			plannerProv, err := boot.NewProviderWithProxy(pe, proxySpec)
-			if err != nil {
-				cleanup()
-				return nil, fmt.Errorf("planner %q: %w", pm, err)
-			}
-			plannerSess := agent.NewSession(agent.DefaultPlannerPrompt)
-			runner = agent.NewCoordinator(plannerProv, plannerSess, pe.Price, executor, cfg.Agent.Temperature, p.Sink)
-			label = entry.Model + " + planner " + pe.Model
-		}
-	}
-
-	return control.New(control.Options{
-		Runner:       runner,
-		Executor:     executor,
-		Sink:         p.Sink,
-		Policy:       policy,
-		Label:        label,
-		SystemPrompt: sysPrompt,
-		SessionDir:   config.SessionDir(),
-		Host:         host,
-		Commands:     cmds,
-		Cleanup:      cleanup,
-	}), nil
+	return boot.Build(ctx, boot.Options{
+		Model:                 f.model,
+		Sink:                  p.Sink,
+		Workspace:             ws,
+		Gateway:               f.gateway,
+		ExtraPlugins:          p.MCPServers,
+		HostProvidesCodeIntel: true,
+		// RequireKey stays false: the key was validated once at startup (above),
+		// and a per-session failure would surface deep inside session/new.
+		// Stderr stays nil (os.Stderr): stdout is the JSON-RPC channel and must
+		// carry nothing else, which boot already respects.
+	})
 }

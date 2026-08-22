@@ -114,7 +114,7 @@ func newGateHarness(t *testing.T, fill func(h *gateHarness, o *Options)) *gateHa
 		Cfg:         config.DSHConfig{ModelPlaceholder: "onecreat"},
 		CWD:         cwd,
 		Sink:        event.Discard,
-		Ledger:      evidence.NewLedger(),
+		Ledger:      testRecorder(evidence.NewLedger()),
 		SessionRoot: t.TempDir(),
 		BaseURL:     srv.URL + "/v1",
 		APIKeyFunc:  func() string { return os.Getenv("ONECREAT_GATEWAY_TOKEN") },

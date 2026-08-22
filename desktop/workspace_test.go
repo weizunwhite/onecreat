@@ -96,7 +96,7 @@ func TestReadFileTrimsPartialUTF8RuneAtPreviewBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	preview := (&App{}).ReadFile("large.md")
+	preview := (newBareApp(nil, nil)).ReadFile("large.md")
 	if preview.Err != "" {
 		t.Fatalf("ReadFile err = %q", preview.Err)
 	}
@@ -125,7 +125,7 @@ func TestReadFilePreviewBinaryClassification(t *testing.T) {
 	if err := os.WriteFile("binary.bin", append([]byte("data"), 0x00, 0x01, 0x02), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if p := (&App{}).ReadFile("binary.bin"); !p.Binary {
+	if p := (newBareApp(nil, nil)).ReadFile("binary.bin"); !p.Binary {
 		t.Errorf("NUL-containing file should be binary, got Body=%q", p.Body)
 	}
 
@@ -134,7 +134,7 @@ func TestReadFilePreviewBinaryClassification(t *testing.T) {
 	if err := os.WriteFile("invalid.txt", append([]byte("hello"), 0xff, 'x', 'y'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p := (&App{}).ReadFile("invalid.txt")
+	p := (newBareApp(nil, nil)).ReadFile("invalid.txt")
 	if p.Binary {
 		t.Error("invalid-but-NUL-free file should render as lossy text, not binary")
 	}
@@ -157,7 +157,7 @@ func TestReadFileGB18030(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	preview := (&App{}).ReadFile("gbk.txt")
+	preview := (newBareApp(nil, nil)).ReadFile("gbk.txt")
 	if preview.Err != "" {
 		t.Fatalf("ReadFile err = %q", preview.Err)
 	}

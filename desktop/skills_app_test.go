@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"reasonix/internal/config"
+	"reasonix/internal/workspace"
 )
 
 func TestNormalizeSkillPathDirectoryLayout(t *testing.T) {
@@ -43,7 +44,7 @@ func TestSkillRootsViewCountsProjectSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := skillRootsView()
+	roots := skillRootsView(testWorkspace(t, project))
 	want := realTestPath(root)
 	for _, r := range roots {
 		if realTestPath(r.Dir) == want {
@@ -85,7 +86,7 @@ func TestSkillRootsViewMarksEnvConfiguredCustomRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := skillRootsView()
+	roots := skillRootsView(testWorkspace(t, project))
 	want := realTestPath(root)
 	for _, r := range roots {
 		if realTestPath(r.Dir) == want {
@@ -103,4 +104,14 @@ func realTestPath(path string) string {
 		path = p
 	}
 	return config.CanonicalSkillPath(path)
+}
+
+// testWorkspace builds a workspace.Context for a test project directory.
+func testWorkspace(t *testing.T, dir string) workspace.Context {
+	t.Helper()
+	ws, err := workspace.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ws
 }

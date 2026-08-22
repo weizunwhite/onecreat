@@ -26,8 +26,8 @@ func TestServeSubmitRunsAndBroadcastsTurnDone(t *testing.T) {
 	srv := httptest.NewServer(New(ctrl, bc).Handler())
 	defer srv.Close()
 
-	sub, cancel := bc.Subscribe() // observe the broadcast deterministically
-	defer cancel()
+	sub := bc.Subscribe() // observe the broadcast deterministically
+	defer bc.Unsubscribe(sub)
 
 	resp, err := http.Post(srv.URL+"/submit", "application/json", strings.NewReader(`{"input":"hi"}`))
 	if err != nil {
@@ -50,10 +50,16 @@ func TestServeSubmitRunsAndBroadcastsTurnDone(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
-		case data := <-sub:
-			var w wireEvent
-			if err := json.Unmarshal(data, &w); err == nil && w.Kind == "turn_done" {
-				return
+		case <-sub.Wake():
+			for {
+				f, ok := sub.TryNext()
+				if !ok {
+					break
+				}
+				var w wireEvent
+				if err := json.Unmarshal(f.Data, &w); err == nil && w.Kind == "turn_done" {
+					return
+				}
 			}
 		case <-deadline:
 			t.Fatal("never saw turn_done on the stream")

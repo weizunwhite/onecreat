@@ -40,10 +40,9 @@ func (a *App) PickReferenceFile() (string, error) {
 	if a.ctx == nil {
 		return "", errors.New("file picker not ready")
 	}
-	cwd, _ := os.Getwd()
 	return a.sh().OpenFileDialog(DialogOptions{
 		Title:            "选择参考资料",
-		DefaultDirectory: cwd,
+		DefaultDirectory: a.workspaceRoot(),
 		Filters: []FileFilter{
 			{DisplayName: "支持的资料 (PDF, Word, HTML, Markdown, 代码, 文本)", Pattern: "*.pdf;*.doc;*.docx;*.rtf;*.html;*.htm;*.md;*.markdown;*.txt;*.csv;*.json;*.yaml;*.yml;*.toml;*.py;*.js;*.ts;*.tsx;*.jsx;*.go;*.c;*.h;*.cpp;*.hpp;*.ino;*.pde;*.sh"},
 			{DisplayName: "所有文件", Pattern: "*.*"},

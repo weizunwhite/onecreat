@@ -53,7 +53,7 @@ func TestGatewayTierAndTokenRotation(t *testing.T) {
 		Cfg:         config.DSHConfig{ModelPlaceholder: "onecreat"},
 		CWD:         t.TempDir(),
 		Sink:        event.Discard,
-		Ledger:      evidence.NewLedger(),
+		Ledger:      testRecorder(evidence.NewLedger()),
 		SessionRoot: t.TempDir(),
 		BaseURL:     srv.URL + "/v1",
 		APIKeyFunc:  func() string { return os.Getenv("ONECREAT_GATEWAY_TOKEN") },

@@ -2,6 +2,7 @@ package boot
 
 import (
 	"context"
+	"reasonix/internal/account"
 	"strings"
 	"testing"
 
@@ -73,7 +74,7 @@ func TestApplyOnecreatGateway(t *testing.T) {
 	t.Setenv("ONECREAT_GATEWAY_URL", "")
 	t.Setenv("ONECREAT_TIER", "")
 	e := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", Model: "deepseek-flash"}
-	applyOnecreatGateway(e)
+	applyOnecreatGateway(e, account.FromEnv())
 	if e.BaseURL != "https://api.deepseek.com" || e.APIKeyEnv != "DEEPSEEK_API_KEY" || e.BalanceURL == "" || e.Model != "deepseek-flash" {
 		t.Fatalf("env 未设时不应改写 entry: %+v", e)
 	}
@@ -82,7 +83,7 @@ func TestApplyOnecreatGateway(t *testing.T) {
 	t.Setenv("ONECREAT_GATEWAY_URL", "https://t.example.com/api/onecreat/v1")
 	t.Setenv("ONECREAT_TIER", "tier-2")
 	e2 := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", Model: "deepseek-flash"}
-	applyOnecreatGateway(e2)
+	applyOnecreatGateway(e2, account.FromEnv())
 	if e2.Name != "onecreat" {
 		t.Fatalf("Name 未改成平台别名: %q", e2.Name)
 	}
@@ -102,7 +103,7 @@ func TestApplyOnecreatGateway(t *testing.T) {
 	// 网关模式但未设档位(过渡期旧客户端):保持原 model,网关侧兼容。
 	t.Setenv("ONECREAT_TIER", "")
 	e3 := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-flash"}
-	applyOnecreatGateway(e3)
+	applyOnecreatGateway(e3, account.FromEnv())
 	if e3.Name != "onecreat" {
 		t.Fatalf("未设档位时也应隐藏 provider 名: %q", e3.Name)
 	}
@@ -118,7 +119,7 @@ func TestApplyOnecreatGateway(t *testing.T) {
 	// 平台网关侧 + settings 后端拒改,本函数只负责 openai 直连→网关的改写。
 	t.Setenv("ONECREAT_TIER", "tier-3")
 	e4 := &config.ProviderEntry{Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKeyEnv: "ANTHROPIC_API_KEY", Model: "claude"}
-	applyOnecreatGateway(e4)
+	applyOnecreatGateway(e4, account.FromEnv())
 	if e4.BaseURL != "https://api.anthropic.com" || e4.APIKeyEnv != "ANTHROPIC_API_KEY" || e4.Model != "claude" {
 		t.Fatalf("非 openai kind 不应被网关改写: %+v", e4)
 	}
@@ -144,7 +145,7 @@ func TestRequireKeyValidatesRewrittenGatewayEntry(t *testing.T) {
 	}
 
 	// 改写后:APIKeyEnv 变成 ONECREAT_GATEWAY_TOKEN(已设),校验应通过、不再要求厂商 key。
-	applyOnecreatGateway(entry)
+	applyOnecreatGateway(entry, account.FromEnv())
 	if err := entry.Validate("deepseek-flash"); err != nil {
 		t.Fatalf("网关改写后 RequireKey 校验应通过(有 ONECREAT_GATEWAY_TOKEN),却失败: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestRequireKeyValidatesRewrittenGatewayEntry(t *testing.T) {
 	// 反向:连网关 token 也没有时,校验失败但只点名网关 token,绝不泄露厂商 key 名。
 	t.Setenv("ONECREAT_GATEWAY_TOKEN", "")
 	entry2 := &config.ProviderEntry{Kind: "openai", BaseURL: "https://api.deepseek.com", APIKeyEnv: "DEEPSEEK_API_KEY", Model: "deepseek-flash"}
-	applyOnecreatGateway(entry2)
+	applyOnecreatGateway(entry2, account.FromEnv())
 	err := entry2.Validate("deepseek-flash")
 	if err == nil {
 		t.Fatal("缺网关 token 时校验应失败")

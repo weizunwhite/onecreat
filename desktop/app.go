@@ -1,34 +1,21 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
-	"reasonix/internal/agent"
+	"reasonix/internal/account"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
-	fileenc "reasonix/internal/fileutil/encoding"
-	"reasonix/internal/hardware/boards"
+	"reasonix/internal/eventwire"
 	"reasonix/internal/i18n"
-	"reasonix/internal/memory"
-	"reasonix/internal/plugin"
-	"reasonix/internal/provider"
-	"reasonix/internal/skill"
 )
 
 // eventChannel is the Wails runtime event name the frontend subscribes to for the
@@ -44,78 +31,53 @@ const eventChannel = "agent:event"
 // the shared internal/boot. Events flow the other way: the controller emits to an
 // eventSink that forwards each one to the frontend via the Shell(Wails 事件 / SSE)。
 type App struct {
-	ctx  context.Context
-	sink *eventSink
-	ctrl *control.Controller
+	ctx context.Context
 
 	// shell 是宿主外壳(见 shell.go):Wails 原生窗口或 Web 模式的 HTTP/SSE 服务。
 	// 事件推送、原生对话框、开外链、窗口操作全部经它,App 本身不认识 Wails。
-	// 单元测试里的裸 &App{} 不设它,统一由 a.sh() 兜底成 noopShell。
+	// 没装它时统一由 a.sh() 兜底成 noopShell。
 	shell Shell
 
-	// mu protects ctrl, label, model, startupErr, and ready during the async
-	// boot sequence. startup() spawns a goroutine for boot.Build(); all methods
-	// that touch the controller acquire the lock.
-	mu          sync.RWMutex
-	startupErr  string
-	label       string
-	model       string // active provider name (for the bottom model switcher)
-	ready       bool   // true once boot.Build completes (success or failure)
-	disabledMCP map[string]ServerView
-	mcpOrder    []string
-
-	// 常驻双向串口(「串口监视器」面板用):一次一个连接;读到的数据通过 Wails 事件
-	// serial:data 实时推给前端,前端可调 SerialWrite 反向发送(滑块/发送框)。
-	serialMu  sync.Mutex
-	serialSes *serialSession
-
 	// 多标签多任务(像 Codex / Claude Code):每个 tab 一个独立 controller + sink +
-	// session 文件,后台 tab 的 controller 照常在自己的 goroutine 里跑,事件发到
-	// 独立通道 agent:event:<tabID> —— 所以多个任务可以「真并行」。
-	// ctrl/sink/label/model/ready/startupErr 这几个字段始终镜像「当前活动 tab」,
-	// 既有的 52 处 a.ctrl 读取无需改动;SetActiveTab 在切换时重指镜像。
-	tabs      map[string]*tabRuntime
-	tabOrder  []string // 标签顺序(新建追加到末尾)
-	activeTab string
-	tabSeq    int // 生成新 tab id 的自增计数
+	// session 文件 + workspace root,后台 tab 的 controller 照常在自己的 goroutine
+	// 里跑,事件发到独立通道 agent:event:<tabID> —— 所以多个任务可以「真并行」。
+	//
+	// tabs 是标签运行时的**唯一真源**:App 上不再镜像活动标签的
+	// ctrl/sink/model/label/ready/startupErr。「活动标签」只是 tabs 里的一个 id,
+	// 沿用旧签名、不带 tabID 的前端入口在这一层解析成活动 id 再委托下去。
+	tabs *tabManager
 
-	// Per-turn autosave runs off the event goroutine so disk I/O never delays
-	// event delivery; overlapping requests coalesce into one trailing write.
-	// 按 tab 单飞:后台 tab 完成一轮也各存各的 session,不串到活动 tab。
-	saveMu    sync.Mutex
-	saving    map[string]bool
-	saveAgain map[string]bool
+	// factory 持有「进程级 / 工作区级」资源(每个项目共享的 LSP manager 与 CodeGraph
+	// 守护进程),由所有标签共用。它必须共享:同一个项目开两个标签时,关掉其中一个
+	// 不能停掉另一个还在用的语言服务器和符号守护进程(Plan 05 / A06)。
+	//
+	// 在 NewApp 里就建好(而不是 startup),这样任何 goroutine 读它时都已经写完,
+	// 不需要再加一把锁;它的生命周期由 shutdown 里的 Close 结束,不依赖 ctx 取消。
+	// 单元测试(newBareApp)不设它 —— nil 表示「每个 controller 自带一份私有的」,
+	// 即 Plan 05 之前的行为。
+	factory *boot.Factory
 
-	// 硬件长操作互斥:装工具链(arduino-cli 写同一 core 目录)和烧录(esptool 抢同一
-	// 串口)各自不能并发。前端的按钮守卫是 HardwarePanel 组件内 state,面板随视图切换/
-	// 收起被卸载时守卫丢失,重挂载后按钮恢复可点 → 会并发起第二次安装/烧录(写坏 core /
-	// 串口抢占)。故在后端串行:进行中直接拒绝第二次并给出说明。
-	hwOpMu       sync.Mutex
-	hwInstalling bool
-	hwFlashing   bool
-}
+	// gateway 是平台账号运行时:登录后的网关 URL / token / 档位。所有标签共享同一个
+	// 对象,token 续期只改它,已建好的会话下一次请求就用上新 token —— 不再靠
+	// os.Setenv 三个环境变量当状态总线(Plan 09 / A12)。
+	gateway *account.Gateway
 
-// tabRuntime 是一个独立任务标签的后端运行时:自己的 controller、事件 sink、
-// session(session 路径存在 ctrl 里)。kind 仅供前端决定显示对话还是硬件视图,
-// 后端不据此分支(硬件视图也只是往同一个 controller 注入提示词)。
-type tabRuntime struct {
-	id         string
-	kind       string // "chat" | "hardware"
-	sink       *eventSink
-	ctrl       *control.Controller
-	label      string
-	model      string
-	ready      bool
-	startupErr string
-	// closed 在 CloseTab 时置位:buildTab 完成时若发现已关闭,就 Close 掉刚建好的
-	// controller 并不发 ready,避免「关标签时 build 未完成 → controller 泄漏」(A6)。
-	closed bool
-	// 期望的运行时门控状态(plan/YOLO/coach persona)。这些是 per-controller 运行时
-	// 状态,但门控开关是全局 UI 态;存到标签上,使其在 controller 异步装配完成、或切回
-	// 标签时都能被重新施加,而不是打到 nil controller 被静默吞(A8)。
-	wantPlan   bool
-	wantBypass bool
-	coachWant  string
+	// 领域服务。App 从 Plan 06 起只是它们的 transport facade:除了 ctx / shell /
+	// tabs / factory 这几样装配层的东西,它自己不再持有任何领域状态,也不再有锁 ——
+	// 硬件的互斥槽、MCP 的视图缓存、串口连接、自动落盘的单飞表、当前选中的项目
+	// 文件夹,全部搬进了各自的服务(app_facade_test.go 会在它们爬回来时报错)。
+	hw       *hardwareService
+	mcp      *mcpService
+	files    *fileService
+	memory   *memoryService
+	sessions *sessionService
+
+	// rt 装配与重建标签的 controller,并持有「当前选中的项目文件夹」。
+	rt *tabRuntimeService
+
+	// serial 是「串口监视器」面板的常驻双向连接(见 serial_service.go)。串口状态
+	// 归它,不再散在 App 上。
+	serial *serialService
 }
 
 // TabMeta 是给前端的标签快照。
@@ -132,16 +94,37 @@ type TabMeta struct {
 // once the Wails context exists.
 func NewApp() *App {
 	a := &App{
-		disabledMCP: map[string]ServerView{},
-		tabs:        map[string]*tabRuntime{},
-		saving:      map[string]bool{},
-		saveAgain:   map[string]bool{},
+		tabs:    newTabManager(),
+		factory: boot.NewFactory(context.Background()),
 	}
 	// 按构建标签选宿主实现:!web → wailsShell,web → webShell。
 	a.shell = newShell(a)
-	// 主标签的 sink(tabID "main");同时作为「活动 tab 镜像」的初始 sink。
-	a.sink = &eventSink{app: a, tabID: "main"}
+	a.wireServices()
+	a.hw = newHardwareService(a.workspaceRoot, a.activeCtrl, a.serial)
+	// 主标签在这里就注册进 tabs 并设为活动:标签运行时只有这一份,不再有「App 上的
+	// 活动镜像」。它的 controller 由 buildController 异步装配,期间 Ready=false。
+	a.tabs.Register(&tabRuntime{id: "main", kind: "chat", sink: newEventSink(nil, a, "main")})
 	return a
+}
+
+// wireServices 把领域服务接到 App 上。App 从 Plan 06 起只是这些服务的 transport
+// facade,所以「没接服务的 App」不是一个有效对象 —— 单元测试也走这里(见
+// newBareApp),而不是自己拼一个半成品。
+//
+// 依赖用函数注入而不是直接传值:shell 在此之前一行才装上,ctx 要等 startup,
+// 而 workspaceRoot / activeCtrl 本来就是「每次调用现算」的。
+func (a *App) wireServices() {
+	if a.gateway == nil {
+		// 兼容:进程若带着 ONECREAT_GATEWAY_* 启动(旧版脚本 / 打包器 / 测试),导入一次;
+		// 之后这个对象就是唯一真源,env 不再被读回(Plan 09 / A12)。
+		a.gateway = account.FromEnv()
+	}
+	a.serial = newSerialService(a.sh)
+	a.mcp = newMCPService(a.activeCtrl)
+	a.files = newFileService(a.workspaceRoot)
+	a.memory = newMemoryService(a.activeCtrl)
+	a.sessions = newSessionService(a.tabs)
+	a.rt = newTabRuntimeService(a.tabs, a.factory, a.gateway, a.sh, func() context.Context { return a.ctx }, a.serialReleaseForToolUse)
 }
 
 // startup runs once the webview process is up, before the frontend can issue any
@@ -154,7 +137,12 @@ func NewApp() *App {
 // crashing the window.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.sink.ctx = ctx
+	// 主标签的 sink 在 NewApp 里就建好了(那时还没有 Wails ctx),这里补上。
+	a.tabs.Update("main", func(rt *tabRuntime, _ bool) {
+		if rt.sink != nil {
+			rt.sink.ctx = ctx
+		}
+	})
 	a.showMainWindow(ctx)
 	go func() {
 		time.Sleep(500 * time.Millisecond)
@@ -181,34 +169,32 @@ func (a *App) showMainWindow(context.Context) {
 // wires up the controller and flips ready; on failure it stores the error so
 // Meta().StartupErr surfaces it.
 func (a *App) buildController() {
-	// A GUI launch starts in "/" (read-only); move into a real, writable working
-	// folder (the remembered one, else home) before anything reads/writes config,
-	// .env, memory, or skills relative to cwd.
-	ensureWorkspace()
+	// A GUI launch starts in "/" (read-only). Resolve the folder this launch
+	// opens in (the remembered one, else home) — that Context is what config,
+	// memory, skills and the tools resolve against from here on; it also chdirs
+	// there so the remaining cwd-relative corners of the app land somewhere
+	// writable. Switching projects later re-points the Context, never the process.
+	ws := resolveStartupWorkspace()
 
 	// Drive the Go-side catalogue (i18n.M) from the configured language so the
 	// backend-provided slash UI — command descriptions, sub-command hints,
 	// listing notices — comes through localized, matching the frontend.
-	if cfg, err := config.Load(); err == nil {
+	if cfg, err := config.LoadIn(ws); err == nil {
 		i18n.DetectLanguage(cfg.Language)
 	}
 
-	// 注册初始的「主标签」,沿用 NewApp 建好的 a.sink(tabID "main"),并设为活动。
-	a.mu.Lock()
-	rt := &tabRuntime{id: "main", kind: "chat", sink: a.sink}
-	a.tabs["main"] = rt
-	a.tabOrder = append(a.tabOrder, "main")
-	a.activeTab = "main"
-	a.mu.Unlock()
+	a.rt.SetWorkspace(ws)
+	// 主标签在 NewApp 里已注册;这里只补上它的项目根。
+	a.tabs.Update("main", func(rt *tabRuntime, _ bool) { rt.ws = ws })
 
 	// 默认 local-first:清掉任何旧网关 env,让首个 controller 使用本地 provider/API key。
 	// 只有显式 ONECREAT_ACCOUNT_MODE=platform 时才续期并改走平台 AI 网关。
 	if platformAccountEnabled() {
-		ensureFreshToken()
+		ensureFreshToken(a.gateway)
 	}
-	applyGatewayEnvFromSession()
+	applyGatewaySession(a.gateway)
 
-	a.buildTab(rt)
+	a.buildTab("main")
 
 	if platformAccountEnabled() {
 		// 后台定时续期:长时间开着 app 也不会因 access token 过期而掉线。
@@ -226,91 +212,9 @@ func (a *App) tokenRefreshLoop() {
 		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
-			ensureFreshToken()
+			ensureFreshToken(a.gateway)
 		}
 	}
-}
-
-// buildTab 在一个标签运行时里装配一个独立 controller(boot.Build 可能较慢,所以由
-// CreateTab 放到 goroutine 里调)。装配完成后:写回该 tab 的运行时;若它正是当前活动
-// tab,则同步「活动镜像」字段;最后发 agent:ready:<tabID> 通知前端该标签可用。
-func (a *App) buildTab(rt *tabRuntime) {
-	// 解析当前文件夹的默认模型为规范的 "provider/model"。
-	model := ""
-	if cfg, err := config.Load(); err == nil {
-		model = cfg.DefaultModel
-		if e, ok := cfg.ResolveModel(cfg.DefaultModel); ok {
-			model = e.Name + "/" + e.Model
-		}
-	}
-
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: rt.sink, PreToolUse: a.serialReleaseForToolUse})
-	if err != nil {
-		a.mu.Lock()
-		if rt.closed { // 标签已在 build 期间被关闭:什么都不写、不发 ready(A6)
-			a.mu.Unlock()
-			return
-		}
-		rt.startupErr = err.Error()
-		rt.ready = true
-		if a.activeTab == rt.id {
-			a.startupErr = rt.startupErr
-			a.ready = true
-		}
-		a.mu.Unlock()
-		a.sh().Emit("agent:ready:"+rt.id, nil)
-		return
-	}
-
-	a.mu.Lock()
-	if rt.closed {
-		// 标签在 build 期间被关闭:关掉刚建好的 controller(含 MCP 子进程 / session /
-		// goroutine),不发 ready —— 否则这个 controller 永远没人 Close(A6)。
-		a.mu.Unlock()
-		ctrl.Close()
-		return
-	}
-	rt.ctrl = ctrl
-	rt.model = model
-	rt.label = ctrl.Label()
-	rt.ready = true
-	wantPlan := rt.wantPlan
-	wantBypass := rt.wantBypass
-	coachWant := rt.coachWant
-	if a.activeTab == rt.id {
-		a.ctrl = ctrl
-		a.sink = rt.sink
-		a.model = model
-		a.label = ctrl.Label()
-		a.ready = true
-		a.startupErr = ""
-	}
-	a.mu.Unlock()
-
-	// Desktop is interactive: route "ask" gate decisions to the frontend as
-	// approval_request events, answered via Approve.
-	ctrl.EnableInteractiveApproval()
-
-	// 施加标签期望的运行时门控:新标签异步装配完成后,把「切标签 / 新建标签时已记录」的
-	// plan/YOLO/coach 状态真正作用到 controller,保证底部 pill 与实际门控一致——避免
-	// 「显示 plan(只读),实际 normal(会改文件)」的安全错觉(A8)。
-	if wantPlan {
-		ctrl.SetPlanMode(true)
-	}
-	if wantBypass {
-		ctrl.SetBypass(true)
-	}
-	if coachWant != "" {
-		ctrl.SetCoachMode(coachWant)
-	}
-
-	// Land auto-save in a fresh session file (same as a fresh chat/serve start).
-	if dir := ctrl.SessionDir(); dir != "" {
-		ctrl.SetSessionPath(agent.NewSessionPath(dir, ctrl.Label()))
-	}
-
-	// Notify the frontend this tab is ready — it re-fetches Meta/Context/History.
-	a.sh().Emit("agent:ready:"+rt.id, nil)
 }
 
 // CreateTab 新建一个独立任务标签并设为活动;controller 异步装配(期间 Ready=false,
@@ -323,95 +227,46 @@ func (a *App) CreateTab(kind string) (TabMeta, error) {
 	if kind == "" {
 		kind = "chat"
 	}
-	a.mu.Lock()
-	a.tabSeq++
-	id := fmt.Sprintf("tab%d", a.tabSeq)
-	rt := &tabRuntime{id: id, kind: kind, sink: &eventSink{ctx: a.ctx, app: a, tabID: id}}
-	a.tabs[id] = rt
-	a.tabOrder = append(a.tabOrder, id)
-	// 新建即设为活动(用户刚开它就是要用),活动镜像先指向未就绪的新 tab。
-	a.activeTab = id
-	a.ctrl = nil
-	a.sink = rt.sink
-	a.label = ""
-	a.model = ""
-	a.ready = false
-	a.startupErr = ""
-	a.mu.Unlock()
+	id := a.tabs.NextID()
+	// 新标签开在【当前选中的】项目上,并把这个 root 固定进标签自己的运行时:
+	// 之后用户换项目只影响新标签和活动标签,这个标签继续读写它开的那个目录。
+	// Register 同时把它设为活动(用户刚开它就是要用)——「活动」只是一个 id,
+	// 没有需要一并重指的镜像状态。
+	a.tabs.Register(&tabRuntime{
+		id: id, kind: kind, ws: a.workspace(),
+		sink: newEventSink(a.ctx, a, id),
+	})
 
-	go a.buildTab(rt)
+	go a.buildTab(id)
 	return TabMeta{ID: id, Kind: kind, Ready: false, Active: true}, nil
 }
 
-// SetActiveTab 把「活动镜像」重指到目标标签:既有的会话类方法(读 a.ctrl)随之作用
-// 到该标签。前端在切换标签、以及对某标签发指令前调用它。未知 id 是空操作。
-func (a *App) SetActiveTab(id string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	rt := a.tabs[id]
-	if rt == nil {
-		return
-	}
-	a.activeTab = id
-	a.ctrl = rt.ctrl
-	a.sink = rt.sink
-	a.label = rt.label
-	a.model = rt.model
-	a.ready = rt.ready
-	a.startupErr = rt.startupErr
-}
+// SetActiveTab 把「活动标签」指向目标标签:不带 tabID 的既有会话类方法随之作用到
+// 该标签。前端在切换标签、以及对某标签发指令前调用它。未知 id 是空操作。
+//
+// 切换只改一个 id —— 没有 controller / sink / model 需要跟着重指,所以也就不存在
+// 「漏同步某个镜像字段」这类 bug。
+func (a *App) SetActiveTab(id string) { a.tabs.SetActive(id) }
 
-// CloseTab 关闭一个标签:快照并关掉它的 controller,从注册表移除;若关的是活动标签,
+// CloseTab 关闭一个标签:从注册表移除,快照并关掉它的 controller;若关的是活动标签,
 // 自动切到末尾的另一个标签。
 func (a *App) CloseTab(id string) {
-	a.mu.Lock()
-	rt := a.tabs[id]
-	if rt == nil {
-		a.mu.Unlock()
+	v, _, ok := a.tabs.Close(id)
+	if !ok {
 		return
 	}
-	// 标记关闭:若此刻 buildTab 还在跑(rt.ctrl==nil),它完成时会看到 closed=true,
-	// 自行 Close 掉刚建好的 controller 并不发 ready,避免 controller 泄漏(A6)。
-	rt.closed = true
-	delete(a.tabs, id)
-	for i, x := range a.tabOrder {
-		if x == id {
-			a.tabOrder = append(a.tabOrder[:i], a.tabOrder[i+1:]...)
-			break
-		}
-	}
-	if a.activeTab == id {
-		a.activeTab = ""
-		a.ctrl, a.sink, a.label, a.model, a.ready, a.startupErr = nil, nil, "", "", false, ""
-		if len(a.tabOrder) > 0 {
-			next := a.tabOrder[len(a.tabOrder)-1]
-			if nt := a.tabs[next]; nt != nil {
-				a.activeTab = next
-				a.ctrl, a.sink, a.label, a.model, a.ready, a.startupErr = nt.ctrl, nt.sink, nt.label, nt.model, nt.ready, nt.startupErr
-			}
-		}
-	}
-	a.mu.Unlock()
-	if rt.ctrl != nil {
-		_ = rt.ctrl.Snapshot()
-		rt.ctrl.Close()
+	// Snapshot/Close 是慢操作,在 tabs 锁外做。若此刻 buildTab 还在跑(ctrl==nil),
+	// 这个标签已经从注册表里被移除 —— 「不在注册表里」本身就是关闭信号(Plan 02
+	// 删掉了冗余的 closed 标志,两个信号意味着两处要同步)。buildTab 完成时写回落空,
+	// 于是它自行 Close 掉刚建好的 controller 并不发 ready,避免 controller 泄漏(A6)。
+	if v.ctrl != nil {
+		_ = v.ctrl.Snapshot()
+		v.ctrl.Close()
 	}
 }
 
 // ListTabs 返回所有标签快照(按打开顺序),供前端渲染标签栏。
-func (a *App) ListTabs() []TabMeta {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	out := make([]TabMeta, 0, len(a.tabOrder))
-	for _, id := range a.tabOrder {
-		rt := a.tabs[id]
-		if rt == nil {
-			continue
-		}
-		out = append(out, TabMeta{ID: id, Kind: rt.kind, Label: rt.label, Ready: rt.ready, StartupErr: rt.startupErr, Active: id == a.activeTab})
-	}
-	return out
-}
+func (a *App) ListTabs() []TabMeta { return a.tabs.List() }
 
 // shutdown snapshots the conversation and stops plugin subprocesses on close.
 // 遍历所有标签(不只活动镜像):多标签并行时,后台标签进行中的最后一轮也要落盘,
@@ -422,17 +277,14 @@ func (a *App) ListTabs() []TabMeta {
 func (a *App) Quit() { a.sh().Quit() }
 
 func (a *App) shutdown(context.Context) {
-	a.mu.RLock()
-	ctrls := make([]*control.Controller, 0, len(a.tabs))
-	for _, rt := range a.tabs {
-		if rt != nil && rt.ctrl != nil {
-			ctrls = append(ctrls, rt.ctrl)
-		}
-	}
-	a.mu.RUnlock()
-	for _, ctrl := range ctrls {
+	for _, ctrl := range a.tabs.Controllers() {
 		_ = ctrl.Snapshot()
 		ctrl.Close()
+	}
+	// 每个 controller 关闭时释放它自己那份工作区引用;最后一个走掉时工作区随之关闭。
+	// 这里再关一次工厂,兜住「没有任何标签、或某个标签没建起来」时仍开着的进程级作用域。
+	if a.factory != nil {
+		a.factory.Close()
 	}
 }
 
@@ -440,30 +292,19 @@ func (a *App) shutdown(context.Context) {
 // Each method guards on a nil controller so a pre-startup or failed-build call is
 // a no-op, never a panic.
 
-// ctrlForTab 按标签 id 取该标签的 controller(加锁)。空 id 回退到活动镜像,兼容尚未
-// 带 tabID 的旧路径。用于审批/问答/门控等「必须打到事件来源标签」的方法(A2/A8)。
-func (a *App) ctrlForTab(tabID string) *control.Controller {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if tabID == "" {
-		return a.ctrl
-	}
-	if rt := a.tabs[tabID]; rt != nil {
-		return rt.ctrl
-	}
-	return nil
-}
+// ctrlForTab 按标签 id 取该标签的 controller。空 id 解析为活动标签,兼容尚未带
+// tabID 的旧路径。用于审批/问答/门控等「必须打到事件来源标签」的方法(A2/A8)。
+func (a *App) ctrlForTab(tabID string) *control.Controller { return a.tabs.Ctrl(tabID) }
 
-func isGatewayManagedSlash(trimmed string) bool {
-	return trimmed == "/model" || strings.HasPrefix(trimmed, "/model ") ||
-		trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ")
-}
+// activeCtrl 是活动标签的 controller(未就绪 / 无标签时为 nil)。不带 tabID 的旧
+// 前端入口都经它解析,这是「活动标签」在应用层唯一的落点。
+func (a *App) activeCtrl() *control.Controller { return a.tabs.Ctrl("") }
 
 // Submit runs raw user input as a turn; slash commands and @-references are
 // resolved by the controller. Output arrives asynchronously on eventChannel.
 func (a *App) Submit(input string) {
 	trimmed := strings.TrimSpace(input)
-	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+	if a.gatewayActive() && isGatewayManagedSlash(trimmed) {
 		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
 		return
 	}
@@ -471,9 +312,7 @@ func (a *App) Submit(input string) {
 		a.runEffortCommand(trimmed)
 		return
 	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl != nil {
 		ctrl.Submit(input)
 	}
@@ -483,34 +322,29 @@ func (a *App) Submit(input string) {
 // string for the saved desktop transcript. The model still receives input.
 func (a *App) SubmitDisplay(display, input string) {
 	trimmed := strings.TrimSpace(input)
-	if gatewayActive() && isGatewayManagedSlash(trimmed) {
+	if a.gatewayActive() && isGatewayManagedSlash(trimmed) {
 		a.notice("AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。")
 		return
 	}
 	// 取一次 ctrl 局部变量后全程用它,消除「检查与 Submit 之间 controller 被换/Close」
 	// 的 TOCTOU 数据竞争(A9)。SubmitDisplay 是知识库增强与硬件面板提交的主路径,频繁调用。
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return
 	}
-	dir := config.SessionDir()
 	sessionPath := ctrl.SessionPath()
-	_ = recordSessionDisplay(dir, sessionPath, input, display)
+	_ = recordSessionDisplay(a.sessions.reg, sessionPath, input, display)
 	// 记录该 session 创建时所在的 workspace,用于侧栏按文件夹分组。
 	// 只在首次有效消息时落,后续 workspace 切换不影响归属。
-	if cwd, err := os.Getwd(); err == nil {
-		_ = rememberSessionCwd(dir, sessionPath, cwd)
+	if root := a.workspaceRoot(); root != "" {
+		_ = rememberSessionCwd(a.sessions.reg, sessionPath, root)
 	}
 	ctrl.Submit(input)
 }
 
 // Cancel aborts the in-flight turn.
 func (a *App) Cancel() {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl != nil {
 		ctrl.Cancel()
 	}
@@ -525,26 +359,15 @@ func (a *App) Approve(tabID, id string, allow, session bool) {
 	}
 }
 
-// tabRTLocked 解析目标标签运行时(空 tabID=活动标签);调用方须持有 a.mu。
-func (a *App) tabRTLocked(tabID string) *tabRuntime {
-	if tabID == "" {
-		tabID = a.activeTab
-	}
-	return a.tabs[tabID]
-}
-
 // SetPlanMode toggles read-only plan mode for one tab. 记录到标签的 want 状态(即使
 // controller 还在异步装配也不丢),并施加到已就绪的 controller——避免「pill 显示只读、
 // 实际可写」的安全错觉(A8)。
 func (a *App) SetPlanMode(tabID string, on bool) {
-	a.mu.Lock()
-	rt := a.tabRTLocked(tabID)
 	var ctrl *control.Controller
-	if rt != nil {
+	a.tabUpdate(tabID, func(rt *tabRuntime) {
 		rt.wantPlan = on
 		ctrl = rt.ctrl
-	}
-	a.mu.Unlock()
+	})
 	if ctrl != nil {
 		ctrl.SetPlanMode(on)
 	}
@@ -553,14 +376,11 @@ func (a *App) SetPlanMode(tabID string, on bool) {
 // SetCoachMode 设置某标签的「协作模式」persona(空串=默认无 persona)。preamble 随每个
 // turn 注入(见 Compose),按 tabID 路由并记录 want 状态(A8)。
 func (a *App) SetCoachMode(tabID, preamble string) {
-	a.mu.Lock()
-	rt := a.tabRTLocked(tabID)
 	var ctrl *control.Controller
-	if rt != nil {
+	a.tabUpdate(tabID, func(rt *tabRuntime) {
 		rt.coachWant = strings.TrimSpace(preamble)
 		ctrl = rt.ctrl
-	}
-	a.mu.Unlock()
+	})
 	if ctrl != nil {
 		ctrl.SetCoachMode(preamble)
 	}
@@ -613,9 +433,7 @@ func (a *App) PendingPrompts(tabID string) PendingPrompts {
 // Compact runs a plain compaction pass (the "compact now" button). Focus-guided
 // compaction goes through Submit("/compact <focus>") instead.
 func (a *App) Compact() error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -624,9 +442,7 @@ func (a *App) Compact() error {
 
 // NewSession snapshots the current conversation and rotates to a fresh one.
 func (a *App) NewSession() error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -643,9 +459,7 @@ type CheckpointMeta struct {
 
 // Checkpoints lists the session's rewind points, oldest first, for the rewind UI.
 func (a *App) Checkpoints() []CheckpointMeta {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return []CheckpointMeta{}
 	}
@@ -661,9 +475,7 @@ func (a *App) Checkpoints() []CheckpointMeta {
 // "conversation", or "both" (anything else is treated as "both"). The frontend
 // re-reads History after this resolves.
 func (a *App) Rewind(turn int, scope string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -681,9 +493,7 @@ func (a *App) Rewind(turn int, scope string) error {
 // (preserving the current one), keeping code intact, and switches to the branch.
 // The frontend re-reads History after this resolves.
 func (a *App) Fork(turn int) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -695,9 +505,7 @@ func (a *App) Fork(turn int) error {
 // of turn into one summary (Claude Code's "summarize from/up to here"), keeping
 // code intact. The frontend re-reads History after this resolves.
 func (a *App) SummarizeFrom(turn int) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
@@ -705,355 +513,11 @@ func (a *App) SummarizeFrom(turn int) error {
 }
 
 func (a *App) SummarizeUpTo(turn int) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return nil
 	}
 	return ctrl.SummarizeUpTo(a.ctx, turn)
-}
-
-// SessionMeta summarises one saved session for the history panel.
-type SessionMeta struct {
-	Path           string `json:"path"`
-	Preview        string `json:"preview"`         // first user message
-	Title          string `json:"title,omitempty"` // user-chosen name, when set (overrides preview)
-	Turns          int    `json:"turns"`
-	CreatedAt      int64  `json:"createdAt"`      // unix milliseconds
-	LastActivityAt int64  `json:"lastActivityAt"` // unix milliseconds
-	ModTime        int64  `json:"modTime"`        // compatibility alias for lastActivityAt
-	Current        bool   `json:"current"`
-	Cwd            string `json:"cwd,omitempty"`  // workspace path at session creation, for sidebar grouping
-	Kind           string `json:"kind,omitempty"` // 会话类型(如 "hardware");空=普通对话。历史侧栏据此区分垂直
-}
-
-type WorkspaceMeta struct {
-	Path    string `json:"path"`
-	Name    string `json:"name"`
-	Current bool   `json:"current"`
-}
-
-// ListSessions returns the saved sessions newest-first for the history panel,
-// marking the one the current conversation is writing to and attaching any
-// user-chosen titles.
-func (a *App) ListSessions() []SessionMeta {
-	dir := config.SessionDir()
-	infos, err := agent.ListSessions(dir)
-	if err != nil {
-		return []SessionMeta{}
-	}
-	titles := loadSessionTitles(dir)
-	cwds := loadSessionCwds(dir)
-	kinds := loadSessionKinds(dir)
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	cur := ""
-	if ctrl != nil {
-		cur = ctrl.SessionPath()
-	}
-	out := make([]SessionMeta, 0, len(infos))
-	for _, s := range infos {
-		out = append(out, SessionMeta{
-			Path:           s.Path,
-			Preview:        s.Preview,
-			Title:          titles[filepath.Base(s.Path)],
-			Turns:          s.Turns,
-			CreatedAt:      s.CreatedAt.UnixMilli(),
-			LastActivityAt: s.LastActivityAt.UnixMilli(),
-			ModTime:        s.LastActivityAt.UnixMilli(),
-			Current:        s.Path == cur,
-			Cwd:            cwds[filepath.Base(s.Path)],
-			Kind:           kinds[filepath.Base(s.Path)],
-		})
-	}
-	return out
-}
-
-// MarkSessionKind 给当前活动会话打类型标(写入一次即定),供历史侧栏区分垂直。前端在真正
-// 进入某垂直定制流程时调用(如硬件面板跑编译/烧录/生成代码)——硬件视图是切 mainView、
-// 不换 tab,所以只能由前端显式标记,后端无法从 tab 类型推断(Phase 1 收尾)。
-func (a *App) MarkSessionKind(kind string) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return
-	}
-	_ = rememberSessionKind(config.SessionDir(), ctrl.SessionPath(), kind)
-}
-
-// sessionPathsInUse 返回所有标签 controller 当前正在写的 session 路径 → 标签 id 映射;
-// exclude 跳过指定标签(空串=不跳过)。先在锁内取出 controller 列表再调 SessionPath(),
-// 避免持 a.mu 时回调进 controller 锁。用于跨标签防双写同一 session 文件(A4)。
-func (a *App) sessionPathsInUse(exclude string) map[string]string {
-	type pair struct {
-		id   string
-		ctrl *control.Controller
-	}
-	a.mu.RLock()
-	pairs := make([]pair, 0, len(a.tabs))
-	for id, rt := range a.tabs {
-		if id == exclude || rt == nil || rt.ctrl == nil {
-			continue
-		}
-		pairs = append(pairs, pair{id, rt.ctrl})
-	}
-	a.mu.RUnlock()
-	out := map[string]string{}
-	for _, p := range pairs {
-		if sp := p.ctrl.SessionPath(); sp != "" {
-			out[sp] = p.id
-		}
-	}
-	return out
-}
-
-// DeleteSession removes a saved session (and its title). It refuses any session a
-// tab is currently writing to — the active one (auto-save would recreate it) and
-// any background tab's session too, so a background task can't be deleted mid-run (A4).
-func (a *App) DeleteSession(path string) error {
-	a.mu.RLock()
-	active := a.activeTab
-	a.mu.RUnlock()
-	if tab := a.sessionPathsInUse("")[path]; tab != "" {
-		if tab == active {
-			return errActiveSession
-		}
-		return fmt.Errorf("该会话正在另一个任务标签中使用,无法删除;请先在那个标签里新建会话")
-	}
-	return deleteSessionFile(config.SessionDir(), path)
-}
-
-// RenameSession sets a custom display name for a session (empty clears it back to
-// the preview). It only affects the history panel; the file on disk is unchanged.
-func (a *App) RenameSession(path, title string) error {
-	return setSessionTitle(config.SessionDir(), path, title)
-}
-
-// ResumeSession snapshots the current conversation, then loads the session at
-// path and continues it — auto-save keeps appending to that file. The model and
-// working folder are unchanged (same controller); only the transcript is swapped.
-// Returns the resumed messages for the frontend to render.
-func (a *App) ResumeSession(path string) ([]HistoryMessage, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	active := a.activeTab
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return []HistoryMessage{}, nil
-	}
-	// 目标 session 若正被「其它标签」写入,拒绝 resume——两个 controller 各自整文件快照
-	// 同一个 .jsonl 会后写覆盖先写、互丢对话轮次(A4)。
-	if tab := a.sessionPathsInUse(active)[path]; tab != "" {
-		return nil, fmt.Errorf("该会话已在另一个任务标签中打开;请切到那个标签继续,而不是在此重复打开")
-	}
-	loaded, err := agent.LoadSession(path)
-	if err != nil {
-		return nil, err
-	}
-	_ = ctrl.Snapshot() // persist the current session before switching away
-	ctrl.Resume(loaded, path)
-	return a.History(), nil
-}
-
-// PreviewSession reads a saved session for display only. It does not snapshot or
-// swap the active controller, so the history drawer can call it while a turn runs.
-func (a *App) PreviewSession(path string) ([]HistoryMessage, error) {
-	return previewSessionMessages(config.SessionDir(), path)
-}
-
-// PickWorkspace opens a folder chooser and, on a pick, switches the agent to that
-// project: it re-roots the process there, rebuilds the controller from that
-// folder's reasonix.toml + REASONIX.md, and starts a fresh session — the desktop
-// analogue of opening a different project. The new controller is built before the
-// old one is torn down, so a folder whose config can't load leaves the current
-// session untouched. Returns the chosen path ("" if cancelled).
-func (a *App) PickWorkspace() (string, error) {
-	if a.ctx == nil {
-		return "", nil
-	}
-	cur, _ := os.Getwd()
-	dir, err := a.sh().OpenDirectoryDialog(DialogOptions{
-		Title:            "Choose working folder",
-		DefaultDirectory: cur,
-	})
-	if err != nil || dir == "" {
-		return "", err // cancelled or error → no change
-	}
-	return a.SwitchWorkspace(dir)
-}
-
-func (a *App) ListWorkspaces() []WorkspaceMeta {
-	cur, _ := os.Getwd()
-	seen := map[string]bool{}
-	paths := make([]string, 0, 8)
-	add := func(path string) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
-		if abs, err := filepath.Abs(path); err == nil {
-			path = abs
-		}
-		if seen[path] {
-			return
-		}
-		if info, err := os.Stat(path); err != nil || !info.IsDir() {
-			return
-		}
-		seen[path] = true
-		paths = append(paths, path)
-	}
-	add(cur)
-	for _, path := range loadWorkspaces() {
-		add(path)
-	}
-	out := make([]WorkspaceMeta, 0, len(paths))
-	for _, path := range paths {
-		out = append(out, WorkspaceMeta{
-			Path:    path,
-			Name:    workspaceName(path),
-			Current: path == cur,
-		})
-	}
-	return out
-}
-
-func workspaceName(path string) string {
-	name := filepath.Base(path)
-	if name == "." || name == string(filepath.Separator) || name == "" {
-		return path
-	}
-	return name
-}
-
-func (a *App) SwitchWorkspace(dir string) (string, error) {
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		dir = home
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		dir = abs
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return "", err
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("%s is not a directory", dir)
-	}
-	cur, _ := os.Getwd()
-	if dir == cur {
-		saveWorkspace(dir)
-		return dir, nil
-	}
-	// v1 限制防护:进程 cwd 是全局的,切换工作区只重建「活动」标签的 controller,
-	// 后台标签会继续按旧目录的相对路径读写(静默错位,极难排查)。开着多个任务
-	// 标签时直接拒绝并说明,让用户先收尾其他标签——诚实报错优于数据错位。
-	a.mu.RLock()
-	tabCount := len(a.tabs)
-	sink := a.sink       // 锁内捕获:a.sink 由 CreateTab/SetActiveTab/CloseTab/buildTab 持锁改写,锁外裸读是数据竞争(M3)
-	activeCtrl := a.ctrl // 活动标签 controller,用于运行态守卫(D3)
-	a.mu.RUnlock()
-	if tabCount > 1 {
-		return "", fmt.Errorf("当前开着 %d 个任务标签;切换项目文件夹前请先关闭其他任务标签(工作目录是全局的,后台任务会读写到错误的目录)", tabCount)
-	}
-	// 后端运行态守卫:活动标签有回合在跑时,os.Chdir 会让在途 bash(cmd.Dir 为空 → 用进程
-	// cwd)在被取消前落到【新】项目目录执行,可能对错误项目做删除/部署。前端 disabled={running}
-	// 只覆盖 UI 入口,这里补后端防线(与 SetEffort 同款)。
-	if activeCtrl != nil && activeCtrl.Running() {
-		return "", fmt.Errorf("有任务正在运行,请先停止再切换项目文件夹")
-	}
-	if err := os.Chdir(dir); err != nil {
-		return "", err
-	}
-	// Resolve the new folder's default model from its own config.
-	model := ""
-	if cfg, cerr := config.Load(); cerr == nil {
-		model = cfg.DefaultModel
-		if e, ok := cfg.ResolveModel(cfg.DefaultModel); ok {
-			model = e.Name + "/" + e.Model
-		}
-	}
-	ctrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: sink, PreToolUse: a.serialReleaseForToolUse})
-	if err != nil {
-		_ = os.Chdir(cur) // roll back; the current session stays intact
-		return "", err
-	}
-	saveWorkspace(dir) // remember it so the next launch reopens here
-	// Commit the switch: save and tear down the old session, then swap in the new
-	// project's controller with a fresh session file.
-	a.mu.Lock()
-	if a.ctrl != nil {
-		_ = a.ctrl.Snapshot()
-		a.ctrl.Close()
-	}
-	a.ctrl = ctrl
-	a.model = model
-	a.label = ctrl.Label()
-	a.startupErr = ""
-	// 同步活动 tab 的运行时(SwitchWorkspace 只重建当前活动 tab 的 controller)。
-	if rt := a.tabs[a.activeTab]; rt != nil {
-		rt.ctrl = ctrl
-		rt.model = model
-		rt.label = ctrl.Label()
-		rt.startupErr = ""
-	}
-	a.mu.Unlock()
-	ctrl.EnableInteractiveApproval()
-	if d := ctrl.SessionDir(); d != "" {
-		ctrl.SetSessionPath(agent.NewSessionPath(d, ctrl.Label()))
-	}
-	return dir, nil
-}
-
-// HistoryMessage is one prior turn, for the frontend to repopulate its transcript
-// after a reload.
-type HistoryMessage struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning,omitempty"`
-}
-
-// History returns the session's message log.
-func (a *App) History() []HistoryMessage {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return nil
-	}
-	msgs := ctrl.History()
-	return historyMessages(msgs, sessionDisplayResolver(config.SessionDir(), ctrl.SessionPath()))
-}
-
-func historyMessages(msgs []provider.Message, resolveUserContent func(string) string) []HistoryMessage {
-	out := make([]HistoryMessage, 0, len(msgs))
-	for _, m := range msgs {
-		content := m.Content
-		if m.Role == provider.RoleUser {
-			content = resolveUserContent(m.Content)
-		}
-		reasoning := ""
-		if m.Role == provider.RoleAssistant {
-			reasoning = m.ReasoningContent
-		}
-		out = append(out, HistoryMessage{Role: string(m.Role), Content: content, Reasoning: reasoning})
-	}
-	return out
-}
-
-func previewSessionMessages(sessionDir, path string) ([]HistoryMessage, error) {
-	loaded, err := agent.LoadSession(path)
-	if err != nil {
-		return nil, err
-	}
-	return historyMessages(loaded.Snapshot(), sessionDisplayResolver(sessionDir, path)), nil
 }
 
 // ContextInfo is the prompt-vs-window gauge payload. Both zero means no data yet.
@@ -1064,9 +528,7 @@ type ContextInfo struct {
 
 // ContextUsage returns the latest context-window gauge numbers.
 func (a *App) ContextUsage() ContextInfo {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return ContextInfo{}
 	}
@@ -1089,9 +551,7 @@ type BalanceInfo struct {
 // controller is down, or the fetch fails — so the status bar simply shows nothing
 // rather than an error.
 func (a *App) Balance() BalanceInfo {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return BalanceInfo{}
 	}
@@ -1119,9 +579,7 @@ type JobView struct {
 // on demand (mount, turn end, and on each notice the frontend receives).
 func (a *App) Jobs() []JobView {
 	out := []JobView{}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return out
 	}
@@ -1149,16 +607,12 @@ type Meta struct {
 // subscribes to. Bypass/PlanMode/Running 读自活动标签 controller 的真实状态——切回
 // 标签时前端据此恢复 pill 与 spinner,而不是凭全局 UI 态猜测(A3/A8)。
 func (a *App) Meta() Meta {
-	a.mu.RLock()
-	label := a.label
-	startupErr := a.startupErr
-	ready := a.ready
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if gatewayActive() {
+	v, _ := a.tabs.View("")
+	label, startupErr, ready, ctrl := v.label, v.startupErr, v.ready, v.ctrl
+	if a.gatewayActive() {
 		label = "OneCreat 智能档位"
 	}
-	cwd, _ := os.Getwd()
+	cwd := a.workspaceRoot()
 	return Meta{
 		Label:        label,
 		Ready:        ready,
@@ -1187,123 +641,14 @@ func engineLabel(ctrl *control.Controller) string {
 // (writers and bash run without asking). Deny rules still apply. Runtime-only —
 // not written to config, so it resets on relaunch.
 func (a *App) SetBypass(tabID string, on bool) {
-	a.mu.Lock()
-	rt := a.tabRTLocked(tabID)
 	var ctrl *control.Controller
-	if rt != nil {
+	a.tabUpdate(tabID, func(rt *tabRuntime) {
 		rt.wantBypass = on
 		ctrl = rt.ctrl
-	}
-	a.mu.Unlock()
+	})
 	if ctrl != nil {
 		ctrl.SetBypass(on)
 	}
-}
-
-// CommandInfo describes one available slash command for the composer's "/" menu.
-type CommandInfo struct {
-	Name        string `json:"name"` // without the leading slash
-	Description string `json:"description"`
-	Hint        string `json:"hint,omitempty"` // argument hint, if any
-	Kind        string `json:"kind"`           // "builtin" | "custom" | "mcp"
-}
-
-// Commands lists the slash commands available this session — built-in actions,
-// custom commands (.reasonix/commands), and MCP prompts — for the composer's "/"
-// autocomplete menu.
-func (a *App) Commands() []CommandInfo {
-	out := []CommandInfo{
-		{Name: "new", Description: i18n.M.CmdNew, Kind: "builtin"},
-		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin"},
-	}
-	if !gatewayActive() {
-		out = append(out,
-			CommandInfo{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin"},
-			CommandInfo{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin"},
-		)
-	}
-	out = append(out,
-		CommandInfo{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin"},
-		CommandInfo{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin"},
-		CommandInfo{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin"},
-		CommandInfo{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
-		CommandInfo{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
-	)
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return out
-	}
-	// Skills are invocable as /<name> (the model runs inline ones; subagent ones
-	// run isolated). Listing them here is what surfaces /init, /explore, … in the
-	// composer's slash menu; selecting one submits "/<name>", which the controller
-	// resolves via RunSkill.
-	for _, s := range ctrl.Skills() {
-		out = append(out, CommandInfo{Name: s.Name, Description: s.Description, Kind: "skill"})
-	}
-	for _, c := range ctrl.Commands() {
-		out = append(out, CommandInfo{Name: c.Name, Description: c.Description, Hint: c.ArgHint, Kind: "custom"})
-	}
-	if h := ctrl.Host(); h != nil {
-		for _, p := range h.Prompts() {
-			out = append(out, CommandInfo{Name: p.Name, Description: p.Description, Kind: "mcp"})
-		}
-	}
-	return out
-}
-
-// SlashArgItem is one sub-command / argument suggestion for the composer's slash
-// menu (the part after the command word). Mirrors the CLI's arg completion via
-// the shared control.SlashArgItems, so desktop and CLI offer the same hints.
-type SlashArgItem struct {
-	Label   string `json:"label"`
-	Insert  string `json:"insert"`
-	Hint    string `json:"hint"`
-	Descend bool   `json:"descend"`
-}
-
-// SlashArgsResult carries the suggestions plus the byte offset in the input where
-// the current token begins, so the composer replaces just that token.
-type SlashArgsResult struct {
-	Items []SlashArgItem `json:"items"`
-	From  int            `json:"from"`
-}
-
-// SlashArgs completes the arguments of a management slash command (/mcp, /model,
-// /skill, /hooks) for the composer — the same logic the chat TUI uses. Empty
-// Items means the input has no structured arguments to complete.
-func (a *App) SlashArgs(input string) SlashArgsResult {
-	if gatewayActive() && isGatewayManagedSlash(strings.TrimSpace(input)) {
-		return SlashArgsResult{Items: []SlashArgItem{}}
-	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	model := a.model
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return SlashArgsResult{}
-	}
-	data := control.ArgData{
-		Skills:       ctrl.Skills(),
-		CurrentModel: model,
-	}
-	if !gatewayActive() {
-		for _, m := range a.Models() {
-			data.ModelRefs = append(data.ModelRefs, m.Ref)
-		}
-	}
-	if h := ctrl.Host(); h != nil {
-		data.ServerNames = h.ServerNames()
-	}
-	items, from := control.SlashArgItems(input, data)
-	// Non-nil so it serializes as a JSON array, never null — the frontend filters
-	// over it directly.
-	out := SlashArgsResult{Items: []SlashArgItem{}, From: from}
-	for _, it := range items {
-		out.Items = append(out.Items, SlashArgItem{Label: it.Label, Insert: it.Insert, Hint: it.Hint, Descend: it.Descend})
-	}
-	return out
 }
 
 // CapabilitiesView is the MCP & Skills drawer's data: connected/failed MCP
@@ -1332,2541 +677,103 @@ type ToolView struct {
 	Description string `json:"description"`
 }
 
-// SkillView is one discoverable skill for the drawer.
-type SkillView struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Scope       string `json:"scope"`
-	RunAs       string `json:"runAs"`
-}
-
-// SkillRootView is one skill discovery root for the drawer's Sources section.
-type SkillRootView struct {
-	Dir        string `json:"dir"`
-	Scope      string `json:"scope"`
-	Priority   int    `json:"priority"`
-	Status     string `json:"status"`
-	Configured bool   `json:"configured"`
-	Skills     int    `json:"skills"`
-	Warning    string `json:"warning,omitempty"`
-}
-
 // Capabilities projects the session's MCP servers (connected + failed) and skills
 // for the MCP & Skills drawer. Non-nil slices so the frontend can map over them.
+//
+// 这是一处纯 DTO 组装:服务器那半来自 mcpService,技能那半来自活动标签的 controller
+// 与当前项目的技能根 —— App 只负责把两半拼成前端要的一个视图。
 func (a *App) Capabilities() CapabilitiesView {
 	out := CapabilitiesView{Servers: []ServerView{}, Skills: []SkillView{}, SkillRoots: []SkillRootView{}}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	disabled := make(map[string]ServerView, len(a.disabledMCP))
-	for name, s := range a.disabledMCP {
-		disabled[name] = s
-	}
-	order := append([]string(nil), a.mcpOrder...)
-	a.mu.RUnlock()
+	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return out
 	}
-	seen := map[string]bool{}
-	connected := map[string]bool{}
-	retainedDisabled := map[string]ServerView{}
-	codegraphConfigured := false
-	if h := ctrl.Host(); h != nil {
-		for _, s := range h.Servers() {
-			seen[s.Name] = true
-			connected[s.Name] = true
-			out.Servers = append(out.Servers, ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected",
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				ToolList: pluginToolsToView(s.ToolList),
-			})
-		}
-		for _, f := range h.Failures() {
-			seen[f.Name] = true
-			out.Servers = append(out.Servers, ServerView{
-				Name: f.Name, Transport: f.Transport, Status: "failed", Error: f.Error,
-			})
-		}
-	}
-	// Configured servers that are neither connected nor failed are toggled off
-	// (disconnected this session, or auto_start=false) — shown with an off switch.
-	if cfg, err := config.Load(); err == nil {
-		codegraphConfigured = cfg.Codegraph.Enabled
-		for _, p := range cfg.Plugins {
-			if seen[p.Name] {
-				continue
-			}
-			tt := p.Type
-			if tt == "" {
-				tt = "stdio"
-			}
-			if s, ok := disabled[p.Name]; ok {
-				s.Status = "disabled"
-				s.Transport = tt
-				s.Error = ""
-				out.Servers = append(out.Servers, s)
-				retainedDisabled[p.Name] = s
-				seen[p.Name] = true
-				delete(disabled, p.Name)
-				continue
-			}
-			out.Servers = append(out.Servers, ServerView{Name: p.Name, Transport: tt, Status: "disabled"})
-			seen[p.Name] = true
-		}
-	}
-	for name, s := range disabled {
-		if seen[name] {
-			continue
-		}
-		if name != "codegraph" || !codegraphConfigured {
-			continue
-		}
-		s.Status = "disabled"
-		s.Error = ""
-		out.Servers = append(out.Servers, s)
-		retainedDisabled[name] = s
-	}
-	out.Servers = orderServerViews(out.Servers, order)
-
-	a.mu.Lock()
-	for name := range connected {
-		delete(retainedDisabled, name)
-	}
-	a.disabledMCP = retainedDisabled
-	a.mcpOrder = mergeServerOrder(a.mcpOrder, out.Servers)
-	a.mu.Unlock()
-
+	out.Servers = a.mcp.ServerViews(ctrl)
 	for _, s := range ctrl.Skills() {
 		out.Skills = append(out.Skills, SkillView{
 			Name: s.Name, Description: s.Description,
 			Scope: string(s.Scope), RunAs: string(s.RunAs),
 		})
 	}
-	out.SkillRoots = skillRootsView()
+	out.SkillRoots = skillRootsView(a.workspace())
 	return out
-}
-
-func skillRootsView() []SkillRootView {
-	cwd, _ := os.Getwd()
-	cfg, _ := config.Load()
-	userCfg := config.LoadForEdit(config.UserConfigPath())
-	var custom []string
-	if cfg != nil {
-		custom = cfg.SkillCustomPaths()
-	}
-	st := skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: custom, DisableBuiltins: true, Stderr: io.Discard})
-	counts := map[string]int{}
-	for _, sk := range st.List() {
-		counts[config.CanonicalSkillPath(filepath.Dir(skillRootPath(sk.Path)))]++
-	}
-	userConfigured := map[string]bool{}
-	if userCfg != nil {
-		for _, p := range userCfg.Skills.Paths {
-			userConfigured[config.CanonicalSkillPath(p)] = true
-		}
-	}
-	var out []SkillRootView
-	for _, r := range st.Roots() {
-		dir := config.CanonicalSkillPath(r.Dir)
-		view := SkillRootView{
-			Dir:        r.Dir,
-			Scope:      string(r.Scope),
-			Priority:   r.Priority + 1,
-			Status:     string(r.Status),
-			Configured: r.Scope == skill.ScopeCustom && userConfigured[dir],
-			Skills:     counts[dir],
-		}
-		out = append(out, view)
-	}
-	if userCfg != nil {
-		for _, p := range userCfg.Skills.Paths {
-			if rootActive(out, p) {
-				continue
-			}
-			out = append(out, SkillRootView{
-				Dir:        p,
-				Scope:      string(skill.ScopeCustom),
-				Status:     "inactive",
-				Configured: true,
-				Warning:    "configured in user config but not active in this workspace; project [skills].paths may override it",
-			})
-		}
-	}
-	return out
-}
-
-func rootActive(roots []SkillRootView, path string) bool {
-	want := config.CanonicalSkillPath(path)
-	for _, r := range roots {
-		if r.Scope == string(skill.ScopeCustom) && config.CanonicalSkillPath(r.Dir) == want {
-			return true
-		}
-	}
-	return false
-}
-
-// PickSkillFolder opens a directory picker for adding custom skill roots. It only
-// returns a path; AddSkillPath performs normalization and writes config.
-func (a *App) PickSkillFolder() (string, error) {
-	if a.ctx == nil {
-		return "", nil
-	}
-	cur, _ := os.Getwd()
-	dir, err := a.sh().OpenDirectoryDialog(DialogOptions{
-		Title:            "Choose skills folder",
-		DefaultDirectory: cur,
-	})
-	if err != nil || dir == "" {
-		return "", err
-	}
-	return normalizeSkillPath(dir), nil
-}
-
-// AddSkillPath adds a custom skill root to the user config and rebuilds the
-// controller so the skills index and slash menu reflect it immediately.
-func (a *App) AddSkillPath(path string) error {
-	path = normalizeSkillPath(path)
-	return a.applyConfigChange(func(c *config.Config) error {
-		return c.AddSkillPath(path)
-	})
-}
-
-// RemoveSkillPath removes a custom skill root from the user config and rebuilds.
-func (a *App) RemoveSkillPath(path string) error {
-	path = normalizeSkillPath(path)
-	return a.applyConfigChange(func(c *config.Config) error {
-		_, err := c.RemoveSkillPath(path)
-		return err
-	})
-}
-
-// RefreshSkills rebuilds the controller without changing config, reloading skill
-// discovery, the system prompt index, and slash completions.
-func (a *App) RefreshSkills() error {
-	return a.rebuild()
-}
-
-func normalizeSkillPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
-		if home, err := os.UserHomeDir(); err == nil {
-			if path == "~" {
-				path = home
-			} else {
-				path = filepath.Join(home, path[2:])
-			}
-		}
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		path = abs
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	if info.Mode().IsRegular() {
-		if filepath.Base(path) == skill.SkillFile {
-			return filepath.Clean(filepath.Dir(filepath.Dir(path)))
-		}
-		return filepath.Clean(filepath.Dir(path))
-	}
-	if info.IsDir() {
-		if _, err := os.Stat(filepath.Join(path, skill.SkillFile)); err == nil {
-			return filepath.Clean(filepath.Dir(path))
-		}
-	}
-	return filepath.Clean(path)
-}
-
-func skillRootPath(path string) string {
-	if filepath.Base(path) == skill.SkillFile {
-		return filepath.Dir(path)
-	}
-	return path
-}
-
-// MCPServerInput is the drawer's "add server" form. Transport is "stdio" (Command
-// + Args + Env) or "http"/"sse" (URL). Mirrors config.PluginEntry's writable shape.
-type MCPServerInput struct {
-	Name      string            `json:"name"`
-	Transport string            `json:"transport"`
-	Command   string            `json:"command"`
-	Args      []string          `json:"args"`
-	URL       string            `json:"url"`
-	Env       map[string]string `json:"env"`
-}
-
-// HardwareMCPView describes the local hardware MCP binary the desktop can use.
-type HardwareMCPView struct {
-	Name       string `json:"name"`
-	Available  bool   `json:"available"`
-	Command    string `json:"command"`
-	Source     string `json:"source"`
-	Configured bool   `json:"configured"`
-	Connected  bool   `json:"connected"`
-	Error      string `json:"error,omitempty"`
-}
-
-// HardwareBoardSummary is one selectable board for the hardware panel's board
-// picker, sourced from the shared data-driven registry (internal/hardware/boards)
-// so adding a board to boards.json automatically surfaces it in the UI.
-type HardwareBoardSummary struct {
-	Value     string `json:"value"` // 板卡 id(传给 MCP 工具)
-	Label     string `json:"label"`
-	Framework string `json:"framework"`
-	Platform  string `json:"platform"`
-}
-
-// HardwareBoardList returns every board the registry knows, for the panel's board
-// dropdown. No IPC: the desktop links the same boards package the MCP uses.
-func (a *App) HardwareBoardList() []HardwareBoardSummary {
-	profiles := boards.Profiles()
-	out := make([]HardwareBoardSummary, 0, len(profiles))
-	for _, b := range profiles {
-		out = append(out, HardwareBoardSummary{Value: b.ID, Label: b.Label, Framework: b.DefaultFramework, Platform: b.Platform})
-	}
-	return out
-}
-
-// HardwareDetectView is a desktop-friendly projection of the hardware_detect MCP
-// tool output. The drawer can show real local readiness before the user asks the
-// agent to build or flash anything.
-type HardwareDetectView struct {
-	Available         bool                       `json:"available"`
-	Workspace         string                     `json:"workspace,omitempty"`
-	ProjectDir        string                     `json:"projectDir,omitempty"`
-	ProjectTypes      []string                   `json:"projectTypes"`
-	CandidateProjects []HardwareProjectCandidate `json:"candidateProjects"`
-	SerialPorts       []string                   `json:"serialPorts"`
-	Boards            []HardwareBoardView        `json:"boards"`
-	Devices           []HardwareDeviceView       `json:"devices"`
-	Toolchains        []HardwareToolchainView    `json:"toolchains"`
-	Recommendations   []string                   `json:"recommendations"`
-	ESPIDFOfficial    map[string]string          `json:"espIdfOfficialMcp,omitempty"`
-	Error             string                     `json:"error,omitempty"`
-}
-
-type HardwareProjectCandidate struct {
-	Dir   string `json:"dir"`
-	Kind  string `json:"kind"`
-	Entry string `json:"entry,omitempty"`
-}
-
-// HardwareInstallStepView 是一键安装里单个工具的安装结果(对应 MCP 的 toolInstallStep)。
-type HardwareInstallStepView struct {
-	Tool    string `json:"tool"`
-	Action  string `json:"action"` // already_present | installed | failed | skipped
-	OK      bool   `json:"ok"`
-	Path    string `json:"path,omitempty"`
-	Message string `json:"message"`
-}
-
-// HardwareInstallToolchainView 是「一键安装核心工具链」按钮的结果。
-type HardwareInstallToolchainView struct {
-	Available  bool                      `json:"available"`
-	Steps      []HardwareInstallStepView `json:"steps"`
-	AllOK      bool                      `json:"allOK"`
-	ManagedDir string                    `json:"managedDir,omitempty"`
-	NextStep   string                    `json:"nextStep,omitempty"`
-	Error      string                    `json:"error,omitempty"`
-}
-
-// HardwareEvidenceStatusView is a compact projection of hardware_evidence_status
-// for the drawer. It makes the local/real-hardware verification boundary visible
-// without asking the model to summarize it first.
-type HardwareEvidenceStatusView struct {
-	Available          bool     `json:"available"`
-	ProjectDir         string   `json:"projectDir,omitempty"`
-	Platform           string   `json:"platform,omitempty"`
-	Board              string   `json:"board,omitempty"`
-	EvidenceFile       string   `json:"evidenceFile,omitempty"`
-	RecordCount        int      `json:"recordCount"`
-	CurrentRecordCount int      `json:"currentRecordCount"`
-	StaleRecordCount   int      `json:"staleRecordCount"`
-	Status             string   `json:"status"`
-	Summary            string   `json:"summary"`
-	MissingGroups      []string `json:"missingGroups"`
-	Recommendations    []string `json:"recommendations"`
-	Error              string   `json:"error,omitempty"`
-}
-
-type HardwareToolchainView struct {
-	Name      string `json:"name"`
-	Command   string `json:"command"`
-	Available bool   `json:"available"`
-	Path      string `json:"path,omitempty"`
-	Version   string `json:"version,omitempty"`
-	Hint      string `json:"hint,omitempty"`
-}
-
-type HardwareBoardView struct {
-	Port       string `json:"port"`
-	Protocol   string `json:"protocol,omitempty"`
-	BoardName  string `json:"boardName,omitempty"`
-	FQBN       string `json:"fqbn,omitempty"`
-	Core       string `json:"core,omitempty"`
-	Properties string `json:"properties,omitempty"`
-}
-
-type HardwareDeviceView struct {
-	Port        string `json:"port"`
-	Description string `json:"description,omitempty"`
-	HWID        string `json:"hwid,omitempty"`
-}
-
-// AddMCPServer connects a server live and persists it to config (Customize → MCP →
-// Add). Returns the number of tools it exposed.
-func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return 0, fmt.Errorf("no active session")
-	}
-	return ctrl.AddMCPServer(config.PluginEntry{
-		Name:    in.Name,
-		Type:    in.Transport,
-		Command: in.Command,
-		Args:    in.Args,
-		URL:     in.URL,
-		Env:     in.Env,
-	})
-}
-
-// HardwareMCP reports whether the bundled or locally built hardware MCP server is
-// available and whether the current session already has it connected.
-func (a *App) HardwareMCP() HardwareMCPView {
-	cmd, source, err := resolveHardwareMCP()
-	view := HardwareMCPView{Name: "hardware", Command: cmd, Source: source, Available: err == nil}
-	if err != nil {
-		view.Error = err.Error()
-	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return view
-	}
-	for _, s := range ctrl.Host().Servers() {
-		if s.Name == "hardware" {
-			view.Configured = true
-			view.Connected = true
-			return view
-		}
-	}
-	for _, f := range ctrl.Host().Failures() {
-		if f.Name == "hardware" {
-			view.Configured = true
-			view.Error = f.Error
-			return view
-		}
-	}
-	return view
-}
-
-// HardwareDetect runs the bundled MCP's detection tool directly so the hardware
-// drawer can display local toolchain and serial-port status even before the
-// server is connected to the current agent session.
-func (a *App) HardwareDetect() HardwareDetectView {
-	view := HardwareDetectView{
-		Available:         false,
-		ProjectTypes:      []string{},
-		CandidateProjects: []HardwareProjectCandidate{},
-		SerialPorts:       []string{},
-		Boards:            []HardwareBoardView{},
-		Devices:           []HardwareDeviceView{},
-		Toolchains:        []HardwareToolchainView{},
-		Recommendations:   []string{},
-	}
-	command, _, err := resolveHardwareMCP()
-	if err != nil {
-		view.Error = err.Error()
-		return view
-	}
-	cwd, _ := os.Getwd()
-	text, err := callHardwareMCPTool(command, "hardware_detect", map[string]any{"project_dir": cwd}, 20*time.Second)
-	if err != nil {
-		view.Error = err.Error()
-		return view
-	}
-	if err := json.Unmarshal([]byte(text), &view); err != nil {
-		view.Error = "hardware_detect returned invalid JSON: " + err.Error()
-		return view
-	}
-	normalizeHardwareDetectView(&view)
-	view.Available = true
-	return view
-}
-
-// HardwareInstallToolchain 一键安装核心硬件工具链(arduino-cli + 板卡 core)。
-// 给学生/老师打包后,缺工具时点一下就能从零把编译/烧录环境备齐。
-// 首次会联网下载 core,耗时可能几分钟,所以用长超时;前端按钮自己转圈。
-func (a *App) HardwareInstallToolchain(cores []string) HardwareInstallToolchainView {
-	view := HardwareInstallToolchainView{Steps: []HardwareInstallStepView{}}
-	// 与 HardwareInstallCore 同一把互斥锁:三个安装入口并发写同一个 arduino-cli(.download.tmp
-	// → rename)会互相写坏。被占用时拒绝并给一致话术。
-	if !a.beginHardwareOp(&a.hwInstalling) {
-		view.Error = "已有工具链安装正在进行,请等它完成再试。"
-		return view
-	}
-	defer a.endHardwareOp(&a.hwInstalling)
-	command, _, err := resolveHardwareMCP()
-	if err != nil {
-		view.Error = err.Error()
-		return view
-	}
-	args := map[string]any{}
-	if len(cores) > 0 {
-		args["cores"] = cores
-	}
-	text, err := callHardwareMCPTool(command, "hardware_install_toolchain", args, 20*time.Minute)
-	if err != nil {
-		view.Error = err.Error()
-		return view
-	}
-	if err := json.Unmarshal([]byte(text), &view); err != nil {
-		view.Error = "hardware_install_toolchain returned invalid JSON: " + err.Error()
-		return view
-	}
-	if view.Steps == nil {
-		view.Steps = []HardwareInstallStepView{}
-	}
-	view.Available = true
-	return view
-}
-
-// HardwareInstallArduinoCLI 只装 arduino-cli 本体,返回单步结果。GUI 分步进度用:
-// 前端先调这个,再逐个调 HardwareInstallCore,中间刷新进度,用户能看到正在装哪一步。
-func (a *App) HardwareInstallArduinoCLI() HardwareInstallStepView {
-	// 分步安装第一步实际调用的就是这里,必须与 HardwareInstallCore 共用同一把互斥锁——否则
-	// 面板卸载→重挂载丢前端守卫后重复点击,两个下载并发写同一 .download.tmp,rename 出损坏的
-	// arduino-cli,之后所有编译烧录静默失败。
-	if !a.beginHardwareOp(&a.hwInstalling) {
-		return HardwareInstallStepView{Action: "failed", Message: "已有工具链安装正在进行,请等它完成再试。"}
-	}
-	defer a.endHardwareOp(&a.hwInstalling)
-	return hardwareInstallStep("hardware_install_arduino_cli", nil)
-}
-
-// HardwareInstallCore 装单个板卡 core(已装秒跳过),返回单步结果。GUI 分步进度用。
-// beginHardwareOp 试图占用一个硬件长操作槽(install 或 flash)。已被占用返回 false,
-// 调用方应据此拒绝并提示;成功返回 true,调用方必须 defer endHardwareOp 释放。
-func (a *App) beginHardwareOp(flag *bool) bool {
-	a.hwOpMu.Lock()
-	defer a.hwOpMu.Unlock()
-	if *flag {
-		return false
-	}
-	*flag = true
-	return true
-}
-
-func (a *App) endHardwareOp(flag *bool) {
-	a.hwOpMu.Lock()
-	*flag = false
-	a.hwOpMu.Unlock()
-}
-
-func (a *App) HardwareInstallCore(core string) HardwareInstallStepView {
-	if !a.beginHardwareOp(&a.hwInstalling) {
-		return HardwareInstallStepView{Action: "failed", Message: "已有工具链安装正在进行,请等它完成再试。"}
-	}
-	defer a.endHardwareOp(&a.hwInstalling)
-	return hardwareInstallStep("hardware_install_core", map[string]any{"core": core})
-}
-
-// hardwareInstallStep 调一个返回单步 JSON 的安装工具,解析成 HardwareInstallStepView。
-func hardwareInstallStep(tool string, args map[string]any) HardwareInstallStepView {
-	step := HardwareInstallStepView{}
-	command, _, err := resolveHardwareMCP()
-	if err != nil {
-		step.Action = "failed"
-		step.Message = err.Error()
-		return step
-	}
-	if args == nil {
-		args = map[string]any{}
-	}
-	text, err := callHardwareMCPTool(command, tool, args, 20*time.Minute)
-	if err != nil {
-		step.Action = "failed"
-		step.Message = err.Error()
-		return step
-	}
-	if err := json.Unmarshal([]byte(text), &step); err != nil {
-		step.Action = "failed"
-		step.Message = tool + " returned invalid JSON: " + err.Error()
-	}
-	return step
-}
-
-// HardwareEvidenceStatus runs hardware_evidence_status directly so the drawer can
-// show whether the current project has only local validation or real-device proof.
-func (a *App) HardwareEvidenceStatus() HardwareEvidenceStatusView {
-	view := HardwareEvidenceStatusView{
-		MissingGroups:   []string{},
-		Recommendations: []string{},
-	}
-	command, _, err := resolveHardwareMCP()
-	if err != nil {
-		view.Error = err.Error()
-		return view
-	}
-	cwd, _ := os.Getwd()
-	text, err := callHardwareMCPTool(command, "hardware_evidence_status", map[string]any{"project_dir": cwd}, 20*time.Second)
-	if err != nil {
-		view.Error = err.Error()
-		return view
-	}
-	if err := json.Unmarshal([]byte(text), &view); err != nil {
-		view.Error = "hardware_evidence_status returned invalid JSON: " + err.Error()
-		return view
-	}
-	normalizeHardwareEvidenceStatusView(&view)
-	view.Available = true
-	return view
-}
-
-// evidenceRecordMirror 反序列化 tests/hardware_evidence.jsonl 的每一行。
-// 真源是 hardware MCP 的 hardware_evidence_record；这里只读出来汇总成可读文本。
-type evidenceRecordMirror struct {
-	TimestampUTC  string `json:"timestampUtc"`
-	Platform      string `json:"platform"`
-	Board         string `json:"board"`
-	Stage         string `json:"stage"`
-	Status        string `json:"status"`
-	Summary       string `json:"summary"`
-	Command       string `json:"command"`
-	Port          string `json:"port"`
-	OutputExcerpt string `json:"outputExcerpt"`
-}
-
-// HardwareEvidenceExport 把 tests/hardware_evidence.jsonl 里的真机验证记录汇总成
-// 一段学生可直接粘进研究日志/论文的 Markdown——目的是让竞赛材料用「真实采集的
-// 编译/烧录/串口/部署证据」，而不是凭记忆编数字（这条是项目红线）。
-// 返回空字符串表示还没有任何验证记录。
-func (a *App) HardwareEvidenceExport(projectDir string) (string, error) {
-	dir := resolveHardwareProjectDir(projectDir)
-	path := filepath.Join(dir, "tests", "hardware_evidence.jsonl")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil // 还没有证据文件，不算错误
-		}
-		return "", err
-	}
-	records := make([]evidenceRecordMirror, 0, 16)
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var rec evidenceRecordMirror
-		if json.Unmarshal([]byte(line), &rec) == nil && rec.Stage != "" {
-			records = append(records, rec)
-		}
-	}
-	if len(records) == 0 {
-		return "", nil
-	}
-	return renderEvidenceMarkdown(records), nil
-}
-
-// evidenceStageLabel 把英文阶段名翻成学生能懂的中文。
-func evidenceStageLabel(stage string) string {
-	switch strings.ToLower(strings.TrimSpace(stage)) {
-	case "compile", "build", "validate":
-		return "编译/语法"
-	case "upload", "flash":
-		return "烧录"
-	case "monitor", "serial":
-		return "串口/运行日志"
-	case "ssh", "ssh_deploy", "deploy":
-		return "真机部署"
-	case "mpremote":
-		return "MicroPython 部署"
-	default:
-		return stage
-	}
-}
-
-func renderEvidenceMarkdown(records []evidenceRecordMirror) string {
-	var b strings.Builder
-	b.WriteString("# 真机验证证据（onecreat 自动导出）\n\n")
-	b.WriteString("> 本文件由 onecreat 从真实的编译 / 烧录 / 串口 / 部署记录（tests/hardware_evidence.jsonl）自动汇总，")
-	b.WriteString("可作为研究日志、论文的原始验证依据。请勿手工编造数据。\n\n")
-	fmt.Fprintf(&b, "共 %d 条验证记录。\n", len(records))
-	for i, rec := range records {
-		fmt.Fprintf(&b, "\n## %d. 【%s】%s\n", i+1, evidenceStageLabel(rec.Stage), strings.TrimSpace(rec.Status))
-		if t := strings.TrimSpace(rec.TimestampUTC); t != "" {
-			fmt.Fprintf(&b, "- 时间（UTC）：%s\n", t)
-		}
-		plat := strings.TrimSpace(rec.Platform)
-		if board := strings.TrimSpace(rec.Board); board != "" {
-			plat = strings.TrimSpace(plat + " / " + board)
-		}
-		if plat != "" {
-			fmt.Fprintf(&b, "- 平台 / 板卡：%s\n", plat)
-		}
-		if p := strings.TrimSpace(rec.Port); p != "" {
-			fmt.Fprintf(&b, "- 端口：%s\n", p)
-		}
-		if s := strings.TrimSpace(rec.Summary); s != "" {
-			fmt.Fprintf(&b, "- 结果：%s\n", s)
-		}
-		if c := strings.TrimSpace(rec.Command); c != "" {
-			fmt.Fprintf(&b, "- 命令：`%s`\n", c)
-		}
-		if o := strings.TrimSpace(rec.OutputExcerpt); o != "" {
-			// 串口输出本身可能含 ```（罕见但会发生），用动态围栏避免提前闭合代码块、
-			// 破坏导出文档，同时原样保留输出内容。
-			fence := codeFence(o)
-			fmt.Fprintf(&b, "- 输出片段：\n\n%s\n%s\n%s\n", fence, o, fence)
-		}
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-// codeFence 返回一段比 content 里最长连续反引号还长一位的反引号围栏（至少 3 个），
-// 保证 Markdown 代码块不会被内容里的 ``` 提前闭合。
-func codeFence(content string) string {
-	longest, run := 0, 0
-	for _, r := range content {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-		} else {
-			run = 0
-		}
-	}
-	n := longest + 1
-	if n < 3 {
-		n = 3
-	}
-	return strings.Repeat("`", n)
-}
-
-// HardwareBoardFactsView 是「写代码前」要硬注入 prompt 的板卡事实串。
-// Found=false 表示当前板卡没有可注入的确定事实（自定义板/检测到的裸板），
-// 前端据此跳过注入、回退到原有「让模型自己调工具」的流程。
-type HardwareBoardFactsView struct {
-	Found bool   `json:"found"`
-	Facts string `json:"facts"`
-}
-
-// boardProfileMirror / moduleSpecMirror 只反序列化我们要渲染的字段子集。
-// 真源仍是 hardware MCP 的 catalog（platform-api.json / sensor-catalog.json /
-// builtInBoardProfiles）——这里不复制数据，只解析它的 JSON 输出。
-type boardProfileMirror struct {
-	Profile *struct {
-		Label                string   `json:"label"`
-		ArduinoFQBN          string   `json:"arduinoFqbn"`
-		LogicVoltage         string   `json:"logicVoltage"`
-		PowerNotes           string   `json:"powerNotes"`
-		RecommendedProtocols []string `json:"recommendedProtocols"`
-		DefaultPins          []struct {
-			Name  string   `json:"name"`
-			Pins  []string `json:"pins"`
-			Notes string   `json:"notes"`
-		} `json:"defaultPins"`
-		RiskyPins []struct {
-			Name  string   `json:"name"`
-			Pins  []string `json:"pins"`
-			Notes string   `json:"notes"`
-		} `json:"riskyPins"`
-		CommonFailures []string `json:"commonFailures"`
-		TeachingNotes  []string `json:"teachingNotes"`
-	} `json:"profile"`
-}
-
-type moduleSpecMirror struct {
-	Modules []struct {
-		Matched  bool     `json:"matched"`
-		Kind     string   `json:"kind"`
-		Function string   `json:"function"`
-		Imports  []string `json:"imports"`
-		Gotchas  []string `json:"gotchas"`
-		Snippet  string   `json:"snippet"`
-	} `json:"modules"`
-}
-
-// HardwareBoardFacts 在「写代码前」确定性地取出已选板卡的校验事实，拼成一段文本
-// 供 HardwarePanel 直接注入 prompt——不再依赖弱模型自觉去调 board_profile /
-// module_spec（项目实测：flash 裸写国产生态必幻觉，只有把事实压进上下文才对）。
-// 事实来自两个已有 MCP 工具（单一真源）：
-//   - hardware_board_profile：电平、默认/风险引脚、推荐协议、常见失败、教学提示
-//   - hardware_module_spec（板卡名当 module 查）：冷门平台 API 的正确 import、
-//     gotchas、最小示例（ESP32 LEDC / 行空板 pinpong / MaixCAM K230 maix.*）——
-//     这正是 flash 最容易编错库名和 API 的地方。
-//
-// boardFactsCache 缓存按板卡查到的事实。catalog 内嵌在 MCP 二进制里、运行期不变,
-// 同一板卡反复点「写代码」没必要反复拉起 MCP 子进程(每次两个调用、各 15s 超时,
-// MCP 卡顿时按钮会冻很久)。只缓存「两个调用都成功」的结果——MCP 暂时性失败
-// 不能被记成永久没有事实。
-var (
-	boardFactsMu    sync.Mutex
-	boardFactsCache = map[string]HardwareBoardFactsView{}
-)
-
-func (a *App) HardwareBoardFacts(board, platform string) HardwareBoardFactsView {
-	board = strings.TrimSpace(board)
-	// 自定义板和「检测到的裸板」没有 catalog 事实，直接跳过
-	if board == "" || strings.EqualFold(board, "custom") || strings.HasPrefix(board, "detected:") {
-		return HardwareBoardFactsView{}
-	}
-	if strings.TrimSpace(platform) == "" {
-		platform = "auto"
-	}
-	cacheKey := strings.ToLower(board) + "|" + strings.ToLower(platform)
-	boardFactsMu.Lock()
-	if v, ok := boardFactsCache[cacheKey]; ok {
-		boardFactsMu.Unlock()
-		return v
-	}
-	boardFactsMu.Unlock()
-
-	command, _, err := resolveHardwareMCP()
-	if err != nil {
-		return HardwareBoardFactsView{}
-	}
-
-	// 两个 MCP 调用互不依赖,并行跑:最坏等待从 30s 降到 15s。
-	var (
-		profileSection, apiSection string
-		profileErr, apiErr         error
-		wg                         sync.WaitGroup
-	)
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		// 板卡 profile：电平 / 引脚 / 协议 / 常见失败
-		text, e := callHardwareMCPTool(command, "hardware_board_profile",
-			map[string]any{"board": board, "platform": platform}, 15*time.Second)
-		profileErr = e
-		if e != nil {
-			return
-		}
-		var bp boardProfileMirror
-		if json.Unmarshal([]byte(text), &bp) == nil && bp.Profile != nil {
-			profileSection = renderBoardProfileFacts(bp)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		// 平台 API：把板卡名当 module 查，命中 platform_api 就拿到正确 import/坑/示例
-		text, e := callHardwareMCPTool(command, "hardware_module_spec",
-			map[string]any{"modules": []string{board}, "board": board, "platform": platform}, 15*time.Second)
-		apiErr = e
-		if e != nil {
-			return
-		}
-		var ms moduleSpecMirror
-		if json.Unmarshal([]byte(text), &ms) == nil {
-			apiSection = renderPlatformAPIFacts(ms)
-		}
-	}()
-	wg.Wait()
-
-	sections := make([]string, 0, 2)
-	if profileSection != "" {
-		sections = append(sections, profileSection)
-	}
-	if apiSection != "" {
-		sections = append(sections, apiSection)
-	}
-	view := HardwareBoardFactsView{}
-	if len(sections) > 0 {
-		view = HardwareBoardFactsView{Found: true, Facts: strings.Join(sections, "\n")}
-	}
-	// 两个调用都成功才缓存(含「确实没有该板事实」的合法空结果)
-	if profileErr == nil && apiErr == nil {
-		boardFactsMu.Lock()
-		boardFactsCache[cacheKey] = view
-		boardFactsMu.Unlock()
-	}
-	return view
-}
-
-// renderBoardProfileFacts 把板卡 profile 渲染成紧凑、学生可读的中文事实块。
-func renderBoardProfileFacts(bp boardProfileMirror) string {
-	p := bp.Profile
-	var b strings.Builder
-	title := p.Label
-	if title == "" {
-		title = "目标板卡"
-	}
-	if p.ArduinoFQBN != "" {
-		fmt.Fprintf(&b, "板卡：%s（FQBN %s）\n", title, p.ArduinoFQBN)
-	} else {
-		fmt.Fprintf(&b, "板卡：%s\n", title)
-	}
-	if p.LogicVoltage != "" {
-		line := "逻辑电平：" + p.LogicVoltage
-		if p.PowerNotes != "" {
-			line += "。" + p.PowerNotes
-		}
-		b.WriteString(line + "\n")
-	}
-	if len(p.RecommendedProtocols) > 0 {
-		fmt.Fprintf(&b, "推荐通信：%s\n", strings.Join(p.RecommendedProtocols, "、"))
-	}
-	for _, pin := range p.DefaultPins {
-		if len(pin.Pins) == 0 {
-			continue
-		}
-		seg := "默认引脚 " + pin.Name + "：" + strings.Join(pin.Pins, "/")
-		if pin.Notes != "" {
-			seg += "（" + pin.Notes + "）"
-		}
-		b.WriteString(seg + "\n")
-	}
-	for _, pin := range p.RiskyPins {
-		seg := "⚠️ 风险引脚 " + pin.Name
-		if len(pin.Pins) > 0 {
-			seg += " " + strings.Join(pin.Pins, "/")
-		}
-		if pin.Notes != "" {
-			seg += "：" + pin.Notes
-		}
-		b.WriteString(seg + "\n")
-	}
-	if len(p.CommonFailures) > 0 {
-		fmt.Fprintf(&b, "常见失败：%s\n", strings.Join(p.CommonFailures, "；"))
-	}
-	if len(p.TeachingNotes) > 0 {
-		fmt.Fprintf(&b, "教学提示：%s\n", strings.Join(p.TeachingNotes, "；"))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-// renderPlatformAPIFacts 从 module_spec 结果里挑出 platform_api（冷门平台软件写法），
-// 渲染成「正确 import + 坑 + 最小示例」——这是防 flash 幻觉最关键的一段。
-func renderPlatformAPIFacts(ms moduleSpecMirror) string {
-	for _, m := range ms.Modules {
-		if !m.Matched || m.Kind != "platform_api" {
-			continue
-		}
-		var b strings.Builder
-		name := m.Function
-		if name == "" {
-			name = "平台 API"
-		}
-		fmt.Fprintf(&b, "平台 API（%s）——务必照此写，别凭记忆猜库名/方法：\n", name)
-		if len(m.Imports) > 0 {
-			fmt.Fprintf(&b, "正确 import：%s\n", strings.Join(m.Imports, "；"))
-		}
-		if len(m.Gotchas) > 0 {
-			fmt.Fprintf(&b, "注意：%s\n", strings.Join(m.Gotchas, "；"))
-		}
-		if strings.TrimSpace(m.Snippet) != "" {
-			fmt.Fprintf(&b, "最小示例：\n%s\n", strings.TrimSpace(m.Snippet))
-		}
-		return strings.TrimRight(b.String(), "\n")
-	}
-	return ""
-}
-
-// HardwareRunInput is the shared input for the one-click compile/upload/monitor
-// buttons in HardwarePanel. Fields are optional unless required by the underlying
-// MCP tool — the dispatch picks the right tool by Platform.
-type HardwareRunInput struct {
-	ProjectDir  string `json:"projectDir"`
-	Platform    string `json:"platform"`
-	Board       string `json:"board,omitempty"`
-	Port        string `json:"port,omitempty"`
-	Seconds     int    `json:"seconds,omitempty"`
-	Baud        int    `json:"baud,omitempty"`        // 看串口的波特率;0 = 默认 115200
-	Address     string `json:"address,omitempty"`     // OTA WiFi 烧录:板子地址(IP 或 mDNS 名)
-	OTAPassword string `json:"otaPassword,omitempty"` // OTA WiFi 烧录:ArduinoOTA 口令
-}
-
-// HardwarePublishInput 是「发布固件到远程服务器」(③ 云端拉取)的入参。
-// 服务器配置(ssh/目录/URL)留空时跳过发布(不再有内置 NAS 默认值,去内网化后各人填自己
-// 的 NAS/VPS,见 HardwarePublishFirmware)。
-type HardwarePublishInput struct {
-	ProjectDir  string `json:"projectDir"`
-	Board       string `json:"board,omitempty"`
-	ProjectName string `json:"projectName"`
-	Version     string `json:"version"`
-	SSHHost     string `json:"sshHost,omitempty"`
-	RemoteDir   string `json:"remoteDir,omitempty"`
-	BaseURL     string `json:"baseURL,omitempty"`
-}
-
-// HardwareRunResult is the normalized result the frontend renders into the
-// one-click action UI. RootCause + FixHint come from hardware_project_validate's
-// error-distillation; they are empty on success or when an underlying tool doesn't
-// distill (upload/monitor). Output is the truncated command output for the drawer.
-type HardwareRunResult struct {
-	Status    string `json:"status"`
-	Kind      string `json:"kind,omitempty"` // 验证子类(如 python_syntax)，前端据此区分「真编译」与「仅语法检查」
-	Summary   string `json:"summary"`
-	Output    string `json:"output,omitempty"`
-	RootCause string `json:"rootCause,omitempty"`
-	FixHint   string `json:"fixHint,omitempty"`
-	NextStep  string `json:"nextStep,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Command   string `json:"command,omitempty"`
-}
-
-// HardwareValidate runs hardware_project_validate. Returns the first failed
-// validationResult, otherwise the last one. The frontend's "编译" button calls it.
-func (a *App) HardwareValidate(input HardwareRunInput) HardwareRunResult {
-	command, err := a.requireHardwareMCP()
-	if err != nil {
-		return HardwareRunResult{Status: "failed", Error: err.Error()}
-	}
-	args := map[string]any{
-		"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
-		"timeout_seconds": 180,
-	}
-	if input.Platform != "" {
-		args["platform"] = input.Platform
-	}
-	if input.Board != "" {
-		args["board"] = input.Board
-	}
-	text, err := callHardwareMCPTool(command, "hardware_project_validate", args, 200*time.Second)
-	if err != nil {
-		return HardwareRunResult{Status: "failed", Summary: "编译/验证调用失败", Error: err.Error()}
-	}
-	var report struct {
-		Summary         string             `json:"summary"`
-		Results         []validationResult `json:"results"`
-		Recommendations []string           `json:"recommendations"`
-	}
-	if err := json.Unmarshal([]byte(text), &report); err != nil {
-		return HardwareRunResult{Status: "failed", Summary: "无法解析验证结果", Error: err.Error()}
-	}
-	pick := pickValidationResult(report.Results)
-	res := HardwareRunResult{
-		Status:    coalesceStatus(pick.Status, "skipped"),
-		Kind:      pick.Kind,
-		Summary:   strings.TrimSpace(report.Summary),
-		Output:    truncateOutput(pick.Output, 4096),
-		RootCause: pick.RootCause,
-		FixHint:   pick.FixHint,
-		NextStep:  pick.NextStep,
-		Error:     pick.Error,
-		Command:   pick.Command,
-	}
-	// py_compile 只是语法检查，不是真编译(不解析 import/API)。别让「N passed」
-	// 的绿勾被学生当成「已验证」——把摘要降级成诚实表述。
-	if res.Kind == "python_syntax" && res.Status == "passed" {
-		res.Summary = "仅语法检查通过（py_compile），API / 真机未验证"
-	}
-	if res.Summary == "" {
-		res.Summary = res.Status
-	}
-	return res
-}
-
-// HardwareUpload dispatches to the platform-appropriate upload MCP tool.
-// Arduino/PlatformIO/ESP-IDF/MicroPython are wired here; SSH-deployed Python
-// platforms (Unihiker / MaixCAM / RPi) fall back to "use chat" since they need
-// host + remote_path the student hasn't entered yet.
-func (a *App) HardwareUpload(input HardwareRunInput) HardwareRunResult {
-	if !a.beginHardwareOp(&a.hwFlashing) {
-		return HardwareRunResult{Status: "skipped", Summary: "烧录进行中", NextStep: "已有一次烧录正在进行,请等它完成再试。"}
-	}
-	defer a.endHardwareOp(&a.hwFlashing)
-	command, err := a.requireHardwareMCP()
-	if err != nil {
-		return HardwareRunResult{Status: "failed", Error: err.Error()}
-	}
-	// 烧录前先关掉串口监视器:它占着串口,不关上传会被它卡住(串口同一时刻只能一个进程用)。
-	a.SerialClose()
-	projectDir := resolveHardwareProjectDir(input.ProjectDir)
-	switch input.Platform {
-	case "arduino":
-		if input.Port == "" {
-			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "在硬件面板选择上传端口后再点烧录。"}
-		}
-		args := map[string]any{
-			"sketch_dir":      projectDir,
-			"port":            input.Port,
-			"timeout_seconds": 120,
-		}
-		// FQBN 与「编译」同源(manifest.board 优先于 UI 下拉),避免编译与烧录目标芯片不一致。
-		if fqbn := resolveFlashFQBN(projectDir, input.Board); fqbn != "" {
-			args["fqbn"] = fqbn
-		}
-		return runHardwareSimple(command, "arduino_upload", args, 150*time.Second, "Arduino 烧录")
-	case "platformio":
-		args := map[string]any{
-			"project_dir":     projectDir,
-			"targets":         []string{"upload"},
-			"timeout_seconds": 180,
-		}
-		if input.Port != "" {
-			args["upload_port"] = input.Port
-		}
-		return runHardwareSimple(command, "platformio_run", args, 220*time.Second, "PlatformIO 烧录")
-	case "esp_idf":
-		args := map[string]any{
-			"project_dir":     projectDir,
-			"action":          "flash",
-			"timeout_seconds": 180,
-		}
-		if input.Port != "" {
-			args["port"] = input.Port
-		}
-		return runHardwareSimple(command, "esp_idf_run", args, 220*time.Second, "ESP-IDF 烧录")
-	case "micropython":
-		if input.Port == "" {
-			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "选择 MicroPython 设备端口后再点烧录。"}
-		}
-		args := map[string]any{
-			"port":            input.Port,
-			"project_dir":     projectDir,
-			"timeout_seconds": 60,
-		}
-		return runHardwareSimple(command, "mpremote_run", args, 80*time.Second, "MicroPython 部署")
-	case "unihiker_python", "maixcam_python", "raspberry_pi_python":
-		return HardwareRunResult{
-			Status:   "skipped",
-			Summary:  "该平台需要 SSH 部署,先在对话里完成",
-			NextStep: "Unihiker / MaixCAM / 树莓派项目用 SSH 烧录:在对话框输入 ssh 主机和路径,让 AI 调用 ssh_deploy_run。",
-		}
-	default:
-		return HardwareRunResult{Status: "failed", Summary: "未知平台", Error: "unsupported platform: " + input.Platform}
-	}
-}
-
-// HardwareOTAUpload 通过 WiFi(OTA)把固件烧给已经跑着 ArduinoOTA 的板子,不用 USB。
-// 走 arduino-cli 网络口(espota);面向 arduino/esp32 工程。
-func (a *App) HardwareOTAUpload(input HardwareRunInput) HardwareRunResult {
-	if !a.beginHardwareOp(&a.hwFlashing) {
-		return HardwareRunResult{Status: "skipped", Summary: "烧录进行中", NextStep: "已有一次烧录正在进行,请等它完成再试。"}
-	}
-	defer a.endHardwareOp(&a.hwFlashing)
-	command, err := a.requireHardwareMCP()
-	if err != nil {
-		return HardwareRunResult{Status: "failed", Error: err.Error()}
-	}
-	if strings.TrimSpace(input.Address) == "" {
-		return HardwareRunResult{Status: "skipped", Summary: "缺少板子地址", NextStep: "填入板子的 WiFi 地址(IP 或 esp32-onecreat.local)后再点 WiFi 烧录。"}
-	}
-	projectDir := resolveHardwareProjectDir(input.ProjectDir)
-	fqbn := resolveFlashFQBN(projectDir, input.Board) // manifest.board 优先,与「编译」一致
-	if fqbn == "" {
-		fqbn = "esp32:esp32:esp32" // OTA 以 ESP32 为主,板卡缺省时兜底
-	}
-	args := map[string]any{
-		"sketch_dir":      projectDir,
-		"fqbn":            fqbn,
-		"address":         strings.TrimSpace(input.Address),
-		"timeout_seconds": 180,
-	}
-	if pwd := strings.TrimSpace(input.OTAPassword); pwd != "" {
-		args["password"] = pwd
-	}
-	return runHardwareSimple(command, "arduino_ota_upload", args, 200*time.Second, "WiFi 烧录(OTA)")
-}
-
-// HardwarePublishFirmware 把固件发布到远程固件服务器(③ 云端拉取),板子自己来拉。
-// 服务器配置(SSH 目标 / 远程目录 / 公网 URL)由前端面板提供,各人填自己的 NAS/VPS。
-func (a *App) HardwarePublishFirmware(input HardwarePublishInput) HardwareRunResult {
-	// 用 hwFlashing 槽(而非新增槽):发布同样要先编译 sketch(sketch_dir+fqbn),与烧录共享
-	// 本地 arduino-cli 构建产物;两个"编译+部署"并发会互相写坏本地构建目录,也会让两次发布
-	// 交错写远端 tmp。同槽把 USB 烧录/OTA 烧录/远程发布一起串行,是最贴合的安全边界。
-	if !a.beginHardwareOp(&a.hwFlashing) {
-		return HardwareRunResult{Status: "skipped", Summary: "有硬件操作进行中", NextStep: "已有一次烧录或发布正在进行,请等它完成再试。"}
-	}
-	defer a.endHardwareOp(&a.hwFlashing)
-	command, err := a.requireHardwareMCP()
-	if err != nil {
-		return HardwareRunResult{Status: "failed", Error: err.Error()}
-	}
-	if strings.TrimSpace(input.ProjectName) == "" || strings.TrimSpace(input.Version) == "" {
-		return HardwareRunResult{Status: "skipped", Summary: "缺少项目名或版本号", NextStep: "填项目名和版本号(如 1.0.2)后再发布。"}
-	}
-	// 用与脚手架相同的 sanitizeProjectName:脚手架把 sanitize 后的项目名烤进板子的
-	// FW_VERSION_URL(baseURL/<sanitized>/version.txt),这里发布也必须落到同一路径,
-	// 否则中文/含空格/首字符是数字的项目名会被脚手架改写、而发布用原名建目录 → 板子
-	// 永远轮询到 404,升级静默失败。
-	projectName := sanitizeProjectName(input.ProjectName)
-	if projectName == "" {
-		return HardwareRunResult{Status: "skipped", Summary: "项目名不合法", NextStep: "项目名请用英文字母/数字/下划线(要和新建 OTA 项目时填的一致)。"}
-	}
-	sshHost := strings.TrimSpace(input.SSHHost)
-	remoteDir := strings.TrimSpace(input.RemoteDir)
-	baseURL := strings.TrimSpace(input.BaseURL)
-	if sshHost == "" || remoteDir == "" || baseURL == "" {
-		return HardwareRunResult{Status: "skipped", Summary: "未配置固件服务器", NextStep: "在「发布固件」里填好 服务器URL / SSH目标 / 远程目录(填你自己的 NAS 或 VPS)后再发布。"}
-	}
-	projectDir := resolveHardwareProjectDir(input.ProjectDir)
-	fqbn := resolveFlashFQBN(projectDir, input.Board) // manifest.board 优先,与「编译」一致
-	if fqbn == "" {
-		fqbn = "esp32:esp32:esp32"
-	}
-	args := map[string]any{
-		"project_name":    projectName,
-		"version":         strings.TrimSpace(input.Version),
-		"ssh_host":        sshHost,
-		"remote_dir":      remoteDir,
-		"base_url":        baseURL,
-		"sketch_dir":      projectDir,
-		"fqbn":            fqbn,
-		"timeout_seconds": 300,
-	}
-	return runHardwareSimple(command, "firmware_publish", args, 320*time.Second, "发布固件(远程)")
-}
-
-func firstNonEmptyStr(v, def string) string {
-	if strings.TrimSpace(v) != "" {
-		return v
-	}
-	return def
-}
-
-// HardwareMonitor dispatches to the platform-appropriate serial-monitor MCP tool
-// for a short sampling window. The frontend's "看串口" button calls it.
-func (a *App) HardwareMonitor(input HardwareRunInput) HardwareRunResult {
-	// 与烧录争同一串口:占 hwFlashing 槽。烧录进行中拒绝采样——否则采样子进程会撞正在写 flash 的
-	// esptool,轻则 busy 失败、重则打断写入把板子写成半砖。后端兜底(前端按钮守卫在面板重挂载后会丢,
-	// 正是 D1 互斥要防的场景);此前 HardwareMonitor 漏了这道槽。
-	if !a.beginHardwareOp(&a.hwFlashing) {
-		return HardwareRunResult{Status: "skipped", Summary: "串口忙", NextStep: "有烧录正在进行、占用着串口,请等它完成再看串口。"}
-	}
-	defer a.endHardwareOp(&a.hwFlashing)
-	command, err := a.requireHardwareMCP()
-	if err != nil {
-		return HardwareRunResult{Status: "failed", Error: err.Error()}
-	}
-	// 采样前先关掉常驻串口监视器:它占着串口,不关 MCP 采样子进程会撞占用失败(与 HardwareUpload 同款)。
-	a.SerialClose()
-	seconds := input.Seconds
-	if seconds <= 0 {
-		seconds = 8
-	}
-	if seconds > 30 {
-		seconds = 30 // 别让前端按钮一按等半分钟
-	}
-	// 波特率跟随面板选择(曾写死 115200:9600 的板子点「看串口」永远采不到,
-	// 但常驻串口监视器又能看到——两条链路矛盾,学生难自查)。
-	baud := input.Baud
-	if baud <= 0 {
-		baud = 115200
-	}
-	switch input.Platform {
-	case "arduino":
-		if input.Port == "" {
-			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "选择串口后再点查看串口。"}
-		}
-		args := map[string]any{
-			"port":            input.Port,
-			"seconds":         seconds,
-			"baud":            baud,
-			"timeout_seconds": seconds + 5,
-		}
-		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
-	case "platformio":
-		// PlatformIO 的 `pio run -t monitor` 是交互式终端,onecreat 用程序方式(非 TTY)
-		// spawn 它会在 termios.tcgetattr 崩溃(Operation not supported by device)。
-		// 「看串口」本质是按波特率读串口,与构建系统无关 —— 直接复用已修好的
-		// arduino_monitor_sample 端口级读取(arduino-cli monitor),稳。
-		if input.Port == "" {
-			return HardwareRunResult{Status: "skipped", Summary: "缺少串口", NextStep: "在上方「串口」里选择开发板端口后再点查看串口。"}
-		}
-		args := map[string]any{
-			"port":            input.Port,
-			"seconds":         seconds,
-			"baud":            baud,
-			"timeout_seconds": seconds + 5,
-		}
-		return runHardwareSimple(command, "arduino_monitor_sample", args, time.Duration(seconds+10)*time.Second, "串口采样")
-	case "esp_idf":
-		args := map[string]any{
-			"project_dir":     resolveHardwareProjectDir(input.ProjectDir),
-			"action":          "monitor",
-			"timeout_seconds": seconds + 5,
-		}
-		if input.Port != "" {
-			args["port"] = input.Port
-		}
-		if input.Baud > 0 {
-			args["baud"] = input.Baud
-		}
-		return runHardwareSimple(command, "esp_idf_run", args, time.Duration(seconds+10)*time.Second, "ESP-IDF 串口")
-	default:
-		return HardwareRunResult{
-			Status:   "skipped",
-			Summary:  "该平台暂无一键串口",
-			NextStep: "Python/MicroPython/Unihiker/MaixCAM 项目请在对话框里让 AI 执行 SSH 或 mpremote 调试。",
-		}
-	}
 }
 
 // --- helpers for the 3 buttons ---
 
-func (a *App) requireHardwareMCP() (string, error) {
-	command, _, err := resolveHardwareMCP()
-	if err != nil {
-		return "", err
-	}
-	return command, nil
-}
-
-func resolveHardwareProjectDir(dir string) string {
-	if d := strings.TrimSpace(dir); d != "" {
-		return d
-	}
-	cwd, _ := os.Getwd()
-	return cwd
-}
-
-// validationResult mirrors cmd/reasonix-hardware-mcp's structure for unmarshalling.
-type validationResult struct {
-	Kind      string `json:"kind"`
-	Target    string `json:"target"`
-	Status    string `json:"status"`
-	Command   string `json:"command,omitempty"`
-	Output    string `json:"output,omitempty"`
-	Error     string `json:"error,omitempty"`
-	RootCause string `json:"rootCause,omitempty"`
-	FixHint   string `json:"fixHint,omitempty"`
-	NextStep  string `json:"nextStep,omitempty"`
-}
-
-// pickValidationResult picks the first failure (so the UI surfaces a problem),
-// or the last result when everything passed/skipped (so we still show something).
-func pickValidationResult(results []validationResult) validationResult {
-	if len(results) == 0 {
-		return validationResult{Status: "skipped"}
-	}
-	for _, r := range results {
-		if r.Status == "failed" {
-			return r
-		}
-	}
-	return results[len(results)-1]
-}
-
-func coalesceStatus(s, def string) string {
-	if strings.TrimSpace(s) == "" {
-		return def
-	}
-	return s
-}
-
-func truncateOutput(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit] + "\n…(已截断)"
-}
-
-// runHardwareSimple wraps "call MCP tool + return result" for upload/monitor where
-// the underlying tool doesn't return structured validation results — we treat the
-// raw text as the output and let the model help if it fails.
-func runHardwareSimple(command, tool string, args map[string]any, timeout time.Duration, label string) HardwareRunResult {
-	text, err := callHardwareMCPTool(command, tool, args, timeout)
-	if err != nil {
-		return HardwareRunResult{
-			Status:  "failed",
-			Summary: label + "失败",
-			Error:   err.Error(),
-			Output:  truncateOutput(text, 4096),
-		}
-	}
-	return HardwareRunResult{
-		Status:  "passed",
-		Summary: label + "完成",
-		Output:  truncateOutput(text, 4096),
-	}
-}
-
-// arduinoFQBNFromBoard maps short board ids the frontend uses to arduino-cli FQBNs.
-// 委托给共享数据驱动注册表(internal/hardware/boards),与 MCP 的 arduinoFQBN 同源,
-// 彻底消除「编译走一处映射、烧录走另一处」的孪生漂移——以前要手工对齐两份 switch。
-func arduinoFQBNFromBoard(board string) string {
-	return boards.ArduinoFQBN(board)
-}
-
-// manifestBoard 读取项目 hardware_manifest.json 的 board 字段(读不到/无该字段返回空)。
-func manifestBoard(projectDir string) string {
-	if strings.TrimSpace(projectDir) == "" {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(projectDir, "hardware_manifest.json"))
-	if err != nil {
-		return ""
-	}
-	var m struct {
-		Board string `json:"board"`
-	}
-	if json.Unmarshal(data, &m) != nil {
-		return ""
-	}
-	return strings.TrimSpace(m.Board)
-}
-
-// resolveFlashFQBN 解析「烧录/发布」用的 FQBN,优先级与「编译」(validateArduinoProject)
-// 一致:项目 manifest.board > UI 下拉 board。这样同一项目编译和烧录目标芯片必然相同——
-// 否则 manifest 定 esp32s3、UI 停在默认板时,编译按 S3、烧录按 UI,烧的是错芯片的固件。
-// 两者都为空时返回空,调用方保持各自兜底。
-func resolveFlashFQBN(projectDir, uiBoard string) string {
-	board := strings.TrimSpace(uiBoard)
-	if mb := manifestBoard(projectDir); mb != "" {
-		board = mb
-	}
-	if board == "" {
-		return ""
-	}
-	return arduinoFQBNFromBoard(board)
-}
-
-// AddHardwareMCPServer connects the first available hardware MCP binary to the
-// current session only. Direct hardware buttons call the MCP binary themselves;
-// this method exposes the same tools to the AI conversation without silently
-// changing the persistent config file.
-func (a *App) AddHardwareMCPServer() (int, error) {
-	command, _, err := resolveHardwareMCP()
-	if err != nil {
-		return 0, err
-	}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return 0, fmt.Errorf("no active session")
-	}
-	return ctrl.ConnectMCPServer(config.PluginEntry{
-		Name:    "hardware",
-		Type:    "stdio",
-		Command: command,
-		Args:    []string{},
-		Env:     map[string]string{},
-	})
-}
-
-// RemoveMCPServer disconnects a live server and drops it from config (the row's ✕).
-func (a *App) RemoveMCPServer(name string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return fmt.Errorf("no active session")
-	}
-	_, err := ctrl.RemoveMCPServer(name)
-	if err == nil {
-		a.mu.Lock()
-		delete(a.disabledMCP, name)
-		a.mcpOrder = removeServerOrder(a.mcpOrder, name)
-		a.mu.Unlock()
-	}
-	return err
-}
-
-// RetryMCPServer reconnects a configured server that failed or was disconnected,
-// without touching config (the failed row's retry button).
-func (a *App) RetryMCPServer(name string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return fmt.Errorf("no active session")
-	}
-	_, err := ctrl.ConnectConfiguredMCPServer(name)
-	return err
-}
-
-// SetMCPServerEnabled is the connector toggle: on reconnects a configured server
-// for this session, off disconnects it (config untouched either way — like Claude
-// Code's per-conversation enable/disable, it resets on the next session start).
-func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return fmt.Errorf("no active session")
-	}
-	if enabled {
-		_, err := ctrl.ConnectConfiguredMCPServer(name)
-		if err == nil {
-			a.mu.Lock()
-			delete(a.disabledMCP, name)
-			a.mu.Unlock()
-		}
-		return err
-	}
-	if s, ok := findMCPServerView(ctrl, name); ok {
-		s.Status = "disabled"
-		s.Error = ""
-		a.mu.Lock()
-		if a.disabledMCP == nil {
-			a.disabledMCP = map[string]ServerView{}
-		}
-		a.disabledMCP[name] = s
-		a.mcpOrder = mergeServerOrder(a.mcpOrder, []ServerView{s})
-		a.mu.Unlock()
-	}
-	ctrl.DisconnectMCPServer(name)
-	return nil
-}
-
-type hardwareMCPRPCResponse struct {
-	Error  *hardwareMCPRPCError `json:"error,omitempty"`
-	Result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
-	} `json:"result"`
-}
-
-type hardwareMCPRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-func callHardwareMCPTool(command, name string, args map[string]any, timeout time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, command)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", err
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      name,
-			"arguments": args,
-		},
-	}
-	if err := json.NewEncoder(stdin).Encode(req); err != nil {
-		_ = cmd.Process.Kill()
-		return "", err
-	}
-	_ = stdin.Close()
-	err = cmd.Wait()
-	// 这些错误会原样显示在硬件面板的红色提示条上,读者是老师/学生——
-	// 中文说清楚"怎么了、下一步做什么",开发者细节放在句尾括号里。
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("硬件操作超时(%s 内未完成)。编译和首次下载工具可能因网络慢而超时——检查网络后点重试;若是烧录超时,拔插一次 USB 线再试", timeout)
-	}
-	if err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("硬件助手执行出错,请重试一次;若反复出现,把括号里的信息发给老师/技术支持(%s)", msg)
-	}
-	line := strings.TrimSpace(firstOutputLine(stdout.String()))
-	if line == "" {
-		return "", fmt.Errorf("硬件助手没有返回结果,请重试一次;若反复出现请重启应用")
-	}
-	var resp hardwareMCPRPCResponse
-	if err := json.Unmarshal([]byte(line), &resp); err != nil {
-		return "", fmt.Errorf("硬件助手返回了无法解析的内容,请重试一次;若反复出现请重启应用(JSON-RPC 解析失败: %v)", err)
-	}
-	if resp.Error != nil {
-		return "", fmt.Errorf("硬件助手内部错误,请重试一次(RPC %d: %s)", resp.Error.Code, resp.Error.Message)
-	}
-	if resp.Result.IsError {
-		return "", fmt.Errorf("%s", firstTextContent(resp.Result.Content))
-	}
-	text := firstTextContent(resp.Result.Content)
-	if text == "" {
-		return "", fmt.Errorf("硬件助手返回了空结果,请重试一次;若反复出现请重启应用")
-	}
-	return text, nil
-}
-
-func firstOutputLine(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimSpace(line) != "" {
-			return line
-		}
-	}
-	return ""
-}
-
-func firstTextContent(content []struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}) string {
-	for _, item := range content {
-		if item.Type == "text" {
-			return item.Text
-		}
-	}
-	return ""
-}
-
-func normalizeHardwareDetectView(view *HardwareDetectView) {
-	if view.ProjectTypes == nil {
-		view.ProjectTypes = []string{}
-	}
-	if view.CandidateProjects == nil {
-		view.CandidateProjects = []HardwareProjectCandidate{}
-	}
-	if view.SerialPorts == nil {
-		view.SerialPorts = []string{}
-	}
-	if view.Boards == nil {
-		view.Boards = []HardwareBoardView{}
-	}
-	if view.Devices == nil {
-		view.Devices = []HardwareDeviceView{}
-	}
-	if view.Toolchains == nil {
-		view.Toolchains = []HardwareToolchainView{}
-	}
-	if view.Recommendations == nil {
-		view.Recommendations = []string{}
-	}
-}
-
-func normalizeHardwareEvidenceStatusView(view *HardwareEvidenceStatusView) {
-	if view.MissingGroups == nil {
-		view.MissingGroups = []string{}
-	}
-	if view.Recommendations == nil {
-		view.Recommendations = []string{}
-	}
-}
-
-func findMCPServerView(ctrl *control.Controller, name string) (ServerView, bool) {
-	if ctrl == nil || ctrl.Host() == nil {
-		return ServerView{}, false
-	}
-	for _, s := range ctrl.Host().Servers() {
-		if s.Name == name {
-			return ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected",
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				ToolList: pluginToolsToView(s.ToolList),
-			}, true
-		}
-	}
-	for _, f := range ctrl.Host().Failures() {
-		if f.Name == name {
-			return ServerView{Name: f.Name, Transport: f.Transport, Status: "failed", Error: f.Error}, true
-		}
-	}
-	return ServerView{}, false
-}
-
-func pluginToolsToView(tools []plugin.ToolInfo) []ToolView {
-	if len(tools) == 0 {
-		return nil
-	}
-	out := make([]ToolView, 0, len(tools))
-	for _, t := range tools {
-		out = append(out, ToolView{Name: t.Name, Description: t.Description})
-	}
-	return out
-}
-
-func orderServerViews(servers []ServerView, order []string) []ServerView {
-	pos := make(map[string]int, len(order))
-	for i, name := range order {
-		pos[name] = i
-	}
-	sort.SliceStable(servers, func(i, j int) bool {
-		pi, iok := pos[servers[i].Name]
-		pj, jok := pos[servers[j].Name]
-		switch {
-		case iok && jok:
-			return pi < pj
-		case iok:
-			return true
-		case jok:
-			return false
-		default:
-			return false
-		}
-	})
-	return servers
-}
-
-func mergeServerOrder(order []string, servers []ServerView) []string {
-	seen := make(map[string]bool, len(order)+len(servers))
-	next := make([]string, 0, len(order)+len(servers))
-	for _, name := range order {
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		next = append(next, name)
-	}
-	for _, s := range servers {
-		if s.Name == "" || seen[s.Name] {
-			continue
-		}
-		seen[s.Name] = true
-		next = append(next, s.Name)
-	}
-	return next
-}
-
-func removeServerOrder(order []string, name string) []string {
-	if name == "" || len(order) == 0 {
-		return order
-	}
-	next := order[:0]
-	for _, n := range order {
-		if n != name {
-			next = append(next, n)
-		}
-	}
-	return next
-}
-
-// ModelInfo is one (provider, model) the bottom switcher can pick. Ref ("provider/
-// model") is what SetModel takes; Provider/Model are for display.
-type ModelInfo struct {
-	Ref      string `json:"ref"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Current  bool   `json:"current"`
-}
-
-type EffortInfo struct {
-	Supported bool     `json:"supported"`
-	Current   string   `json:"current"`
-	Default   string   `json:"default"`
-	Levels    []string `json:"levels"`
-}
-
-// Models flattens the configured providers into their (provider, model) pairs —
-// the switcher's options — marking the active one. A vendor with a `models` list
-// yields one entry per model, all sharing the same endpoint/key. Unconfigured
-// providers are skipped. Result is non-nil: the frontend reads .length, so a nil
-// slice (JSON null) would crash the switcher on an empty list.
-func (a *App) Models() []ModelInfo {
-	if gatewayActive() {
-		return []ModelInfo{}
-	}
-	a.mu.RLock()
-	curModel := a.model
-	a.mu.RUnlock()
-	cfg, err := config.Load()
-	if err != nil {
-		return nil
-	}
-	out := []ModelInfo{}
-	for i := range cfg.Providers {
-		p := &cfg.Providers[i]
-		if !p.Configured() {
-			continue
-		}
-		for _, m := range p.ModelList() {
-			ref := p.Name + "/" + m
-			out = append(out, ModelInfo{Ref: ref, Provider: p.Name, Model: m, Current: ref == curModel})
-		}
-	}
-	return out
-}
-
-// SetModel switches the active model and carries the current conversation into the
-// new model's session, so the chat continues seamlessly and subsequent turns use
-// the new model. (Switching models necessarily resets the prompt cache; that's the
-// cost of the switch.) No-op if name is already active or the controller is down.
-func (a *App) SetModel(name string) error {
-	if a.ctx == nil || name == "" {
-		return nil
-	}
-	// 网关模式下模型由平台统一分配,拒绝本地切模型(H4 兜底;前端 ModelSwitcher 在网关模式
-	// 已不暴露真实模型,这里防直接调 IPC 绕过)。档位切换走 SetOnecreatTier,不经这里。
-	if gatewayActive() {
-		return errGatewayManaged
-	}
-	// 固定「发起切换时的活动标签」+ 它自己的 sink:boot.Build 是秒级操作,期间用户可能
-	// 切走 activeTab。build 完成后只回写这个标签,并用它的 sink 绑定新 controller,避免
-	// 新 controller 装进错误标签、事件串到别的标签通道(A5)。
-	a.mu.RLock()
-	curModel := a.model
-	ctrl := a.ctrl
-	targetTab := a.activeTab
-	targetSink := a.sink
-	if rt := a.tabs[targetTab]; rt != nil && rt.sink != nil {
-		targetSink = rt.sink
-	}
-	a.mu.RUnlock()
-	if name == curModel {
-		return nil
-	}
-
-	var carried []provider.Message
-	if ctrl != nil {
-		_ = ctrl.Snapshot()
-		carried = ctrl.History()
-		ctrl.Close()
-	}
-
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: name, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	adopted := false
-	// 同步发起标签的运行时(SetModel 只作用于发起切换的那个 tab)。
-	if rt := a.tabs[targetTab]; rt != nil {
-		rt.ctrl = newCtrl
-		rt.model = name
-		rt.label = newCtrl.Label()
-		adopted = true
-	}
-	// 仅当发起标签仍是当前活动标签时,才更新活动镜像;否则用户已切走,别覆盖现活动镜像。
-	if a.activeTab == targetTab {
-		a.ctrl = newCtrl
-		a.model = name
-		a.label = newCtrl.Label()
-		adopted = true
-	}
-	a.mu.Unlock()
-	if !adopted {
-		// 发起标签在秒级 boot.Build 期间被 CloseTab 关掉了:没有任何标签引用新
-		// controller,必须 Close 它,否则它的 MCP 子进程 / LSP / goroutine 会泄漏到
-		// 进程退出(与 buildTab 的 A6 closed 检查同类)。
-		newCtrl.Close()
-		return nil
-	}
-	newCtrl.EnableInteractiveApproval()
-
-	path := ""
-	if dir := newCtrl.SessionDir(); dir != "" {
-		path = agent.NewSessionPath(dir, newCtrl.Label())
-	}
-	// Carry the prior conversation (full provider.Message log, incl. the system
-	// prompt) into the new session so history is preserved across the switch.
-	if len(carried) > 0 {
-		newCtrl.Resume(&agent.Session{Messages: carried}, path)
-	} else if path != "" {
-		newCtrl.SetSessionPath(path)
-	}
-	return nil
-}
-
-// rebuildTabByID 用当前 config + 环境(含网关 env)重建「指定」标签的 controller,沿用该
-// 标签自己的 model 并带过它的历史。boot.Build 是秒级操作,绝不持 a.mu 跨它:锁内只快照
-// 该 tab 的 ctrl/model/sink,锁外重建,再回锁写回(boot.Build-under-a.mu 红线)。
-func (a *App) rebuildTabByID(tabID string) {
-	if a.ctx == nil {
-		return
-	}
-	a.mu.RLock()
-	rt := a.tabs[tabID]
-	if rt == nil {
-		a.mu.RUnlock()
-		return
-	}
-	ctrl := rt.ctrl
-	model := rt.model
-	targetSink := rt.sink
-	if targetSink == nil {
-		targetSink = a.sink
-	}
-	if model == "" {
-		model = a.model // 该 tab 尚未记录 model 时退回活动镜像
-	}
-	a.mu.RUnlock()
-	if model == "" {
-		return // 还没 build 过(极早期登录):startup 的 applyGatewayEnvFromSession 已兜底
-	}
-
-	var carried []provider.Message
-	if ctrl != nil {
-		_ = ctrl.Snapshot()
-		carried = ctrl.History()
-		ctrl.Close()
-	}
-	newCtrl, err := boot.Build(a.ctx, boot.Options{Model: model, RequireKey: false, Sink: targetSink, PreToolUse: a.serialReleaseForToolUse})
-	if err != nil {
-		return // 重建失败:旧 ctrl 已 Close,下条消息会报错但 app 不崩(与 SetModel 行为一致)
-	}
-	a.mu.Lock()
-	adopted := false
-	if rt := a.tabs[tabID]; rt != nil {
-		rt.ctrl = newCtrl
-		rt.label = newCtrl.Label()
-		adopted = true
-	}
-	if a.activeTab == tabID {
-		a.ctrl = newCtrl
-		a.label = newCtrl.Label()
-		adopted = true
-	}
-	a.mu.Unlock()
-	if !adopted {
-		// 目标标签在秒级 boot.Build 期间被关闭:没有任何标签引用新 controller,必须
-		// Close 它,否则 MCP 子进程 / LSP / goroutine 会泄漏到进程退出。
-		newCtrl.Close()
-		return
-	}
-	newCtrl.EnableInteractiveApproval()
-
-	path := ""
-	if dir := newCtrl.SessionDir(); dir != "" {
-		path = agent.NewSessionPath(dir, newCtrl.Label())
-	}
-	if len(carried) > 0 {
-		newCtrl.Resume(&agent.Session{Messages: carried}, path)
-	} else if path != "" {
-		newCtrl.SetSessionPath(path)
-	}
-}
-
-// rebuildAllTabs 用当前网关 env 重建「每一个」标签的 controller —— 不止活动 tab。切档 /
-// 登录 / 登出后必须全量重建:tier/token/URL 在 boot.Build 时被固化进每个 tab 的 provider
-// (boot.go applyOnecreatGateway 把 model 烤成 tier-N、key 烤成网关 token,provider 不按
-// 每条请求重读),只重建活动 tab 会让后台 tab 继续按「旧档」计费、甚至登出后仍持已撤销
-// 的 token 继续打计费端点(H2)。boot.Build 秒级,锁内只快照 tab id 列表,锁外逐个重建。
-// 注:正在跑的后台 tab 会被 Close 重建(其历史已带过)—— 登出时这正是要的(撤销 token 不
-// 能再被使用);切档时会中断该 tab 当前这一轮,与既有「活动 tab 切模型即重建」行为一致。
-// anyTabRunning 报告是否有任意标签(含后台)正在跑回合。切档前的运行态守卫用(E1):切档
-// 会全量重建每个 tab 的 controller,Close 掉运行中 tab 会丢在途流式回合。锁内捕获各 tab 的
-// ctrl,锁外调 Running()(与 SetEffort 同款,避免在 a.mu 下调 controller 方法)。
-func (a *App) anyTabRunning() bool {
-	a.mu.RLock()
-	ctrls := make([]*control.Controller, 0, len(a.tabs))
-	for _, rt := range a.tabs {
-		if rt != nil && rt.ctrl != nil {
-			ctrls = append(ctrls, rt.ctrl)
-		}
-	}
-	a.mu.RUnlock()
-	for _, ctrl := range ctrls {
-		if ctrl.Running() {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *App) rebuildAllTabs() {
-	if a.ctx == nil {
-		return
-	}
-	a.mu.RLock()
-	ids := make([]string, 0, len(a.tabs))
-	for id := range a.tabs {
-		ids = append(ids, id)
-	}
-	a.mu.RUnlock()
-	for _, id := range ids {
-		a.rebuildTabByID(id)
-	}
-}
-
-func resolveHardwareMCP() (command, source string, err error) {
-	// 新名优先,回退旧名:老安装的 .app 内 / PATH 上可能仍是 reasonix-hardware-mcp(读旧)。
-	bins := []string{"onecreat-hardware-mcp", "reasonix-hardware-mcp"}
-	if override := strings.TrimSpace(os.Getenv("REASONIX_HARDWARE_MCP")); override != "" {
-		if executable(override) {
-			return override, "REASONIX_HARDWARE_MCP", nil
-		}
-		return "", "REASONIX_HARDWARE_MCP", fmt.Errorf("REASONIX_HARDWARE_MCP points to a missing or non-executable file: %s", override)
-	}
-	if exe, e := os.Executable(); e == nil {
-		exeDir := filepath.Dir(exe)
-		// Dev 模式优先回溯到 repo 根的 bin/(make build 的产物)。wails dev 的 bundle 名随
-		// outputfilename(onecreat-desktop;旧版 reasonix-desktop),production 是 onecreat.app
-		// 走下面 exe-based 路径,这段不命中。
-		if strings.Contains(exeDir, "onecreat-desktop.app") || strings.Contains(exeDir, "reasonix-desktop.app") {
-			for _, bin := range bins {
-				// .../desktop/build/bin/<name>.app/Contents/MacOS → 回溯 6 层到 repo 根
-				devCandidate := filepath.Join(exeDir, "..", "..", "..", "..", "..", "..", "bin", bin)
-				if executable(devCandidate) {
-					return filepath.Clean(devCandidate), "dev bin", nil
-				}
-			}
-		}
-		for _, bin := range bins {
-			for _, candidate := range []string{
-				filepath.Join(exeDir, bin),
-				filepath.Join(exeDir, bin+".exe"),
-				filepath.Join(exeDir, "..", "Resources", bin),
-				filepath.Join(exeDir, "..", "Resources", bin+".exe"),
-			} {
-				if executable(candidate) {
-					return filepath.Clean(candidate), "app bundle", nil
-				}
-			}
-		}
-	}
-	for _, bin := range bins {
-		if p, e := exec.LookPath(bin); e == nil {
-			return p, "PATH", nil
-		}
-	}
-	if cwd, e := os.Getwd(); e == nil {
-		for _, bin := range bins {
-			for _, candidate := range []string{
-				filepath.Join(cwd, "bin", bin),
-				filepath.Join(cwd, "..", "bin", bin),
-				filepath.Join(cwd, "..", "..", "bin", bin),
-			} {
-				if executable(candidate) {
-					return filepath.Clean(candidate), "workspace bin", nil
-				}
-			}
-		}
-	}
-	return "", "", fmt.Errorf("硬件助手未就绪:找不到 reasonix-hardware-mcp 程序。请重启应用;若仍出现,重新安装 OneCreat(开发环境则运行 make build,或设置 REASONIX_HARDWARE_MCP 指向该程序)")
-}
-
-func executable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if goruntime.GOOS == "windows" {
-		return true
-	}
-	return info.Mode()&0o111 != 0
-}
-
-func (a *App) Effort() EffortInfo {
-	entry, err := a.currentProviderEntry()
-	if err != nil {
-		return EffortInfo{Current: "auto", Levels: []string{}}
-	}
-	cap := config.EffortCapabilityForEntry(entry)
-	if !cap.Supported {
-		return EffortInfo{Supported: false, Current: "auto", Default: cap.Default, Levels: []string{}}
-	}
-	return EffortInfo{Supported: true, Current: config.EffortDisplay(entry), Default: cap.Default, Levels: cap.Levels}
-}
-
-func (a *App) SetEffort(level string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl != nil && ctrl.Running() {
-		return fmt.Errorf("finish or cancel the current turn before changing effort")
-	}
-	entry, err := a.currentProviderEntry()
-	if err != nil {
-		return err
-	}
-	effort, err := config.NormalizeEffort(entry, level)
-	if err != nil {
-		return err
-	}
-	return a.applyConfigChange(func(cfg *config.Config) error {
-		if _, ok := cfg.Provider(entry.Name); !ok {
-			if err := cfg.UpsertProvider(*entry); err != nil {
-				return err
-			}
-		}
-		if entry.Kind == "anthropic" && effort != "" && entry.Thinking == "" {
-			if err := cfg.SetProviderThinking(entry.Name, "adaptive"); err != nil {
-				return err
-			}
-		}
-		return cfg.SetProviderEffort(entry.Name, effort)
-	})
-}
-
-// DirEntry is one entry in the "@" file-reference menu.
-type DirEntry struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"isDir"`
-}
-
-// FilePreview is a bounded, read-only file payload for the workspace side panel.
-type FilePreview struct {
-	Path      string `json:"path"`
-	Body      string `json:"body"`
-	Size      int64  `json:"size"`
-	Truncated bool   `json:"truncated"`
-	Binary    bool   `json:"binary"`
-	Err       string `json:"err,omitempty"`
-}
-
-// atSkip are entries the "@" menu hides as noise.
-var atSkip = map[string]bool{".git": true, "node_modules": true, ".DS_Store": true}
-
-const filePreviewLimit = 256 * 1024
-
-func trimUTF8PartialSuffix(data []byte) []byte {
-	if utf8.Valid(data) {
-		return data
-	}
-	for i := len(data) - 1; i >= 0 && len(data)-i <= utf8.UTFMax; i-- {
-		if !utf8.RuneStart(data[i]) {
-			continue
-		}
-		if !utf8.Valid(data[:i]) || utf8.FullRune(data[i:]) {
-			return data
-		}
-		return data[:i]
-	}
-	return data
-}
-
-func workspacePath(rel string) (string, bool, error) {
-	base, err := os.Getwd()
-	if err != nil {
-		return "", false, err
-	}
-	if rel == "" {
-		return "", false, os.ErrInvalid
-	}
-	path := rel
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(base, rel)
-	}
-	path = filepath.Clean(path)
-	r, err := filepath.Rel(base, path)
-	if err != nil {
-		return "", false, err
-	}
-	if r == ".." || strings.HasPrefix(r, ".."+string(os.PathSeparator)) {
-		return "", false, os.ErrPermission
-	}
-	return path, true, nil
-}
-
-// ListDir lists one directory level (directories first, then files, each
-// alphabetical) for the "@" file-reference menu. rel resolves against the process
-// cwd; "" lists the cwd. The menu navigates one level at a time, never
-// recursively — bounded for huge trees.
-// FolderListing 是内置文件夹选择器的一页:某个绝对路径下的子文件夹列表 + 导航锚点。
-type FolderListing struct {
-	Path    string   `json:"path"`    // 当前绝对路径
-	Parent  string   `json:"parent"`  // 上级目录(已在根则等于自身)
-	Dirs    []string `json:"dirs"`    // 子文件夹名(排序后)
-	Home    string   `json:"home"`    // 用户主目录(快捷入口)
-	Desktop string   `json:"desktop"` // 桌面(快捷入口)
-	Error   string   `json:"error,omitempty"`
-}
-
-// BrowseDir 列出某个绝对路径下的子文件夹,供 app 内置文件夹选择器导航——绕开 macOS
-// 原生选择对话框在隐藏标题栏窗口下会开到窗口后面的 bug。path 为空时从主目录开始。
-func (a *App) BrowseDir(path string) FolderListing {
-	home, _ := os.UserHomeDir()
-	desktop := ""
-	if home != "" {
-		desktop = filepath.Join(home, "Desktop")
-	}
-	p := strings.TrimSpace(path)
-	if p == "" {
-		p = home
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return FolderListing{Path: home, Parent: home, Home: home, Desktop: desktop, Error: err.Error()}
-	}
-	entries, err := os.ReadDir(abs)
-	if err != nil {
-		// 打不开(权限/不存在)就退回上级,别让用户卡死
-		return FolderListing{Path: abs, Parent: filepath.Dir(abs), Home: home, Desktop: desktop, Error: "打不开这个目录:" + err.Error()}
-	}
-	dirs := []string{}
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue // 隐藏目录不显示,减少噪音
-		}
-		if e.IsDir() {
-			dirs = append(dirs, name)
-			continue
-		}
-		// 软链可能指向目录
-		if e.Type()&os.ModeSymlink != 0 {
-			if info, serr := os.Stat(filepath.Join(abs, name)); serr == nil && info.IsDir() {
-				dirs = append(dirs, name)
-			}
-		}
-	}
-	sort.Strings(dirs)
-	return FolderListing{Path: abs, Parent: filepath.Dir(abs), Dirs: dirs, Home: home, Desktop: desktop}
-}
-
-func (a *App) ListDir(rel string) []DirEntry {
-	base, err := os.Getwd()
-	if err != nil {
-		return nil
-	}
-	dir := base
-	if rel != "" {
-		if filepath.IsAbs(rel) {
-			dir = filepath.Clean(rel)
-		} else {
-			dir = filepath.Join(base, rel)
-		}
-	}
-	es, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var dirs, files []DirEntry
-	for _, e := range es {
-		name := e.Name()
-		if atSkip[name] {
-			continue
-		}
-		if e.IsDir() {
-			dirs = append(dirs, DirEntry{Name: name, IsDir: true})
-			continue
-		}
-		info, err := e.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		files = append(files, DirEntry{Name: name, IsDir: false})
-	}
-	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name) })
-	sort.Slice(files, func(i, j int) bool { return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name) })
-	return append(dirs, files...)
-}
-
-// ReadFile returns a small text preview for a file under the current workspace.
-func (a *App) ReadFile(rel string) FilePreview {
-	out := FilePreview{Path: rel}
-	path, ok, err := workspacePath(rel)
-	if err != nil || !ok {
-		out.Err = "invalid path"
-		return out
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		out.Err = err.Error()
-		return out
-	}
-	if info.IsDir() {
-		out.Err = "path is a directory"
-		return out
-	}
-	if !info.Mode().IsRegular() {
-		out.Err = "path is not a regular file"
-		return out
-	}
-	out.Size = info.Size()
-	f, err := os.Open(path)
-	if err != nil {
-		out.Err = err.Error()
-		return out
-	}
-	defer f.Close()
-
-	buf := make([]byte, filePreviewLimit+1)
-	n, err := f.Read(buf)
-	if err != nil && err != io.EOF {
-		out.Err = err.Error()
-		return out
-	}
-	data := buf[:n]
-	if len(data) > filePreviewLimit {
-		data = data[:filePreviewLimit]
-		out.Truncated = true
-	}
-
-	// Check for BOM first (just the first 2-3 bytes — always complete
-	// even at a truncation boundary). BOM-prefixed files skip the NUL
-	// check since UTF-16 normally contains 0x00 for ASCII characters.
-	bomKind := fileenc.DetectQuick(data)
-	if bomKind != fileenc.UTF8 {
-		enc, _ := fileenc.Detect(data)
-		if enc == fileenc.LossyUTF8 {
-			out.Binary = true
-			return out
-		}
-		decoded := fileenc.Decode(data, enc)
-		out.Body = string(decoded)
-		return out
-	}
-
-	// No BOM — NUL in raw bytes is a binary signal.
-	if bytes.Contains(data, []byte{0}) {
-		out.Binary = true
-		return out
-	}
-
-	// Trim any partial multi-byte rune at the truncation boundary BEFORE
-	// encoding detection. Without this, a large UTF-8 file truncated
-	// mid-character would fail utf8.Valid and be misdetected as GB18030
-	// or LossyUTF8, producing mojibake or a false binary classification.
-	if out.Truncated {
-		data = trimUTF8PartialSuffix(data)
-	}
-	enc, _ := fileenc.Detect(data)
-	if enc == fileenc.LossyUTF8 {
-		out.Binary = true
-		return out
-	}
-	out.Body = string(fileenc.Decode(data, enc))
-	return out
-}
-
-// OpenWorkspacePath opens a file or folder from the workspace in the OS default app.
-func (a *App) OpenWorkspacePath(rel string) error {
-	path, ok, err := workspacePath(rel)
-	if err != nil || !ok {
-		return os.ErrInvalid
-	}
-	return openWorkspacePath(path)
-}
-
-// OpenFolder 在系统文件管理器里打开一个绝对路径的文件夹(供侧栏「在文件夹中打开」用)。
-// 与 OpenWorkspacePath 不同:不限制在当前 workspace 内,可打开任意已存在的目录。
-func (a *App) OpenFolder(path string) error {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return os.ErrInvalid
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		return os.ErrInvalid
-	}
-	return openWorkspacePath(path)
-}
-
-// RevealWorkspacePath shows a workspace file in the native file manager.
-func (a *App) RevealWorkspacePath(rel string) error {
-	path, ok, err := workspacePath(rel)
-	if err != nil || !ok {
-		return os.ErrInvalid
-	}
-	switch goruntime.GOOS {
-	case "darwin":
-		return exec.Command("open", "-R", path).Start()
-	case "windows":
-		return exec.Command("explorer", "/select,", path).Start()
-	default:
-		dir := path
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			dir = filepath.Dir(path)
-		}
-		return exec.Command("xdg-open", dir).Start()
-	}
-}
-
-func (a *App) notice(text string) {
-	// a.sink 在 buildTab/CreateTab/SetActiveTab/CloseTab 里都在 a.mu 下被改写,故这里必须
-	// 持锁读(M3:/effort 命令经 Submit→runEffortCommand 调到这里,与 tab 生命周期方法
-	// 并发会构成对 a.sink 指针的数据竞态)。
-	a.mu.RLock()
-	sink := a.sink
-	a.mu.RUnlock()
-	if sink != nil {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
-	}
-}
-
-func (a *App) runEffortCommand(input string) {
-	entry, err := a.currentProviderEntry()
-	if err != nil {
-		a.notice("effort: " + err.Error())
-		return
-	}
-	cap := config.EffortCapabilityForEntry(entry)
-	if !cap.Supported {
-		a.notice(fmt.Sprintf("effort is not configurable for %s", entry.Name))
-		return
-	}
-	args := strings.Fields(input)
-	if len(args) < 2 {
-		a.notice(fmt.Sprintf("effort for %s: %s (default: %s; options: %s)", entry.Name, config.EffortDisplay(entry), cap.Default, strings.Join(cap.Levels, "|")))
-		return
-	}
-	if len(args) > 2 {
-		a.notice("usage: /effort " + strings.Join(cap.Levels, "|"))
-		return
-	}
-	effort, err := config.NormalizeEffort(entry, args[1])
-	if err != nil {
-		a.notice(err.Error())
-		return
-	}
-	if err := a.SetEffort(args[1]); err != nil {
-		a.notice("effort: " + err.Error())
-		return
-	}
-	display := effort
-	if display == "" {
-		display = "auto"
-	}
-	a.notice(fmt.Sprintf("effort for %s set to %s", entry.Name, display))
-}
-
-func (a *App) currentProviderEntry() (*config.ProviderEntry, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, err
-	}
-	a.mu.RLock()
-	ref := a.model
-	a.mu.RUnlock()
-	if strings.TrimSpace(ref) == "" {
-		ref = cfg.DefaultModel
-	}
-	entry, ok := cfg.ResolveModel(ref)
-	if !ok {
-		return nil, fmt.Errorf("unknown model %q", ref)
-	}
-	return entry, nil
-}
-
-// SavePastedImage stores a browser clipboard image data URL under
-// .reasonix/attachments and returns the relative @-reference path.
-func (a *App) SavePastedImage(dataURL string) (string, error) {
-	return control.SaveImageDataURL(dataURL)
-}
-
-// SavePastedFile stores a dropped non-image file (the browser exposes its bytes
-// as a data URL but not a real path) under .reasonix/attachments and returns the
-// relative @-reference path.
-func (a *App) SavePastedFile(name, dataURL string) (string, error) {
-	return control.SaveAttachmentDataURL(name, dataURL)
-}
-
-// AttachmentDataURL returns a safe data URL for a stored image attachment.
-func (a *App) AttachmentDataURL(path string) (string, error) {
-	return control.ImageDataURL(path)
-}
-
 // --- memory panel (frontend ⇄ controller) ---
 
-// MemoryDoc is one loaded doc-memory file for the panel: path, scope, and body.
-type MemoryDoc struct {
-	Path  string `json:"path"`
-	Scope string `json:"scope"`
-	Body  string `json:"body"`
-}
-
-// MemoryFact is one saved auto-memory, surfaced read-only in the panel.
-type MemoryFact struct {
-	Name        string `json:"name"`
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description"`
-	Type        string `json:"type"`
-	Body        string `json:"body"`
-}
-
-// MemoryScope is one writable quick-add target (scope id + the file it writes to).
-type MemoryScope struct {
-	Scope string `json:"scope"`
-	Path  string `json:"path"`
-}
-
-// MemoryView is the whole memory panel payload: hierarchical docs, saved facts,
-// and the writable scopes for the quick-add selector.
-type MemoryView struct {
-	Docs      []MemoryDoc   `json:"docs"`
-	Facts     []MemoryFact  `json:"facts"`
-	Scopes    []MemoryScope `json:"scopes"`
-	StoreDir  string        `json:"storeDir"`
-	Available bool          `json:"available"`
-}
-
-// writableScopes are the quick-add targets the panel offers, broad → specific.
-var writableScopes = []memory.Scope{memory.ScopeUser, memory.ScopeProject, memory.ScopeLocal}
-
-// Memory returns the loaded memory for the panel: the REASONIX.md hierarchy, the
-// saved auto-memories, and the writable scopes. Read-only; mutations go through
-// Remember / SaveDoc.
-func (a *App) Memory() MemoryView {
-	// Always return non-nil slices: a nil Go slice marshals to JSON `null`, which
-	// would crash the panel's `view.facts.length` / `.map`.
-	view := MemoryView{Docs: []MemoryDoc{}, Facts: []MemoryFact{}, Scopes: []MemoryScope{}}
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return view
-	}
-	set := ctrl.Memory()
-	if set == nil {
-		return view
-	}
-	view.StoreDir = set.Store.Dir
-	view.Available = true
-	for _, d := range set.Docs {
-		view.Docs = append(view.Docs, MemoryDoc{Path: d.Path, Scope: string(d.Scope), Body: d.Body})
-	}
-	for _, f := range set.Store.List() {
-		view.Facts = append(view.Facts, MemoryFact{
-			Name: f.Name, Title: f.Title, Description: f.Description, Type: string(f.Type), Body: f.Body,
-		})
-	}
-	for _, sc := range writableScopes {
-		if p := set.DocPath(sc); p != "" { // user scope yields "" when no config dir
-			view.Scopes = append(view.Scopes, MemoryScope{Scope: string(sc), Path: p})
-		}
-	}
-	return view
-}
-
-// Remember quick-adds a one-line note to the doc-memory file for scope — the
-// panel's explicit "remember" action, equivalent to typing "#<note>". An unknown
-// scope falls back to project. Returns the file written.
-func (a *App) Remember(scope, note string) (string, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return "", nil
-	}
-	return ctrl.QuickAdd(parseScope(scope), note)
-}
-
-// Forget deletes a saved auto-memory by name — the panel's delete action for a
-// fact the model owns. A no-op when no controller is attached.
-func (a *App) Forget(name string) error {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return nil
-	}
-	return ctrl.ForgetMemory(name)
-}
-
-// SaveDoc overwrites a memory doc with the panel editor's contents. The controller
-// validates path against the recognized memory files. Returns the file written.
-func (a *App) SaveDoc(path, body string) (string, error) {
-	a.mu.RLock()
-	ctrl := a.ctrl
-	a.mu.RUnlock()
-	if ctrl == nil {
-		return "", nil
-	}
-	return ctrl.SaveDoc(path, body)
-}
-
-// parseScope maps a frontend scope id to a memory.Scope, defaulting to project.
-func parseScope(s string) memory.Scope {
-	switch memory.Scope(s) {
-	case memory.ScopeUser:
-		return memory.ScopeUser
-	case memory.ScopeLocal:
-		return memory.ScopeLocal
-	default:
-		return memory.ScopeProject
-	}
-}
-
 // eventSink is the controller's event.Sink in desktop mode: it forwards every
-// agent event to the frontend as one shell event, JSON-shaped by toWire. It is a
-// type distinct from App so App's bound method set stays the clean command surface
-// — Emit must not be exposed to JS. Emit runs on the agent goroutine; Shell.Emit
+// agent event to the frontend as one shell event, stamped and JSON-shaped by its
+// own eventwire.Stamper. It is a type distinct from App so App's bound method set
+// stays the clean command surface — Emit must not be exposed to JS. Emit runs on the agent goroutine; Shell.Emit
 // is goroutine-safe, and the ctx guard covers the brief window before startup
 // assigns it.
 type eventSink struct {
 	ctx   context.Context
 	app   *App
 	tabID string // 该 sink 归属的标签;事件发到 agent:event:<tabID>,空则发旧的全局通道
+	// mu 保护 stamp / seenSession。事件从 agent 运行循环发出,而换会话由前端线程
+	// 触发,两者是不同的 goroutine。
+	mu sync.Mutex
+	// stamp 给这条流编号:schemaVersion / sequence / eventId / timestamp。
+	//
+	// **一个会话一条流**,不是一个标签一条流(复核 AR-R08.1)。之前这里固定
+	// `NewStamper("", tabID)`:`sessionId` 永远是空的,而 `/new`、恢复历史会话、
+	// 重建 controller 都不换 stamper —— 于是 sequence 是「这个标签自古以来」的计数,
+	// 客户端既认不出会话切换,也没法拿 sessionId 做关联。
+	//
+	// 现在换会话就换一条流(新的 stamper):sequence 从 1 重新开始,streamId 跟着变,
+	// 客户端据此知道「手里的序号别再拿来比对了」。
+	stamp *eventwire.Stamper
+	// seenSession 是上次盖章时这条标签所在的会话文件路径。空串表示还没解析过。
+	seenSession string
+}
+
+// newEventSink 建一个标签的事件出口。
+func newEventSink(ctx context.Context, app *App, tabID string) *eventSink {
+	return &eventSink{ctx: ctx, app: app, tabID: tabID, stamp: eventwire.NewStamper("", tabID)}
+}
+
+// stamperFor 返回当前该用的 stamper,必要时换一条新流。
+//
+// 只在**回合开始**时重新解析会话身份,这不是省事:换会话(`/new`、resume、rewind)
+// 都是 `turnState` 的独占操作,与回合互斥 —— 所以「回合开始」正是身份唯一可能变过的
+// 时点。把它放在每次 Emit 上既没必要,又要在文本增量这种热路径上多拿一次锁。
+func (s *eventSink) stamperFor(e event.Event) *eventwire.Stamper {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e.Kind != event.TurnStarted {
+		return s.stamp
+	}
+	path := s.currentSessionPath()
+	if path == s.seenSession {
+		return s.stamp
+	}
+	s.seenSession = path
+	s.stamp = eventwire.NewStamper(sessionIDFromPath(path), s.tabID)
+	return s.stamp
+}
+
+// currentSessionPath 读这条标签当前的会话文件路径(便宜的加锁读)。
+func (s *eventSink) currentSessionPath() string {
+	if s.app == nil {
+		return ""
+	}
+	ctrl := s.app.tabs.Ctrl(s.tabID)
+	if ctrl == nil {
+		return ""
+	}
+	return ctrl.SessionPath()
+}
+
+// sessionIDFromPath 从会话文件路径派生稳定的会话 id,与 internal/session 的派生方式
+// 一致(去掉目录与扩展名)。持久化关闭时路径为空,身份也就为空 —— 如实反映,不编一个。
+func sessionIDFromPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 }
 
 func (s *eventSink) Emit(e event.Event) {
@@ -3875,52 +782,12 @@ func (s *eventSink) Emit(e event.Event) {
 		if s.tabID != "" {
 			ch = eventChannel + ":" + s.tabID
 		}
-		s.app.sh().Emit(ch, toWire(e))
+		s.app.sh().Emit(ch, s.stamperFor(e).Wire(e))
 	}
 	// Persist after each turn so a force-kill of a long session loses at most the
 	// in-flight prompt, not every turn back to the last workspace switch.
 	// 存的是「本 sink 所属标签」的 session,后台标签完成一轮也各存各的。
 	if e.Kind == event.TurnDone && s.app != nil {
-		s.app.scheduleSnapshot(s.tabID)
-	}
-}
-
-// scheduleSnapshot kicks a single-flight background save of one tab's session;
-// a request arriving while one runs sets a trailing pass so the final state lands.
-func (a *App) scheduleSnapshot(tabID string) {
-	a.saveMu.Lock()
-	if a.saving[tabID] {
-		a.saveAgain[tabID] = true
-		a.saveMu.Unlock()
-		return
-	}
-	a.saving[tabID] = true
-	a.saveMu.Unlock()
-	go a.snapshotLoop(tabID)
-}
-
-func (a *App) snapshotLoop(tabID string) {
-	for {
-		a.mu.RLock()
-		var ctrl *control.Controller
-		if rt := a.tabs[tabID]; rt != nil {
-			ctrl = rt.ctrl
-		}
-		a.mu.RUnlock()
-		if ctrl != nil {
-			if err := ctrl.Snapshot(); err != nil {
-				slog.Warn("desktop: per-turn snapshot", "err", err)
-			}
-		}
-		a.saveMu.Lock()
-		if a.saveAgain[tabID] {
-			a.saveAgain[tabID] = false
-			a.saveMu.Unlock()
-			continue
-		}
-		delete(a.saving, tabID)
-		delete(a.saveAgain, tabID)
-		a.saveMu.Unlock()
-		return
+		s.app.sessions.ScheduleSnapshot(s.tabID)
 	}
 }

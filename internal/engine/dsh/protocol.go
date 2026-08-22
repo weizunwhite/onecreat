@@ -8,8 +8,12 @@
 // 网关红线:dsh 会把真实 provider/model 名写进 request/header / request/context
 // 事件。本包在映射前必须经 scrub.go 擦除,绝不让真实模型名到达 UI/日志。
 //
-// 现状(spike):协议客户端、进程守护、事件映射、脱敏均已实现并有单测;尚未接进
-// control.Controller(见 docs/dsh调研/04_Phase1_spike报告.md 的收尾清单)。
+// 现状:协议客户端、进程守护、事件映射、脱敏均已实现并有单测;adapter.go 已把它接到
+// `engine.TurnEngine` 边界上(Plan 12)。但**这个引擎目前不允许被启用** ——
+// `boot.selectEngine` 对 `engine = "dsh"` fail-closed,因为它的工具跑在自己的进程里,
+// OneCreat 的权限门 / plan mode / PreToolUse hook / 写前检查点 / 证据链都够不着
+// (复核 AR-R01)。在 dsh 协议支持把工具调用委托回 OneCreat 执行之前,这里的代码是
+// 已接线但未放行的状态。
 package dsh
 
 // dsh SDK JSON-RPC 方法名(client→server 请求)。

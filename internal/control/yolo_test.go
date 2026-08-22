@@ -71,7 +71,7 @@ func TestRequestApprovalHonorsBypass(t *testing.T) {
 
 	done := make(chan bool, 1)
 	go func() {
-		allow, _, err := c.requestApproval(context.Background(), planApprovalTool, "")
+		allow, _, err := c.approvals.Request(context.Background(), planApprovalTool, "")
 		if err != nil {
 			t.Errorf("requestApproval: %v", err)
 		}

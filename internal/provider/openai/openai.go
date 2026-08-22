@@ -14,12 +14,12 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"reasonix/internal/account"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 )
@@ -65,9 +65,16 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("openai: network: %w", err)
 	}
+	creds := cfg.Credentials
+	if creds == nil {
+		// No source supplied: fall back to the configured env var, which is what
+		// every bring-your-own-key provider used before credentials were explicit.
+		creds = account.EnvCredential{Var: keyEnv}
+	}
 	return &client{
 		name:     name,
-		apiKey:   cfg.APIKey,
+		creds:    creds,
+		gateway:  cfg.Gateway,
 		keyEnv:   keyEnv,
 		baseURL:  strings.TrimRight(cfg.BaseURL, "/"),
 		model:    cfg.Model,
@@ -88,8 +95,13 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 }
 
 type client struct {
-	name     string
-	apiKey   string
+	name string
+	// creds is asked for a token on every request, so a refresh reaches an
+	// already-running session (see internal/account).
+	creds account.CredentialSource
+	// gateway marks the OneCreat platform path, where the real provider/model is
+	// a billing secret and upstream error bodies must never be surfaced.
+	gateway  bool
 	keyEnv   string // api_key_env name, surfaced in auth errors
 	baseURL  string
 	model    string
@@ -100,15 +112,22 @@ type client struct {
 
 func (c *client) Name() string { return c.name }
 
-// authKey 返回当前请求要用的 API key。keyEnv 非空时**每次请求都从环境变量读**(而不是用 build
-// 时烤死的值):这样登录 token 续期 / 重新登录后(更新了 env)对所有已建好的 controller 立即
-// 生效,无需重建——对 onecreat 网关 token 的自动续期是关键。静态 key(如 DEEPSEEK_API_KEY)
-// 读 env 也是同一个值,无副作用。keyEnv 为空(直接给的 key)时用 build 时的值。
-func (c *client) authKey() string {
-	if c.keyEnv != "" {
-		return os.Getenv(c.keyEnv)
+// authKey 返回当前请求要用的 API key。**每次请求都问一次 CredentialSource**(而不是用
+// build 时烤死的值):这样登录 token 续期 / 重新登录后,对所有已建好的 controller 立即生效,
+// 无需重建 —— 对 onecreat 网关 token 的自动续期是关键。静态 key(如 DEEPSEEK_API_KEY)每次
+// 问到的是同一个值,无副作用。
+func (c *client) authKey(ctx context.Context) string {
+	if c.creds == nil {
+		return ""
 	}
-	return c.apiKey
+	key, err := c.creds.Token(ctx)
+	if err != nil {
+		// A credential source that cannot produce a token yields an empty key; the
+		// request then fails with the provider's own 401 path, which names where to
+		// fix it. Swallowing the error here keeps that single, actionable message.
+		return ""
+	}
+	return key
 }
 
 func isDeepSeekBaseURL(baseURL string) bool {
@@ -181,7 +200,7 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 			return nil, fmt.Errorf("%s: build request: %w", c.name, err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.authKey())
+		httpReq.Header.Set("Authorization", "Bearer "+c.authKey(ctx))
 		httpReq.Header.Set("Accept", "text/event-stream")
 
 		resp, err := c.http.Do(httpReq)
@@ -206,7 +225,7 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 		// A rejected key is a configuration problem, not a transient one — give
 		// an actionable error instead of dumping the raw status body.
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			if c.keyEnv == "ONECREAT_GATEWAY_TOKEN" {
+			if c.gateway {
 				if message := openAIErrorMessage(msg); message != "" {
 					return nil, fmt.Errorf("%s: %s", c.name, message)
 				}
@@ -230,10 +249,12 @@ func (c *client) sendWithRetry(ctx context.Context, body []byte) (*http.Response
 	return nil, lastErr
 }
 
-// isGateway reports whether this client talks to the OneCreat platform gateway
-// (authed via ONECREAT_GATEWAY_TOKEN). In that mode the real provider/model is a
-// billing secret, so error text must never carry upstream body/message verbatim.
-func (c *client) isGateway() bool { return c.keyEnv == "ONECREAT_GATEWAY_TOKEN" }
+// isGateway reports whether this client talks to the OneCreat platform gateway.
+// In that mode the real provider/model is a billing secret, so error text must
+// never carry the upstream body/message verbatim. It is an explicit flag set at
+// construction — it used to be inferred from the api_key_env name, which made a
+// security-relevant behaviour depend on a string literal matching.
+func (c *client) isGateway() bool { return c.gateway }
 
 // gatewayStatusMessage maps an upstream HTTP status to platform-safe wording that
 // contains no vendor/model text. A DeepSeek 400 body typically reads "…for model

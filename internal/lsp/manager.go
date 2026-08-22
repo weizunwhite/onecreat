@@ -35,13 +35,23 @@ type Manager struct {
 	wsRoot   string
 	specs    map[string]ServerSpec
 	extIndex map[string]string // file extension → language key, derived from specs
+	// baseEnv 是语言服务器子进程的基础环境(nil = 进程环境)。工作区 `.env` 不再
+	// 写进进程环境后,这里是它到达 gopls/pyright 之流的唯一通路(复核 C1)。
+	baseEnv []string
 
 	mu       sync.Mutex
 	clients  map[string]*client
 	starting map[string]chan struct{}
 }
 
+// NewManager 用进程环境作为语言服务器子进程的基础环境。工作区有自己的 `.env` 时
+// 用 NewManagerWithEnv —— `.env` 不再写进进程环境(复核 C1)。
 func NewManager(wsRoot string, specs map[string]ServerSpec) *Manager {
+	return NewManagerWithEnv(wsRoot, specs, nil)
+}
+
+// NewManagerWithEnv 是 NewManager 加一个显式的子进程基础环境(nil = 进程环境)。
+func NewManagerWithEnv(wsRoot string, specs map[string]ServerSpec, baseEnv []string) *Manager {
 	root, cancel := context.WithCancel(context.Background())
 	extIndex := map[string]string{}
 	for lang, spec := range specs {
@@ -55,10 +65,17 @@ func NewManager(wsRoot string, specs map[string]ServerSpec) *Manager {
 		wsRoot:   wsRoot,
 		specs:    specs,
 		extIndex: extIndex,
+		baseEnv:  baseEnv,
 		clients:  map[string]*client{},
 		starting: map[string]chan struct{}{},
 	}
 }
+
+// Env returns the child environment this manager spawns its language servers
+// with (nil = the process environment). Exported so the composition root's
+// wiring is observable: a manager that silently lost the workspace's `.env` is
+// otherwise invisible until a server misbehaves on a user's machine.
+func (m *Manager) Env() []string { return m.baseEnv }
 
 func (m *Manager) Close() {
 	m.mu.Lock()
@@ -159,7 +176,21 @@ func (m *Manager) spawn(_ string, spec ServerSpec) (*client, error) {
 	if err != nil {
 		return nil, &notInstalledError{command: spec.Command, hint: spec.InstallHint}
 	}
-	return startClient(m.root, bin, spec.Args, spec.Env, spec.LanguageID, m.wsRoot)
+	return startClient(m.root, bin, spec.Args, m.clientEnv(spec), spec.LanguageID, m.wsRoot)
+}
+
+// clientEnv composes one server's child environment: this workspace's base
+// (nil = the process environment) with the spec's own Env layered on top,
+// last-wins per exec semantics. Whatever it returns becomes cmd.Env verbatim, so
+// a test on it is a test on what the language server actually sees.
+func (m *Manager) clientEnv(spec ServerSpec) []string {
+	base := m.baseEnv
+	if base == nil {
+		base = os.Environ()
+	}
+	out := make([]string, 0, len(base)+len(spec.Env))
+	out = append(out, base...)
+	return append(out, envSlice(spec.Env)...)
 }
 
 func (m *Manager) prepare(ctx context.Context, file string, line int, symbol string) (*client, string, Position, error) {

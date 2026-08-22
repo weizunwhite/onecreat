@@ -9,6 +9,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,10 +18,13 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/account"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/engine"
 	"reasonix/internal/event"
+	"reasonix/internal/eventwire"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 )
@@ -58,13 +62,20 @@ func (s *Server) initTitleProvider() {
 	}
 	// 标题模型也走平台网关:否则这是全仓唯一绕过档位计量的 AI 调用点(纯网关部署里没有直连
 	// 厂商 key,还会 401)。非网关模式下 ApplyOnecreatGateway 是 no-op,行为不变。
-	boot.ApplyOnecreatGateway(entry)
+	// 账号取自会话自己的 controller,而不是进程环境变量 —— 两者必须是同一个账号。
+	gw := s.ctrl.Gateway()
+	boot.ApplyOnecreatGateway(entry, gw)
+	var creds account.CredentialSource = account.EnvCredential{Var: entry.APIKeyEnv}
+	if gw.Active() {
+		creds = gw
+	}
 	prov, err := provider.New(entry.Kind, provider.Config{
-		Name:    entry.Name,
-		BaseURL: entry.BaseURL,
-		Model:   entry.Model,
-		APIKey:  entry.APIKey(),
-		Extra:   map[string]any{"effort": "off"},
+		Name:        entry.Name,
+		BaseURL:     entry.BaseURL,
+		Model:       entry.Model,
+		Credentials: creds,
+		Gateway:     gw.Active(),
+		Extra:       map[string]any{"effort": "off"},
 	})
 	if err != nil {
 		return
@@ -92,6 +103,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /", s.index)
 	mux.HandleFunc("GET /events", s.events)
 	mux.HandleFunc("GET /history", s.history)
+	mux.HandleFunc("GET /snapshot", s.snapshot)
 	mux.HandleFunc("GET /context", s.context)
 	mux.HandleFunc("POST /submit", s.submit)
 	mux.HandleFunc("POST /cancel", s.cancel)
@@ -190,23 +202,64 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, unsubscribe := s.bc.Subscribe()
-	defer unsubscribe()
+	sub := s.bc.Subscribe()
+	defer s.bc.Unsubscribe(sub)
 
-	fmt.Fprint(w, ": connected\n\n") // open the stream immediately
+	// 开流时先告诉客户端"你是从第几号接上的"以及这是哪条流(AR-R07)。没有这一条,
+	// 客户端收到的第一个 sequence 是 7 还是 700 都无从判断 —— 它不知道自己错过了
+	// 前面 699 条,还是本来就只有 6 条。
+	fmt.Fprint(w, streamReadyFrame(s.bc.StreamID(), s.bc.Sequence()))
 	flusher.Flush()
 
 	for {
-		select {
-		case data, ok := <-ch:
+		// Drain everything queued before waiting again, so a burst is written in
+		// one pass rather than one wake-up per frame.
+		for {
+			f, ok := sub.TryNext()
 			if !ok {
+				break
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", f.Data); err != nil {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
+		}
+		// A client that cannot keep up with state-bearing frames is disconnected
+		// rather than served a stream with invisible holes: it reconnects and
+		// re-syncs from /history. Silently continuing is the one option Plan 10
+		// rules out.
+		if sub.Overflowed() {
+			fmt.Fprint(w, streamResetFrame(s.bc.Sequence()))
+			flusher.Flush()
+			return
+		}
+		select {
+		case <-sub.Wake():
 		case <-r.Context().Done():
 			return
 		}
+	}
+}
+
+// writeOpError 把控制层的错误映射成**语义正确**的状态码。
+//
+// 之前这些端点一律回 500。500 的含义是「服务器坏了,可以重试」—— 而对一个引擎干不了
+// 的操作,事实恰恰相反:重试多少次都一样。照状态码行事的客户端(重试队列、自动化脚本)
+// 会一直撞下去,真正的原因只在响应体的中文里。语义错的状态码,和不给原因差不太多。
+//
+// 两条必须分开(复核 AR-R02 的验收原话就是「明确 409/422」):
+//   - 引擎不支持 → 422:请求本身没问题,这个引擎处理不了,**别重试**;
+//   - 有回合在跑 → 409:是状态冲突,**待会儿可以再来**。
+func writeOpError(w http.ResponseWriter, err error) {
+	var unsupported *engine.UnsupportedError
+	var busy *control.BusyError
+	switch {
+	case errors.As(err, &unsupported):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	case errors.As(err, &busy):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
@@ -257,7 +310,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 	if err := s.ctrl.Compact(r.Context(), ""); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -265,7 +318,7 @@ func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newSession(w http.ResponseWriter, _ *http.Request) {
 	if err := s.ctrl.NewSession(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -283,6 +336,79 @@ func (s *Server) history(w http.ResponseWriter, _ *http.Request) {
 		out = append(out, msg{Role: string(m.Role), Content: m.Content})
 	}
 	writeJSON(w, out)
+}
+
+// streamReadyFrame 是开流时的第一帧:告诉客户端"你是从第几号接上的"以及这是哪条流。
+// 没有它,客户端收到的第一个 sequence 是 7 还是 700 都无从判断 —— 它不知道自己错过了
+// 前面 699 条,还是本来就只有 6 条(AR-R07)。
+func streamReadyFrame(streamID string, seq uint64) string {
+	return fmt.Sprintf("event: stream_ready\ndata: {%q:%q,%q:%d}\n\n",
+		"streamId", streamID, "sequence", seq)
+}
+
+// streamResetFrame 是把慢客户端断开时的最后一帧。
+//
+// 它指向 /snapshot 而**不是** /history:被丢掉的可能是 ApprovalRequest 或 TurnDone,
+// 而 /history 只有 transcript,对不齐这些"只出现过一次"的状态。带上 sequence,客户端
+// 才知道自己要对齐到哪儿。
+func streamResetFrame(seq uint64) string {
+	return fmt.Sprintf("event: stream_reset\ndata: {%q:%q,%q:%q,%q:%d}\n\n",
+		"reason", "client too slow", "resyncFrom", "/snapshot", "sequence", seq)
+}
+
+// snapshot 返回一份**权威状态**:客户端在任何时候都能用它把自己对齐回真相
+// (AR-R07)。
+//
+// 为什么必须有它:慢客户端积压过多状态帧时会被断开(`stream_reset`),重连之后
+// 只是接上了一条新的事件流 —— 它并不知道自己错过了什么。而错过的可能是
+// ApprovalRequest(于是审批永远不出现,agent 卡在没人看得见的提示上)或
+// TurnDone(于是 UI 永远转圈)。V2 的 sequence 让"有洞"这件事可被发现,但发现之后
+// 得有地方对齐,否则这个能力等于没用。
+//
+// 快照里必须**同时**有 transcript 和那些"只在事件里出现过一次"的状态:pending 的
+// 审批与提问、running、plan mode。只给 transcript 是不够的 —— 那正是原来 /history
+// 的缺口。
+//
+// sequence 是这份快照对应的截止序号:之后收到的第一条事件若不是 sequence+1,
+// 中间就有洞,客户端应当再取一次快照。
+func (s *Server) snapshot(w http.ResponseWriter, _ *http.Request) {
+	type msg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	// 每个切片都显式初始化为非 nil:空集合要编码成 [] 而不是 null,否则 JS 客户端
+	// 的 for...of 会抛 TypeError(E9 的教训)。
+	history := []msg{}
+	for _, m := range s.ctrl.History() {
+		history = append(history, msg{Role: string(m.Role), Content: m.Content})
+	}
+	approvals := s.ctrl.PendingApprovals()
+	if approvals == nil {
+		approvals = []event.Approval{}
+	}
+	asks := s.ctrl.PendingAsks()
+	if asks == nil {
+		asks = []event.Ask{}
+	}
+	// 能力表:前端据此禁用做不到的入口**并说明原因**,而不是让用户点下去撞一个
+	// 422。后端仍然独立校验(requireCap 在改任何状态之前)—— 这里给的是"显示原因"
+	// 所需的数据,不是那道门本身。UI 从来不是安全边界(复核 AR-R02)。
+	caps := map[string]bool{}
+	for _, c := range engine.All() {
+		caps[string(c)] = s.ctrl.Supports(c)
+	}
+	writeJSON(w, map[string]any{
+		"schemaVersion":    eventwire.SchemaVersion,
+		"streamId":         s.bc.StreamID(),
+		"sequence":         s.bc.Sequence(),
+		"engine":           s.ctrl.EngineName(),
+		"capabilities":     caps,
+		"history":          history,
+		"running":          s.ctrl.Running(),
+		"plan":             s.ctrl.PlanMode(),
+		"pendingApprovals": approvals,
+		"pendingAsks":      asks,
+	})
 }
 
 // context returns the prompt-vs-window gauge numbers.
@@ -371,7 +497,7 @@ func (s *Server) rewind(w http.ResponseWriter, r *http.Request) {
 		scope = control.RewindConversation
 	}
 	if err := s.ctrl.Rewind(body.Turn, scope); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -389,7 +515,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.ctrl.ForkNamed(body.Turn, body.Name)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"path": path})
@@ -416,7 +542,7 @@ func (s *Server) summarize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -473,7 +599,7 @@ func (s *Server) forget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.ctrl.ForgetMemory(body.Name); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -498,7 +624,7 @@ func (s *Server) checkpoints(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) branches(w http.ResponseWriter, _ *http.Request) {
 	branches, err := s.ctrl.Branches()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpError(w, err)
 		return
 	}
 	tree := s.ctrl.BranchTreeText()

@@ -34,6 +34,41 @@ func ConfineWriters(roots []string) []tool.Tool {
 	}
 }
 
+// ConfineWorkspace returns every built-in whose behaviour depends on which
+// project directory the run belongs to, bound to that workspace: the file
+// readers and writers, bash, and the directory/search tools. It is the
+// composition root's single call for "make these tools belong to this
+// workspace" — the caller adds the result to the per-run registry, replacing
+// the unconfined instances registered at init.
+//
+// workDir is the workspace root that relative path arguments resolve against
+// and that bash runs in; an empty workDir keeps the historical process-cwd
+// behaviour, so a process-scoped frontend (the CLI) gets byte-identical tools.
+// roots confines the writers (as ConfineWriters), bashSpec is the OS-sandbox
+// spec (as ConfineBash), and search selects the grep engine (as ConfineSearch).
+// env is the child environment bash hands its commands — the workspace's `.env`
+// overlay reaches subprocesses only through it (复核 C1);nil 继承进程环境。
+//
+// Only path resolution moves here: confinement, sandboxing and engine selection
+// keep the exact semantics of the three narrower helpers below, which remain for
+// callers that have no workspace of their own.
+func ConfineWorkspace(workDir string, roots []string, bashSpec sandbox.Spec, search SearchSpec, env []string) []tool.Tool {
+	rs := realRoots(roots)
+	return []tool.Tool{
+		readFile{workDir: workDir},
+		writeFile{workDir: workDir, roots: rs},
+		editFile{workDir: workDir, roots: rs},
+		multiEdit{workDir: workDir, roots: rs},
+		notebookEdit{workDir: workDir, roots: rs},
+		deleteRange{workDir: workDir, roots: rs},
+		deleteSymbol{workDir: workDir, roots: rs},
+		bash{workDir: workDir, sb: bashSpec, shell: sandbox.ResolveShell(), env: env},
+		listDir{workDir: workDir},
+		globTool{workDir: workDir},
+		grepTool{workDir: workDir, rg: search.RgPath},
+	}
+}
+
 // realRoots resolves each root to an absolute, symlink-free path, dropping any
 // that cannot be made absolute. Resolving here (once) means the per-call check
 // only has to resolve the target.

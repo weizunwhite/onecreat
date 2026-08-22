@@ -1,149 +1,102 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"reasonix/internal/session"
 )
 
-// --- loadSessionTitles ---
+// 这些测试针对的是「历史面板看到的行为」,而不是存储实现 —— 存储的不变量由
+// internal/session 自己的测试覆盖。Plan 11 之前这里还测四份侧车文件的 load/save
+// 样板,那些函数已经不存在了。
 
-func TestLoadSessionTitlesMissing(t *testing.T) {
-	dir := t.TempDir()
-	m := loadSessionTitles(dir)
-	if len(m) != 0 {
-		t.Errorf("missing file should return empty map, got %v", m)
-	}
+func titleOf(t *testing.T, r *session.Registry, path string) string {
+	t.Helper()
+	rec, _ := r.ByStore(path)
+	return rec.Title
 }
-
-func TestLoadSessionTitlesCorrupt(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(sessionTitlesPath(dir), []byte(`{not json`), 0o644)
-	m := loadSessionTitles(dir)
-	if len(m) != 0 {
-		t.Errorf("corrupt file should return empty map, got %v", m)
-	}
-}
-
-func TestLoadSessionTitlesValid(t *testing.T) {
-	dir := t.TempDir()
-	data := map[string]string{"session-1.jsonl": "My Session", "session-2.jsonl": "Another"}
-	b, _ := json.Marshal(data)
-	os.WriteFile(sessionTitlesPath(dir), b, 0o644)
-	m := loadSessionTitles(dir)
-	if m["session-1.jsonl"] != "My Session" || m["session-2.jsonl"] != "Another" {
-		t.Errorf("loaded = %v", m)
-	}
-}
-
-// --- saveSessionTitles ---
-
-func TestSaveSessionTitlesCreatesDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "nested", "sessions")
-	m := map[string]string{"a.jsonl": "title A"}
-	if err := saveSessionTitles(dir, m); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	// Verify file exists and is valid JSON.
-	b, err := os.ReadFile(sessionTitlesPath(dir))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	var decoded map[string]string
-	if err := json.Unmarshal(b, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded["a.jsonl"] != "title A" {
-		t.Errorf("decoded = %v", decoded)
-	}
-}
-
-func TestSaveSessionTitlesRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	original := map[string]string{"s1.jsonl": "First", "s2.jsonl": "Second"}
-	if err := saveSessionTitles(dir, original); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	loaded := loadSessionTitles(dir)
-	if loaded["s1.jsonl"] != "First" || loaded["s2.jsonl"] != "Second" {
-		t.Errorf("round-trip = %v", loaded)
-	}
-}
-
-// --- setSessionTitle ---
 
 func TestSetSessionTitle(t *testing.T) {
 	dir := t.TempDir()
+	r := session.Open(dir)
 	sessionPath := filepath.Join(dir, "my-session.jsonl")
 
-	// Set a title.
-	if err := setSessionTitle(dir, sessionPath, "Custom Title"); err != nil {
+	if err := setSessionTitle(r, sessionPath, "Custom Title"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	m := loadSessionTitles(dir)
-	if m["my-session.jsonl"] != "Custom Title" {
-		t.Errorf("title = %q", m["my-session.jsonl"])
+	if got := titleOf(t, r, sessionPath); got != "Custom Title" {
+		t.Errorf("title = %q", got)
 	}
 
-	// Clear the title (empty string).
-	if err := setSessionTitle(dir, sessionPath, ""); err != nil {
+	// Clearing with an empty string drops the custom name (the preview takes over).
+	if err := setSessionTitle(r, sessionPath, ""); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	m = loadSessionTitles(dir)
-	if _, ok := m["my-session.jsonl"]; ok {
-		t.Error("cleared title should be removed from map")
+	if got := titleOf(t, r, sessionPath); got != "" {
+		t.Errorf("cleared title should be empty, got %q", got)
 	}
 }
 
 func TestSetSessionTitleTrimsWhitespace(t *testing.T) {
 	dir := t.TempDir()
+	r := session.Open(dir)
 	sessionPath := filepath.Join(dir, "s.jsonl")
-	if err := setSessionTitle(dir, sessionPath, "  trimmed  "); err != nil {
+	if err := setSessionTitle(r, sessionPath, "  trimmed  "); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	m := loadSessionTitles(dir)
-	if m["s.jsonl"] != "trimmed" {
-		t.Errorf("title = %q, want trimmed", m["s.jsonl"])
+	if got := titleOf(t, r, sessionPath); got != "trimmed" {
+		t.Errorf("title = %q, want trimmed", got)
 	}
 }
 
-// --- deleteSessionFile ---
-
+// TestDeleteSessionFile: one call removes both halves — the engine's transcript
+// and OneCreat's record of it. Before Plan 11 this was four read-modify-writes
+// across four sidecar files, and forgetting one left orphan metadata behind.
 func TestDeleteSessionFile(t *testing.T) {
 	dir := t.TempDir()
+	r := session.Open(dir)
 	sessionPath := filepath.Join(dir, "session.jsonl")
-	os.WriteFile(sessionPath, []byte("data"), 0o644)
+	if err := os.WriteFile(sessionPath, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	// Set a title first.
-	setSessionTitle(dir, sessionPath, "My Title")
-	if err := recordSessionDisplay(dir, sessionPath, "expanded prompt", "[Pasted text #1 · 5 lines]"); err != nil {
+	if err := setSessionTitle(r, sessionPath, "My Title"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberSessionCwd(r, sessionPath, "/proj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberSessionKind(r, sessionPath, "hardware"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordSessionDisplay(r, sessionPath, "expanded prompt", "[Pasted text #1 · 5 lines]"); err != nil {
 		t.Fatalf("record display: %v", err)
 	}
 
-	if err := deleteSessionFile(dir, sessionPath); err != nil {
+	if err := deleteSessionFile(r, sessionPath); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	// File should be gone.
 	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
 		t.Error("session file should be deleted")
 	}
-	// Title should be gone.
-	m := loadSessionTitles(dir)
-	if _, ok := m["session.jsonl"]; ok {
-		t.Error("title should be removed after delete")
+	if _, ok := r.ByStore(sessionPath); ok {
+		t.Error("the session record should be gone too")
 	}
-	if got := resolveSessionDisplay(dir, sessionPath, "expanded prompt"); got != "expanded prompt" {
-		t.Errorf("display sidecar should be removed after delete, got %q", got)
+	if got := resolveSessionDisplay(r, sessionPath, "expanded prompt"); got != "expanded prompt" {
+		t.Errorf("display mapping should be gone after delete, got %q", got)
 	}
 }
 
-func TestDeleteSessionFileNoTitle(t *testing.T) {
+func TestDeleteSessionFileNoMetadata(t *testing.T) {
 	dir := t.TempDir()
+	r := session.Open(dir)
 	sessionPath := filepath.Join(dir, "no-title.jsonl")
-	os.WriteFile(sessionPath, []byte("data"), 0o644)
-
-	if err := deleteSessionFile(dir, sessionPath); err != nil {
+	if err := os.WriteFile(sessionPath, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteSessionFile(r, sessionPath); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
@@ -153,23 +106,44 @@ func TestDeleteSessionFileNoTitle(t *testing.T) {
 
 func TestDeleteSessionFileMissing(t *testing.T) {
 	dir := t.TempDir()
+	r := session.Open(dir)
 	// Deleting a non-existent file should not error.
-	if err := deleteSessionFile(dir, filepath.Join(dir, "missing.jsonl")); err != nil {
+	if err := deleteSessionFile(r, filepath.Join(dir, "missing.jsonl")); err != nil {
 		t.Fatalf("delete missing: %v", err)
 	}
 }
 
-// --- sessionTitlesPath ---
+// TestSessionMetadataIsOneRecord: title, project and vertical used to live in
+// three separate files. They are one record now, and the history panel reads all
+// of it in a single lookup.
+func TestSessionMetadataIsOneRecord(t *testing.T) {
+	dir := t.TempDir()
+	r := session.Open(dir)
+	sessionPath := filepath.Join(dir, "s.jsonl")
+	if err := rememberSessionCwd(r, sessionPath, "/proj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberSessionKind(r, sessionPath, "hardware"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setSessionTitle(r, sessionPath, "named"); err != nil {
+		t.Fatal(err)
+	}
 
-func TestSessionTitlesPath(t *testing.T) {
-	got := sessionTitlesPath("/sessions")
-	want := filepath.Join("/sessions", ".titles.json")
-	if got != want {
-		t.Errorf("sessionTitlesPath = %q, want %q", got, want)
+	rec, ok := r.ByStore(sessionPath)
+	if !ok {
+		t.Fatal("no record")
+	}
+	if rec.Title != "named" || rec.Workspace != "/proj" || rec.Kind != "hardware" {
+		t.Fatalf("record lost a field: %+v", rec)
+	}
+	if rec.Engine != session.EngineNative {
+		t.Errorf("engine = %q, want %q — a store reference must never be guessed at", rec.Engine, session.EngineNative)
+	}
+	if rec.ID == "" {
+		t.Error("a session must have an identity of its own, not just a filename")
 	}
 }
-
-// --- errActiveSession ---
 
 func TestErrActiveSession(t *testing.T) {
 	if errActiveSession.Error() == "" {
@@ -179,27 +153,29 @@ func TestErrActiveSession(t *testing.T) {
 
 func TestSessionDisplayRoundTrip(t *testing.T) {
 	dir := t.TempDir()
+	r := session.Open(dir)
 	sessionPath := filepath.Join(dir, "s.jsonl")
 	content := "prefix\n--- Begin [Pasted text #1 · 5 lines] ---\nfull text\n--- End [Pasted text #1 · 5 lines] ---"
 	display := "[Pasted text #1 · 5 lines]"
-	if err := recordSessionDisplay(dir, sessionPath, content, display); err != nil {
+	if err := recordSessionDisplay(r, sessionPath, content, display); err != nil {
 		t.Fatalf("record display: %v", err)
 	}
-	if got := resolveSessionDisplay(dir, sessionPath, content); got != display {
+	if got := resolveSessionDisplay(r, sessionPath, content); got != display {
 		t.Fatalf("display = %q, want %q", got, display)
 	}
-	if got := resolveSessionDisplay(dir, sessionPath, "other"); got != "other" {
+	if got := resolveSessionDisplay(r, sessionPath, "other"); got != "other" {
 		t.Fatalf("unknown content should pass through, got %q", got)
 	}
 }
 
 func TestRecordSessionDisplaySkipsNoop(t *testing.T) {
 	dir := t.TempDir()
+	r := session.Open(dir)
 	sessionPath := filepath.Join(dir, "s.jsonl")
-	if err := recordSessionDisplay(dir, sessionPath, "same", "same"); err != nil {
+	if err := recordSessionDisplay(r, sessionPath, "same", "same"); err != nil {
 		t.Fatalf("record display: %v", err)
 	}
-	if _, err := os.Stat(sessionDisplayPath(dir)); !os.IsNotExist(err) {
-		t.Fatalf("noop display should not create sidecar, stat err = %v", err)
+	if _, err := os.Stat(filepath.Join(dir, session.IndexFile)); !os.IsNotExist(err) {
+		t.Fatalf("a no-op display should not create a record, stat err = %v", err)
 	}
 }

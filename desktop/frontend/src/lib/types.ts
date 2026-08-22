@@ -16,7 +16,8 @@ export type EventKind =
   | "ask_request"
   | "turn_done"
   | "compaction_started"
-  | "compaction_done";
+  | "compaction_done"
+  | "mcp_surface_ready";
 
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"
@@ -82,6 +83,21 @@ export interface QuestionAnswer {
 }
 
 export interface WireEvent {
+  // --- 信封(Event Protocol V2,见 internal/eventwire)-------------------------
+  //
+  // 每帧带足够的身份信息,让客户端能判断「我是不是漏了东西」:sequence 逐条递增且
+  // 无洞,跳号就说明这条流丢过帧;durable 说明丢掉的那些【可能】是什么 —— 只可能
+  // 是渲染增量,状态帧服务端保证不丢(丢不动就直接断开让你重连对齐)。
+  //
+  // 全部可选:Wails 直推的帧同样带,但旧版前端忽略它们也能正常工作。
+  schemaVersion?: number;
+  eventId?: string;
+  sequence?: number;
+  sessionId?: string;
+  tabId?: string;
+  timestamp?: string;
+  durable?: boolean;
+
   kind: EventKind;
   text?: string;
   reasoning?: string;
@@ -123,7 +139,10 @@ export interface SessionMeta {
   kind?: string; // 会话类型(如 "hardware");空=普通对话。历史侧栏据此区分垂直
 }
 
-export interface WorkspaceView {
+// WorkspaceMeta 与 Go 侧 desktop.WorkspaceMeta 同名同形:生成的 AppBindings 直接按
+// Go 类型名引用它,名字对不上会在生成/编译时就暴露(过去这里叫 WorkspaceView,
+// 手抄的接口把它悄悄改了名,两边靠人记着对应关系)。
+export interface WorkspaceMeta {
   path: string;
   name: string;
   current: boolean;

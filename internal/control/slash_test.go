@@ -1,6 +1,7 @@
 package control
 
 import (
+	"reasonix/internal/account"
 	"strings"
 	"testing"
 
@@ -25,8 +26,10 @@ func has(items []SlashItem, label string) bool {
 }
 
 func TestModelListTextHidesModelsInGatewayMode(t *testing.T) {
-	t.Setenv("ONECREAT_GATEWAY_URL", "https://t.example.com/api/onecreat/v1")
-	c := New(Options{Label: "deepseek-flash/deepseek-v4-flash"})
+	// 账号是显式对象,不再靠进程环境变量传播(Plan 09)。
+	gw := &account.Gateway{}
+	gw.SetSession("https://t.example.com/api/onecreat/v1", "tok", "tier-1")
+	c := New(Options{Label: "deepseek-flash/deepseek-v4-flash", Gateway: gw})
 	got := c.modelListText()
 	if strings.Contains(strings.ToLower(got), "deepseek") || strings.Contains(got, "deepseek-v4-flash") {
 		t.Fatalf("gateway model list should not expose real model: %q", got)

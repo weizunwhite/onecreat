@@ -30,12 +30,10 @@ func TestConversationRewindAfterCompactionFails(t *testing.T) {
 			}
 		}),
 	})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
 	// 记录 turn 1 的对话边界(消息下标 1,即 "first answer" 之前)。
-	c.mu.Lock()
-	c.cpBound[1] = 1
-	c.mu.Unlock()
+	c.ckpt.seedBound(1, 1)
 
 	// 压缩前:rewind 能成功截断到下标 1。
 	if err := c.Rewind(1, RewindConversation); err != nil {
@@ -46,9 +44,7 @@ func TestConversationRewindAfterCompactionFails(t *testing.T) {
 	}
 
 	// 重新建立一个边界,然后模拟一次压缩(自动/手动压缩都经 onCompact → 此方法)。
-	c.mu.Lock()
-	c.cpBound[2] = 1
-	c.mu.Unlock()
+	c.ckpt.seedBound(2, 1)
 	c.InvalidateCheckpoints()
 
 	notices = notices[:0]
@@ -78,11 +74,9 @@ func TestConversationRewindStaleBoundaryReportsFailure(t *testing.T) {
 			}
 		}),
 	})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
-	c.mu.Lock()
-	c.cpBound[1] = 99 // 越界:远大于当前消息数
-	c.mu.Unlock()
+	c.ckpt.seedBound(1, 99) // 越界:远大于当前消息数
 
 	if err := c.Rewind(1, RewindConversation); err == nil {
 		t.Fatal("rewind with out-of-range boundary must fail")
@@ -103,22 +97,20 @@ func TestConversationRewindPrunesAbandonedCheckpoints(t *testing.T) {
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "p1"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	c := New(Options{Executor: exec, SessionDir: t.TempDir(), Label: "test", Sink: event.Discard})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
 	// 造 turn 0 / turn 1 的 checkpoint + 对话边界。
-	c.cp.Begin(0, "t0", 0)
-	c.cp.Begin(1, "t1", 2)
-	c.mu.Lock()
-	c.cpTurn = 2
-	c.cpBound[0] = 0
-	c.cpBound[1] = 2
-	c.mu.Unlock()
+	c.ckpt.storeForTest().Begin(0, "t0", 0)
+	c.ckpt.storeForTest().Begin(1, "t1", 2)
+	c.ckpt.setTurn(2)
+	c.ckpt.seedBound(0, 0)
+	c.ckpt.seedBound(1, 2)
 
 	if err := c.Rewind(1, RewindConversation); err != nil {
 		t.Fatalf("rewind: %v", err)
 	}
 	// turn>=1 的 checkpoint 应已被 Prune,不再残留污染。
-	for _, m := range c.cp.List() {
+	for _, m := range c.ckpt.storeForTest().List() {
 		if m.Turn >= 1 {
 			t.Fatalf("rewind 到 turn 1 后 turn>=1 的 checkpoint 应被清除,仍有 turn %d", m.Turn)
 		}
@@ -138,17 +130,15 @@ func TestCompactionBoundsInvalidationSurvivesResume(t *testing.T) {
 	c.SetSessionPath(path)
 
 	// turn 0 的对话边界(经 checkpoint store 持久化到磁盘)。
-	c.cp.Begin(0, "t0", 1)
-	c.mu.Lock()
-	c.cpTurn = 1
-	c.cpBound[0] = 1
-	c.mu.Unlock()
+	c.ckpt.storeForTest().Begin(0, "t0", 1)
+	c.ckpt.setTurn(1)
+	c.ckpt.seedBound(0, 1)
 
 	// 压缩失效边界(threshold=cpTurn=1;turn 0 < 1 → 陈旧),并把 marker 持久化。
 	c.InvalidateCheckpoints()
 
 	// 模拟 resume:同一 session 路径重新 rebind(新建 store 从磁盘加载 checkpoint + marker)。
-	c.rebindCheckpoints(path)
+	c.ckpt.Rebind(path)
 
 	// turn 0 的陈旧边界不应被复活;对它做对话 rewind 必须失败,而不是静默成功切到错误位置。
 	if err := c.Rewind(0, RewindConversation); err == nil {
@@ -173,11 +163,9 @@ func TestSummarizeBoundsInvalidationSurvivesResume(t *testing.T) {
 	c.SetSessionPath(path)
 
 	// turn 0 的对话边界(经 checkpoint store 持久化到磁盘)。boundary=2 → "从这轮之后总结"。
-	c.cp.Begin(0, "t0", 2)
-	c.mu.Lock()
-	c.cpTurn = 1
-	c.cpBound[0] = 2
-	c.mu.Unlock()
+	c.ckpt.storeForTest().Begin(0, "t0", 2)
+	c.ckpt.setTurn(1)
+	c.ckpt.seedBound(0, 2)
 
 	// SummarizeFrom 原地重写日志,应像压缩一样把边界失效持久化。
 	if err := c.SummarizeFrom(context.Background(), 0); err != nil {
@@ -185,7 +173,7 @@ func TestSummarizeBoundsInvalidationSurvivesResume(t *testing.T) {
 	}
 
 	// 模拟 resume:同一 session 路径重新 rebind(新建 store 从磁盘加载 checkpoint + marker)。
-	c.rebindCheckpoints(path)
+	c.ckpt.Rebind(path)
 
 	// turn 0 的陈旧边界不应被复活;对它做对话 rewind 必须失败,而不是静默成功切到错误位置。
 	if err := c.Rewind(0, RewindConversation); err == nil {
@@ -206,7 +194,7 @@ func TestCheckpointsConcurrentWithRebindNoRace(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 200; i++ {
-			c.SetSessionPath(path) // 每次都在 c.mu 下替换 c.cp 指针
+			c.SetSessionPath(path) // 每次都换 checkpoint store 指针
 		}
 		close(done)
 	}()

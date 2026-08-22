@@ -9,14 +9,12 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
-	"reasonix/internal/diff"
 	"reasonix/internal/event"
-	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
-	"reasonix/internal/memory"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
+	"reasonix/internal/toolpolicy"
 )
 
 // maxToolOutputBytes caps a single tool result before it goes into the model's
@@ -73,16 +71,11 @@ func CallContext(ctx context.Context) (parentID string, sink event.Sink, asker A
 	return cc.parentID, cc.sink, cc.asker, true
 }
 
-// Gate decides, per tool call, whether it may run. The agent consults it at
-// execute time (after the plan-mode gate). It is interface-shaped so the agent
-// stays independent of the permission package and of how "ask" is resolved
-// (silently in headless runs, interactively in the chat TUI). A nil gate means
-// no gating — every call runs, preserving behaviour for callers that don't wire
-// one in. reason is fed back to the model when allow is false; a non-nil err
-// (e.g. ctx cancelled awaiting approval) is treated as a block for that call.
-type Gate interface {
-	Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (allow bool, reason string, err error)
-}
+// Gate decides, per tool call, whether it may run. It is an alias for the policy
+// package's type, not a second declaration: the gate is product policy, and the
+// engine only knows it through toolpolicy. The alias keeps the long-standing
+// agent.Gate name working for every caller.
+type Gate = toolpolicy.Gate
 
 // ToolHooks fires user-configured shell hooks around each tool call. PreToolUse
 // runs before the call and may block it (block=true; message is the reason fed
@@ -137,31 +130,22 @@ type Agent struct {
 	sessCacheHit  atomic.Int64
 	sessCacheMiss atomic.Int64
 
-	// planMode, when true, refuses any tool call whose ReadOnly() is false.
-	// The system prompt and tool list never change with the toggle so the
-	// prompt-cache prefix stays valid; the gating happens at execute time
-	// and the model sees a "blocked" result it can adapt to. Toggled from
-	// the outside via SetPlanMode.
-	planMode atomic.Bool
+	// policy is OneCreat's product policy around each tool call — plan mode, the
+	// permission gate, PreToolUse/PostToolUse hooks, the checkpoint seam, the
+	// evidence ledger, and the job/memory handles a tool reaches through its
+	// context. It lives in its own package (internal/toolpolicy) precisely so it
+	// is not welded to this loop: a second engine gets the same behaviour by
+	// calling Before/After around its own execution (Plan 08 / A05).
+	policy *toolpolicy.Pipeline
 
-	// gate, when non-nil, is the per-call permission gate consulted after the
-	// plan-mode check. nil disables gating entirely.
-	gate Gate
-
-	// hooks, when non-nil, fires PreToolUse / PostToolUse shell hooks around each
-	// tool call. nil disables hook firing.
+	// hooks, when non-nil, fires the hooks that bracket a *model turn* rather than
+	// a tool call — PostLLMCall and PreCompact. The tool-call hooks are the
+	// pipeline's; both point at the same runner. nil disables hook firing.
 	hooks ToolHooks
 
 	// asker, when non-nil, lets the `ask` tool put questions to the user. nil in
 	// headless runs (no interactive user). Set via SetAsker.
 	asker Asker
-
-	// onPreEdit, when non-nil, is called with a writer tool's previewed change
-	// just before it runs — the seam the checkpoint store uses to snapshot a
-	// file's pre-edit content. Only fires for non-ReadOnly tools that implement
-	// tool.Previewer (so bash, whose targets are unknowable, is never tracked).
-	// Set via SetPreEditHook.
-	onPreEdit func(diff.Change)
 
 	// onCompact, when non-nil, fires after compact() rewrites the message log
 	// in place (auto-compaction or manual /compact). The controller uses it to
@@ -169,21 +153,6 @@ type Agent struct {
 	// message indices and stale boundaries would make rewind/fork cut at the
 	// wrong place. Set via SetOnCompact.
 	onCompact func()
-
-	// jobs, when non-nil, is the session's background-job manager. executeOne
-	// stamps it onto each tool call's context so the background tools (bash
-	// run_in_background, task run_in_background, bash_output/kill_shell/wait) can
-	// reach it. nil leaves those tools to degrade gracefully.
-	jobs *jobs.Manager
-
-	// evidence is a per-user-turn ledger of host-observed tool receipts. It lets
-	// complete_step validate that cited evidence happened before the claim.
-	evidence *evidence.Ledger
-
-	// memQueue, when non-nil, lets the remember/forget tools fold a turn-tail note
-	// about a just-made memory change into the next turn, so it applies this
-	// session without touching the cache-stable prefix. Set via SetMemoryQueue.
-	memQueue memory.Queue
 
 	// Context management: when a turn's prompt nears contextWindow, the older
 	// middle of the session is summarized away, keeping a token-bounded recent
@@ -215,7 +184,7 @@ type Agent struct {
 // non-ReadOnly tool the model calls and returns a "blocked" result instead of
 // running it. The cache-friendly bits — system prompt, tools schema, message
 // history — are left untouched, so the toggle costs nothing in cache hits.
-func (a *Agent) SetPlanMode(v bool) { a.planMode.Store(v) }
+func (a *Agent) SetPlanMode(v bool) { a.policy.SetPlanMode(v) }
 
 // SetGate installs the per-call permission gate. Used by `reasonix chat` to swap the
 // headless gate built in setup for an interactive one that prompts the user;
@@ -224,20 +193,18 @@ func (a *Agent) SetGate(g Gate) {
 	if nilutil.IsNil(g) {
 		g = nil
 	}
-	a.gate = g
+	a.policy.Gate = g
 }
 
 // SetAsker installs the asker the `ask` tool uses to question the user.
 // Interactive frontends wire one in; headless runs leave it nil.
 func (a *Agent) SetAsker(as Asker) { a.asker = as }
 
-// SetMemoryQueue installs the sink the remember/forget tools use to apply a
-// memory change in the current session. The controller wires itself in.
-func (a *Agent) SetMemoryQueue(q memory.Queue) { a.memQueue = q }
-
-// SetPreEditHook installs the pre-edit snapshot hook (see onPreEdit). The
-// controller wires it to its per-session checkpoint store; nil disables capture.
-func (a *Agent) SetPreEditHook(fn func(diff.Change)) { a.onPreEdit = fn }
+// Policy exposes the session's tool-call policy so the composition root can wire
+// the seams it owns — the checkpoint pre-edit hook and the memory queue. The
+// pipeline is created with the agent and never replaced, so a caller sets fields
+// on it at construction, before any turn runs.
+func (a *Agent) Policy() *toolpolicy.Pipeline { return a.policy }
 
 // SetOnCompact installs the post-compaction callback (see onCompact). Set once at
 // construction; not safe to change concurrently with a running turn.
@@ -248,10 +215,6 @@ func (a *Agent) SetOnCompact(fn func()) { a.onCompact = fn }
 // pointer read against SetSession, so a frontend (serve's concurrent /history and
 // /new handlers) can't race the swap. The run loop touches a.session directly and
 // only swaps it via SetSession while idle, so its reads need no lock.
-// Evidence 返回本 agent 的证据账本。dsh 引擎复用同一个账本:它消费 sidecar 的
-// 工具事件流往里记账,Go 侧的 complete_step 再从账本里裁定"这一步到底做没做"。
-func (a *Agent) Evidence() *evidence.Ledger { return a.evidence }
-
 func (a *Agent) Session() *Session {
 	a.sessMu.Lock()
 	defer a.sessMu.Unlock()
@@ -343,18 +306,22 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if nilutil.IsNil(hooks) {
 		hooks = nil
 	}
+	var callHooks toolpolicy.Hooks
+	if hooks != nil {
+		callHooks = hooks
+	}
 	return &Agent{
-		prov:          prov,
-		tools:         tools,
-		session:       session,
-		maxSteps:      opts.MaxSteps,
-		temperature:   opts.Temperature,
-		pricing:       opts.Pricing,
-		sink:          sink,
-		gate:          gate,
-		hooks:         hooks,
-		jobs:          opts.Jobs,
-		evidence:      evidence.NewLedger(),
+		prov:        prov,
+		tools:       tools,
+		session:     session,
+		maxSteps:    opts.MaxSteps,
+		temperature: opts.Temperature,
+		pricing:     opts.Pricing,
+		sink:        sink,
+		hooks:       hooks,
+		// Every product-side decision about a tool call lives in this one object,
+		// so the loop below only has to ask "may I?" and "here is what happened".
+		policy:        toolpolicy.New(gate, callHooks, opts.Jobs),
 		contextWindow: opts.ContextWindow,
 		compactRatio:  opts.CompactRatio,
 		recentKeep:    opts.RecentKeep,
@@ -369,9 +336,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 // a round count. A positive maxSteps imposes an optional hard guard, surfaced as
 // a resumable notice when hit.
 func (a *Agent) Run(ctx context.Context, input string) error {
-	if a.evidence != nil {
-		a.evidence.Reset()
-	}
+	a.policy.ResetTurn()
 	a.sink.Emit(event.Event{Kind: event.TurnStarted})
 	a.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
 
@@ -413,7 +378,7 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 			// round to either finish the work or true-up the list. Must happen
 			// inside this loop — a fresh Run() resets the evidence ledger, which
 			// would strip the complete_step receipts the true-up needs.
-			if reminder, ok := a.todoReconcileReminder(todoReminded); ok {
+			if reminder, ok := a.policy.EndOfTurnReminder(todoReminded); ok {
 				todoReminded = true
 				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 					Text: "待办清单还有未完成项 — 已提醒模型对账后再收尾"})
@@ -441,49 +406,6 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
 	return fmt.Errorf("paused after %d tool-call rounds (agent.max_steps) — the work so far is saved; send another message to continue, or set max_steps higher or to 0 for no limit", a.maxSteps)
-}
-
-// todoReconcileReminder decides whether the run may end, given the todo list's
-// state. It returns (reminder, true) when this turn's latest successful
-// todo_write still has pending/in_progress items and no reminder was sent yet;
-// the caller injects the reminder as a user message and runs one more round.
-// Scoped to this turn's ledger on purpose: a turn that never touched the todo
-// list made no progress claim, so ending it with an old list on screen is the
-// user's call to follow up on, not the harness's to nag about.
-func (a *Agent) todoReconcileReminder(alreadyReminded bool) (string, bool) {
-	if alreadyReminded || a.evidence == nil {
-		return "", false
-	}
-	todos, ok := a.evidence.LatestTodos()
-	if !ok {
-		return "", false
-	}
-	var unfinished []string
-	for i, t := range todos {
-		if t.Status == "completed" {
-			continue
-		}
-		unfinished = append(unfinished, fmt.Sprintf("  %d. [%s] %s", i+1, nonEmptyStatus(t.Status), t.Content))
-	}
-	if len(unfinished) == 0 {
-		return "", false
-	}
-	return fmt.Sprintf(`[系统对账提醒] 你准备结束回合,但 todo 清单还有 %d 项未标记完成:
-%s
-
-逐项核对实际进度,然后再收尾:
-- 已经真正做完的项:先用 complete_step 签收(引用本轮真实运行过的验证命令或改动过的文件作为证据),再用 todo_write 把该项标为 completed。
-- 还没做的项:现在继续完成它;如果本轮确实无法完成或已无必要,保持 pending,并在最终回复里向用户说明原因。
-不要在没有证据的情况下批量标记 completed。对完账后给出最终回复。`,
-		len(unfinished), strings.Join(unfinished, "\n")), true
-}
-
-// nonEmptyStatus maps the schema's "empty means pending" onto a display word.
-func nonEmptyStatus(s string) string {
-	if s == "" {
-		return "pending"
-	}
-	return s
 }
 
 // stream runs one completion, emitting reasoning and text deltas as typed
@@ -780,93 +702,41 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			errMsg: fmt.Sprintf("unknown tool %q", call.Name),
 		}
 	}
-	if a.planMode.Load() && !t.ReadOnly() {
-		return toolOutcome{
-			output:  fmt.Sprintf("blocked: %q is a writer tool and plan mode is read-only. Keep exploring with read-only tools, then write your plan as your reply — the user will be asked to approve it before any changes are made.", call.Name),
-			blocked: true,
-			errMsg:  "blocked: plan mode is read-only",
-		}
+	pc := toolpolicy.Call{ID: call.ID, Name: call.Name, Args: json.RawMessage(call.Arguments), ReadOnly: t.ReadOnly()}
+	// Only a tool that can describe its change is checkpointable; bash, whose
+	// targets are unknowable, exposes no Previewer and is never snapshotted.
+	if pv, ok := t.(tool.Previewer); ok {
+		pc.Preview = pv.Preview
 	}
-	if a.gate != nil {
-		allow, reason, err := a.gate.Check(ctx, call.Name, json.RawMessage(call.Arguments), t.ReadOnly())
-		if err != nil {
-			return toolOutcome{
-				output:  fmt.Sprintf("blocked: %s (%v)", reason, err),
-				blocked: true,
-				errMsg:  fmt.Sprintf("blocked: %v", err),
-			}
-		}
-		if !allow {
-			return toolOutcome{
-				output:  "blocked: " + reason,
-				blocked: true,
-				errMsg:  "blocked by permission policy",
-			}
-		}
+
+	// Everything OneCreat adds around a call — plan mode, permissions, hooks,
+	// checkpoints, the ledger, the job/memory handles — happens here.
+	cctx, block := a.policy.Before(ctx, pc)
+	if block != nil {
+		return toolOutcome{output: block.Output, blocked: true, errMsg: block.Reason}
 	}
-	// PreToolUse hooks run after permission is granted but before the call: a
-	// gating hook (exit 2) refuses it, surfaced to the model like a gate denial.
-	if a.hooks != nil {
-		if block, msg := a.hooks.PreToolUse(ctx, call.Name, json.RawMessage(call.Arguments)); block {
-			if msg == "" {
-				msg = "blocked by a PreToolUse hook"
-			}
-			return toolOutcome{
-				output:  "blocked: " + msg,
-				blocked: true,
-				errMsg:  "blocked by PreToolUse hook",
-			}
-		}
-	}
-	// Checkpoint the file this writer is about to change, so the turn can be
-	// rewound. Fires after all gating (the edit is cleared to run) and only for
-	// tools that can describe their change; a Preview error means the edit will
-	// likely fail anyway, so we skip rather than snapshot a stale state.
-	if a.onPreEdit != nil && !t.ReadOnly() {
-		if pv, ok := t.(tool.Previewer); ok {
-			if change, perr := pv.Preview(json.RawMessage(call.Arguments)); perr == nil {
-				a.onPreEdit(change)
-			}
-		}
-	}
-	cctx := withCallContext(ctx, call.ID, a.sink, a.asker)
-	if a.evidence != nil {
-		cctx = evidence.WithLedger(cctx, a.evidence)
-	}
-	if a.jobs != nil {
-		cctx = jobs.WithManager(cctx, a.jobs)
-	}
-	if a.memQueue != nil {
-		cctx = memory.WithQueue(cctx, a.memQueue)
-	}
+
+	// The engine's own per-call plumbing: identity, the event sink a nested
+	// sub-agent reports through, the asker the `ask` tool reaches, and the
+	// progress callback that streams partial output.
+	cctx = withCallContext(cctx, call.ID, a.sink, a.asker)
 	callID := call.ID
 	cctx = tool.WithProgress(cctx, func(chunk string) {
 		a.sink.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: callID, Output: chunk}})
 	})
+
 	result, err := t.Execute(cctx, json.RawMessage(call.Arguments))
-	if a.evidence != nil {
-		if call.Name == "complete_step" {
-			if err == nil {
-				a.evidence.Record(evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), true, t.ReadOnly()))
-			}
-		} else {
-			a.evidence.Record(evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, t.ReadOnly()))
-		}
-	}
-	// PostToolUse hooks observe the result (they can't block); fired whether the
-	// call succeeded or errored, since the tool did run.
-	if a.hooks != nil {
-		a.hooks.PostToolUse(ctx, call.Name, json.RawMessage(call.Arguments), result)
-	}
+	a.policy.After(ctx, pc, result, err)
+
 	if err != nil {
 		body, truncMsg := truncateToolOutput(fmt.Sprintf("error: %v\n%s", err, result), toolOutputLimit(call.Name))
 		return toolOutcome{output: body, errMsg: firstLine(err.Error()), truncated: truncMsg != "", truncMsg: truncMsg}
 	}
 	// A foreground `task` sub-agent just finished — its result is the final answer.
 	// (A backgrounded one returns a "Started…" string and stops later in a job, so
-	// it doesn't fire here.) SubagentStop lets a hook react to delegated work.
-	if a.hooks != nil && call.Name == "task" && !isBackgroundTaskCall(call.Arguments) {
-		a.hooks.SubagentStop(ctx, result)
+	// it doesn't fire here.)
+	if call.Name == "task" && !isBackgroundTaskCall(call.Arguments) {
+		a.policy.SubagentStopped(ctx, result)
 	}
 	body, truncMsg := truncateToolOutput(result, toolOutputLimit(call.Name))
 	return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}

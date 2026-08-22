@@ -20,9 +20,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
-	"reasonix/internal/evidence"
 	"reasonix/internal/provider"
-	"reasonix/internal/tool"
 )
 
 // defaultStartupTimeout 是等 initialize 握手完成的默认超时。
@@ -46,9 +44,45 @@ const (
 // 审批 UI、会话内授权记忆、YOLO/bypass 语义,前端零改动。
 type Approver func(ctx context.Context, toolName, subject string) (allow bool, session bool, err error)
 
-// ToolLookup 按名字取一个 Go 侧内置工具(工具桥用:complete_step 由 Go 执行,
-// 因为证据引擎是它的裁判)。
-type ToolLookup func(name string) (tool.Tool, bool)
+// ToolInvoker 在 Go 侧执行一个内置工具并返回它的输出(工具桥用:complete_step
+// 由 Go 执行,因为证据引擎是它的裁判)。
+//
+// 它是**注入函数**而不是 `func(name string) (tool.Tool, bool)`:引擎层不得 import
+// `internal/tool`(A14 守卫 `engine/boundary_test.go`)。查注册表、把证据账本塞进
+// ctx、给工具桥自己的调用记账,全部由装配根(internal/boot)在闭包里做完。
+// 找不到该工具时返回一个错误,引擎把它原样回帧给 sidecar。
+type ToolInvoker func(ctx context.Context, name string, args json.RawMessage) (string, error)
+
+// Recorder 是证据记账的注入点。同样出于 A14 守卫:引擎层不得 import
+// `internal/evidence`,所以这里只收三个闭包,由装配根接到真账本上。
+// 三个字段都允许为 nil(等价于"不记账",headless / 测试用)。
+type Recorder struct {
+	// Reset 在每一轮开始时清空本轮账本。
+	Reset func()
+	// ToolCall 记一条真实发生过的工具调用(成功与否照实记)。
+	ToolCall func(name string, args json.RawMessage, success, readOnly bool)
+	// Todos 记一次 todo_write —— 原始 JSON 数组,由装配根解成 evidence.TodoItem。
+	Todos func(raw json.RawMessage)
+}
+
+// reset / toolCall / todos 是 Recorder 的 nil 安全调用包装。
+func (r Recorder) reset() {
+	if r.Reset != nil {
+		r.Reset()
+	}
+}
+
+func (r Recorder) toolCall(name string, args json.RawMessage, success, readOnly bool) {
+	if r.ToolCall != nil {
+		r.ToolCall(name, args, success, readOnly)
+	}
+}
+
+func (r Recorder) todos(raw json.RawMessage) {
+	if r.Todos != nil {
+		r.Todos(raw)
+	}
+}
 
 // 预执行决定的三种取值(与 dsh 的 PreToolDecision 一一对应)。
 const (
@@ -93,8 +127,8 @@ type Options struct {
 	// 于是 History / 会话落盘 / 会话标题 / 前端恢复全都照旧工作。
 	// dsh 自己的 store 仍是模型可见历史的真源,这里只是投影(只读用途)。
 	Session *agent.Session
-	// Tools 是工具桥的 Go 侧查找函数。
-	Tools ToolLookup
+	// Tools 是工具桥的 Go 侧执行函数。
+	Tools ToolInvoker
 	// Approver 是审批桥的 Go 侧回调。nil = 非交互(headless),与 native 的
 	// permission.Gate 一样"保持自主":Ask 一律放行。
 	Approver Approver
@@ -103,8 +137,9 @@ type Options struct {
 	// PreEdit 在 dsh 执行任一工具前被调用(工具名 + 原始参数),Go 侧据此做
 	// 文件快照(checkpoint/rewind 保留 Go 实现)。不得阻塞太久(5s 超时后放行)。
 	PreEdit func(name string, args json.RawMessage)
-	// Ledger 是证据账本;引擎消费 dsh 的 tool/call、tool/result、todo/write 事件喂它。
-	Ledger *evidence.Ledger
+	// Ledger 是证据记账的注入点;引擎消费 dsh 的 tool/call、tool/result、todo/write
+	// 事件喂它。零值 = 不记账。
+	Ledger Recorder
 	// Stderr 是 sidecar 诊断输出的去处(nil = 只留尾缓冲,不外泄)。
 	Stderr io.Writer
 }
@@ -397,7 +432,7 @@ func (e *Engine) Run(ctx context.Context, input string) error {
 	if err := e.ensureStarted(ctx); err != nil {
 		return err
 	}
-	e.opts.Ledger.Reset()
+	e.opts.Ledger.reset()
 
 	sid := e.SessionID()
 	e.loadIfNeeded(ctx, sid)
@@ -682,18 +717,13 @@ func (e *Engine) consume(raw RawSessionEvent) {
 			return
 		}
 		// 证据账本:一条真实发生过的工具调用(成功与否照实记)。
-		e.opts.Ledger.Record(evidence.ReceiptFromToolCall(
-			call.Name, json.RawMessage(call.Args), !info.IsError, isReadOnlyName(call.Name)))
+		e.opts.Ledger.toolCall(call.Name, json.RawMessage(call.Args), !info.IsError, isReadOnlyName(call.Name))
 	case EvTodoWrite:
 		todos, ok := ParseTodos(raw)
 		if !ok {
 			return
 		}
-		var items []evidence.TodoItem
-		if err := json.Unmarshal(todos, &items); err != nil {
-			return
-		}
-		e.opts.Ledger.Record(evidence.Receipt{ToolName: "todo_write", Success: true, Todos: items})
+		e.opts.Ledger.todos(todos)
 	case EvAssistantMsg:
 		var d struct {
 			Message struct {
@@ -753,23 +783,12 @@ func (e *Engine) handleApproval(n ApprovalRequestNotification) {
 // complete_step 走这条路:它的裁判是 Go 侧的证据账本。
 func (e *Engine) handleToolInvoke(n ToolInvokeNotification) {
 	out, errText := "", ""
-	var t tool.Tool
-	ok := false
-	if e.opts.Tools != nil {
-		t, ok = e.opts.Tools(n.Name)
-	}
-	if !ok {
+	if e.opts.Tools == nil {
 		errText = "OneCreat 侧没有名为 " + n.Name + " 的工具"
+	} else if res, err := e.opts.Tools(context.Background(), n.Name, json.RawMessage(n.Arguments)); err != nil {
+		errText = err.Error()
 	} else {
-		ctx := evidence.WithLedger(context.Background(), e.opts.Ledger)
-		res, err := t.Execute(ctx, json.RawMessage(n.Arguments))
-		if err != nil {
-			errText = err.Error()
-		} else {
-			out = res
-		}
-		// 工具桥自己的调用也要记账(complete_step 的签收本身是一条事实)。
-		e.opts.Ledger.Record(evidence.ReceiptFromToolCall(n.Name, json.RawMessage(n.Arguments), err == nil, true))
+		out = res
 	}
 	e.notify(NotifyToolResult, ToolResultNotification{ID: n.ID, Output: out, Error: errText})
 }

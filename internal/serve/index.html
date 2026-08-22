@@ -53,6 +53,9 @@ input,textarea{font:inherit;color:inherit}
 .sidebar__item:hover{background:var(--panel);color:var(--fg)}
 .sidebar__item--active{background:var(--accent-soft);color:var(--accent)}
 .sidebar__item--accent{background:var(--accent);color:oklch(99% 0 0);font-weight:500;box-shadow:var(--shadow-sm)}
+/* 引擎做不到的入口:变灰、不可点、光标示意。真正的拒绝在后端(见 applyCapabilities)。 */
+.sidebar__item.is-unsupported{opacity:.4;cursor:not-allowed;pointer-events:auto}
+.sidebar__item.is-unsupported:hover{background:transparent}
 .sidebar__item--accent:hover{background:var(--accent-strong);color:oklch(99% 0 0)}
 .sidebar__item svg{width:15px;height:15px;flex-shrink:0;opacity:.7}
 .sidebar__item--active svg,.sidebar__item--accent svg{opacity:1}
@@ -578,9 +581,113 @@ function closeSlashMenu(){slashOpen=false;const m=$('#slash-menu');if(m)m.remove
 function acceptSlash(){if(!slashOpen)return;const c=slashFiltered[slashIndex];if(c){input.value='/'+c.cmd+' ';}closeSlashMenu();input.focus();}
 
 // ── SSE ──
+// 重新对齐(AR-R07)。慢客户端积压过多状态帧会被服务端断开;断开只是止损,它并不
+// 知道自己错过了什么 —— 错过的可能是 approval_request(审批永远不出现,agent 卡在
+// 没人看得见的提示上)或 turn_done(UI 永远转圈)。所以三种情况都必须回到权威快照:
+//   1. 收到 stream_reset;
+//   2. 重连成功(onopen)且之前已经在流上;
+//   3. 事件序号出现断层。
+// /snapshot 与 /history 的区别:前者还带 running / pending approvals / pending asks,
+// 也就是那些"只在事件里出现过一次"的状态。只重放 transcript 是对不齐的。
+let lastSeq=0, streamId=null, sawStream=false, resyncing=false, resyncBuf=null, resyncBufFull=false;
+// resyncGen 给每次对齐一个代号。没有它,一次对齐的收尾会把**下一次**对齐刚建好的状态
+// 清掉:溢出重试是在 .then 里同步发起的,而先前那次的 .finally 排在它后面才跑 ——
+// 于是第二次对齐的 resyncing/resyncBuf 被抹成 false/null,那一次的缓冲形同虚设,
+// 期间到达的帧又会被渲染后抹掉。这个洞是 node 行为测试当场抓出来的,字符串守卫看不见。
+let resyncGen=0;
+// 对齐期间的缓冲上限。它不是性能调优:缓冲区满了就意味着又有状态帧留不住,而"静默丢掉
+// 状态"正是这一层唯一不允许的事 —— 所以满了不丢,改成再对齐一次(快照会更新)。
+const RESYNC_BUF_MAX=4096;
+
+function renderHistory(ms){
+  log.innerHTML=''; log.appendChild(welcome); welcome.style.display='';
+  currentMsg=null;currentText=null;currentReasoning=null;toolCards={};
+  if(!ms||ms.length===0){scrollDown();return;}
+  hideWelcome();
+  ms.forEach(m=>{if(!m.content)return; if(m.role==='user'){addUserMsg(m.content);}else{const d=el('div','msg msg--assistant');d.appendChild(el('div','msg__text',m.content));log.appendChild(d);}});
+  scrollDown();
+}
+
+// 取快照期间到达的帧必须**缓冲**,不能边收边渲染:renderHistory 紧接着会清空整个
+// log,那些帧于是被画出来又被抹掉,而快照里并没有它们(它是更早的一份)——丢的可能
+// 正是那条 turn_done,界面就永远转圈。缓冲之后按序号重放,快照已含的丢弃。
+// 依赖引擎能力的入口:哪个按钮需要哪条能力,以及做不到时该怎么解释。
+// 一处集中,不在四个按钮上各写一遍 —— 那种写法加第五个入口时必然漏掉。
+const CAP_GATED=[
+  {id:'btn-new',     cap:'resume', what:'新建会话'},
+  {id:'btn-compact', cap:'resume', what:'压缩上下文'},
+  {id:'btn-rewind',  cap:'fork',   what:'回退会话'},
+  {id:'btn-tree',    cap:'fork',   what:'查看分支'},
+];
+
+// applyCapabilities 按服务端给的能力表禁用做不到的入口**并说明原因**。
+//
+// 只到「后端回 422」是不够的:用户看到一个可点的按钮,点下去界面毫无变化(错误只在
+// 响应体里),于是以为自己点错了,反复再点。
+//
+// 说清另一半:**这不是那道门。** 后端的 requireCap 在改任何状态之前独立校验,把这里
+// 全部删掉也放行不了任何操作 —— UI 从来不是安全边界(复核 AR-R02)。这里做的只是
+// 「别让用户白点」。
+function applyCapabilities(caps,engineName){
+  if(!caps)return;
+  CAP_GATED.forEach(g=>{
+    const el=$('#'+g.id); if(!el)return;
+    const ok=caps[g.cap]!==false;
+    el.classList.toggle('is-unsupported',!ok);
+    el.setAttribute('aria-disabled',ok?'false':'true');
+    if(ok)el.removeAttribute('title');
+    else el.setAttribute('title','当前引擎('+(engineName||'?')+')不支持'+g.what+'(缺少能力 '+g.cap+')');
+  });
+}
+
+// gatedIsBlocked 在点击时再挡一道,免得只靠 CSS 的 pointer-events。
+function gatedIsBlocked(id){
+  const el=$('#'+id);
+  return !!el&&el.getAttribute('aria-disabled')==='true';
+}
+
+function resync(reason){
+  if(resyncing)return; resyncing=true; resyncBuf=[]; resyncBufFull=false;
+  const gen=++resyncGen;
+  return fetch('/snapshot').then(r=>r.json()).then(s=>{
+    streamId=s.streamId; lastSeq=s.sequence||0;
+    renderHistory(s.history);
+    setRunning(!!s.running);
+    planMode=!!s.plan; updateModeButtons();
+    applyCapabilities(s.capabilities,s.engine);
+    // 待办的审批 / 提问要重新显示出来 —— 它们正是最不能丢的那一类。
+    (s.pendingApprovals||[]).forEach(a=>showApproval(a));
+    (s.pendingAsks||[]).forEach(a=>showAsk(a));
+    if(reason)log.appendChild(el('div','notice','⟳ 已与服务端重新对齐('+reason+')')),scrollDown();
+    // 先清标志再重放,重放走与实时帧同一条路径 —— 两份应用逻辑必然漂移。
+    const buf=resyncBuf||[], full=resyncBufFull;
+    resyncBuf=null; resyncing=false; resyncBufFull=false;
+    if(full){ fetchStatus(); resync('对齐期间积压过多'); return; } // 半截缓冲不重放
+    buf.forEach(e=>{ if(typeof e.sequence==='number'&&e.sequence<=lastSeq)return; applyEvent(e); });
+    fetchStatus();
+  }).catch(()=>{}).finally(()=>{
+    // 只有仍然是"当前那一次"才收尾 —— 否则会清掉后来者的状态(见 resyncGen)。
+    if(gen===resyncGen){ resyncing=false; resyncBuf=null; resyncBufFull=false; }
+  });
+}
+
 const es=new EventSource('/events');
-es.onmessage=ev=>{
-  const e=JSON.parse(ev.data);
+es.addEventListener('stream_ready',ev=>{
+  let d={}; try{d=JSON.parse(ev.data);}catch(_){}
+  // 换了一条流(服务端重启 / 换会话),手里的序号不再可比。
+  const newStream = streamId!==null && d.streamId!==streamId;
+  if(sawStream||newStream){ resync(newStream?'流已重建':'重新连接'); }
+  else { streamId=d.streamId; lastSeq=d.sequence||0; }
+  sawStream=true;
+});
+es.addEventListener('stream_reset',ev=>{
+  let d={}; try{d=JSON.parse(ev.data);}catch(_){}
+  // 服务端明说了去哪儿对齐;它今天指向 /snapshot,但以字段为准。
+  resync('连接跟不上,已重放丢失的状态');
+});
+// applyEvent 把一帧应用到界面。实时帧与重新对齐后的重放共用它。
+function applyEvent(e){
+  if(typeof e.sequence==='number'&&e.sequence>lastSeq)lastSeq=e.sequence;
   switch(e.kind){
     case 'turn_started': setRunning(true); finalizeMsg(); toolCards={}; break;
     case 'reasoning': appendReasoning(e.reasoning||e.text||''); break;
@@ -607,6 +714,17 @@ es.onmessage=ev=>{
     case 'compaction_done': showCompaction(e.compaction||{}); break;
     case 'turn_done': finalizeMsg(); setRunning(false); if(e.err){log.appendChild(el('div','msg--error','✗ '+e.err));scrollDown();} fetchStatus(); break;
   }
+}
+
+es.onmessage=ev=>{
+  const e=JSON.parse(ev.data);
+  // 正在取快照:缓冲,别渲染(见 resync)。
+  if(resyncing){ resyncBuf=resyncBuf||[]; if(resyncBuf.length<RESYNC_BUF_MAX)resyncBuf.push(e); else resyncBufFull=true; return; }
+  // 序号断层 = 中间掉过帧。只有可丢的增量帧才允许有洞,其余一律回到权威状态。
+  if(typeof e.sequence==='number'&&lastSeq&&e.sequence>lastSeq+1&&e.durable){
+    lastSeq=e.sequence; resync('检测到事件断层'); return;
+  }
+  applyEvent(e);
 };
 es.onerror=()=>{statusText.textContent='Disconnected';statusDot.className='status__dot';};
 
@@ -630,11 +748,8 @@ function fetchStatus(){
 setInterval(fetchStatus,30000);
 
 // ── history ──
-fetch('/history').then(r=>r.json()).then(ms=>{
-  if(!ms||ms.length===0)return; hideWelcome();
-  ms.forEach(m=>{if(!m.content)return; if(m.role==='user'){addUserMsg(m.content);}else{const d=el('div','msg msg--assistant');d.appendChild(el('div','msg__text',m.content));log.appendChild(d);}});
-  currentMsg=null;currentText=null;currentReasoning=null; scrollDown();
-}).catch(()=>{});
+// 首屏也走同一条「从权威状态重建」的路径,而不是另写一遍 —— 两份重建逻辑必然漂移。
+resync();
 
 // ── session list ──
 function loadSessions(){
@@ -648,7 +763,8 @@ function loadSessions(){
       const title=s.title||name.replace(/^\w+-/,'').replace(/T/,' ').replace(/[-_]/g,' ').slice(0,30);
       const meta=s.turns?s.turns+' turns':'';
       item.innerHTML='<svg class="session-item__icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div class="session-item__body"><div class="session-item__title">'+escHtml(title)+'</div><div class="session-item__meta">'+escHtml(meta)+'</div></div>';
-      item.onclick=()=>{if(running||s.current)return;post('/resume',{path:s.path}).then(()=>{log.innerHTML='';log.appendChild(welcome);welcome.style.display='';loadSessions();setTimeout(()=>fetch('/history').then(r=>r.json()).then(ms=>{if(!ms||ms.length===0)return;hideWelcome();ms.forEach(m=>{if(!m.content)return;if(m.role==='user')addUserMsg(m.content);else{const d=el('div','msg msg--assistant');d.appendChild(el('div','msg__text',m.content));log.appendChild(d);}});currentMsg=null;scrollDown();}),300);});};
+      // 恢复历史会话之后走同一条 resync:界面重建只能有一条路径,两份必然漂移。
+      item.onclick=()=>{if(running||s.current)return;post('/resume',{path:s.path}).then(()=>{loadSessions();setTimeout(()=>resync(),300);});};
       list.appendChild(item);
     });
   }).catch(()=>{const list=$('#session-list');if(list)list.innerHTML='<div style="padding:10px;color:var(--muted-2);font-size:12px">Error loading</div>';});
@@ -700,10 +816,10 @@ btnStop.onclick=()=>post('/cancel');
 $('#btn-auto').onclick=()=>setMode('auto');
 $('#btn-plan').onclick=()=>setPlan(!planMode);
 $('#btn-bypass').onclick=()=>setBypass(!bypassMode);
-$('#btn-new').onclick=()=>{if(running)return;post('/new').then(()=>{log.innerHTML='';log.appendChild(welcome);welcome.style.display='';loadSessions();});};
-$('#btn-compact').onclick=()=>{if(!running)post('/compact');};
-$('#btn-rewind').onclick=()=>openRewindPicker();
-$('#btn-tree').onclick=()=>{post('/submit',{input:'/tree'});};
+$('#btn-new').onclick=()=>{if(running||gatedIsBlocked('btn-new'))return;post('/new').then(()=>{log.innerHTML='';log.appendChild(welcome);welcome.style.display='';loadSessions();});};
+$('#btn-compact').onclick=()=>{if(!running&&!gatedIsBlocked('btn-compact'))post('/compact');};
+$('#btn-rewind').onclick=()=>{if(!gatedIsBlocked('btn-rewind'))openRewindPicker();};
+$('#btn-tree').onclick=()=>{if(!gatedIsBlocked('btn-tree'))post('/submit',{input:'/tree'});};
 
 // welcome examples
 $$('.welcome__ex').forEach(btn=>{btn.onclick=()=>{input.value=btn.dataset.prompt;send();};});

@@ -20,7 +20,7 @@ func TestReadFileRejectsNonRegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	preview := (&App{}).ReadFile("pipe")
+	preview := (newBareApp(nil, nil)).ReadFile("pipe")
 	if preview.Err != "path is not a regular file" {
 		t.Fatalf("ReadFile fifo err = %q, want non-regular file error", preview.Err)
 	}
@@ -41,7 +41,7 @@ func TestListDirOmitsNonRegularFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := (&App{}).ListDir("")
+	entries := (newBareApp(nil, nil)).ListDir("")
 	seenRegular := false
 	for _, entry := range entries {
 		if entry.Name == "pipe" {

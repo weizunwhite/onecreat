@@ -35,18 +35,17 @@ func normalizeAutoPlan(mode string) string {
 
 func (c *Controller) maybeAutoPlan(ctx context.Context, input string) {
 	if c.shouldAutoPlan(ctx, input) {
-		c.SetPlanMode(true)
+		c.turn.SetPlanMode(true)
 		c.notice("auto plan: task looks multi-step; drafting a plan first")
 	}
 }
 
 func (c *Controller) shouldAutoPlan(ctx context.Context, input string) bool {
-	c.mu.Lock()
-	mode := c.autoPlan
-	plan := c.planMode
-	classifier := c.classifier
-	bypass := c.bypass
-	c.mu.Unlock()
+	// autoPlan / classifier are fixed at construction and never mutated, so they
+	// need no lock; plan mode and bypass live in their own services.
+	mode, classifier := c.autoPlan, c.classifier
+	plan := c.turn.PlanMode()
+	bypass := c.approvals.Bypass()
 	// YOLO/bypass means "don't stop to ask" — entering plan mode would draft a
 	// plan and gate on approval, the opposite of what the user opted into.
 	if mode == autoPlanOff || plan || bypass {

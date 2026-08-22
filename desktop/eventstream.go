@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
+
+	"reasonix/internal/eventstream"
+	"reasonix/internal/eventwire"
 )
 
 // Web 模式的事件流:Wails 下 App 的事件走 runtime.EventsEmit 直推 webview,浏览器
@@ -23,62 +25,46 @@ type sseFrame struct {
 // eventBroadcaster 把 Shell.Emit 扇出给所有已连接的 SSE 客户端。
 //
 // 关键约束:Emit 跑在 agent 的运行循环 goroutine 上,绝不能被慢客户端阻塞。
-// 因此每个订阅者是一个有缓冲 channel,写满就丢帧(丢的是渲染增量,不是状态;
-// 前端在 ready/turn 边界会重新拉 Meta/History 对齐)。
+// 但「不阻塞」不等于「什么都能丢」:渲染增量丢了只是画面抖一下,审批请求丢了会让
+// agent 永远卡在一个没人看得见的提示上,turn_done 丢了会让 UI 永远转圈。所以 QoS
+// 由事件本身决定,交给 internal/eventstream 统一实现(Plan 10 / A11):
+// 增量在积压时丢,状态帧只排队,完全不消费的客户端会被断开而不是被静默漏发。
 type eventBroadcaster struct {
-	mu   sync.Mutex
-	seq  int
-	subs map[int]chan []byte
+	hub *eventstream.Hub
 }
 
-// sseBufferedFrames 是单个客户端的积压上限。一轮长回答的 token 增量事件很密,
-// 给足缓冲让正常客户端不丢帧;真卡死的客户端才开始丢。
-const sseBufferedFrames = 512
-
 func newEventBroadcaster() *eventBroadcaster {
-	return &eventBroadcaster{subs: map[int]chan []byte{}}
+	return &eventBroadcaster{hub: eventstream.New(eventstream.DefaultLimits)}
 }
 
 // Emit 序列化一帧并非阻塞地扇出。序列化失败(payload 含不可 JSON 化的值)时丢弃该帧。
+//
+// durable 从 payload 推:agent 事件自带 QoS 标记(Stamper 盖的),其它通道
+// (serial:data、agent:ready:<tab>)一律按状态帧处理 —— 默认不丢是安全的方向。
 func (b *eventBroadcaster) Emit(channel string, payload any) {
 	data, err := json.Marshal(sseFrame{Channel: channel, Payload: payload})
 	if err != nil {
 		return
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, ch := range b.subs {
-		select {
-		case ch <- data:
-		default: // 慢客户端:丢这一帧,绝不阻塞 agent goroutine
-		}
-	}
+	b.hub.Publish(eventstream.Frame{Data: data, Durable: frameIsDurable(payload)})
 }
 
-// subscribe 注册一个新客户端,返回订阅 id 和它的帧通道。
-func (b *eventBroadcaster) subscribe() (int, chan []byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.seq++
-	id := b.seq
-	ch := make(chan []byte, sseBufferedFrames)
-	b.subs[id] = ch
-	return id, ch
+// frameIsDurable 判断一帧能不能在客户端落后时丢掉。
+func frameIsDurable(payload any) bool {
+	if w, ok := payload.(eventwire.Event); ok {
+		return w.Durable
+	}
+	return true // 不认识的通道:按状态帧处理
 }
+
+// subscribe 注册一个新客户端。
+func (b *eventBroadcaster) subscribe() *eventstream.Sub { return b.hub.Subscribe() }
 
 // unsubscribe 注销客户端(断线时调用),之后 Emit 不再往它写。
-func (b *eventBroadcaster) unsubscribe(id int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.subs, id)
-}
+func (b *eventBroadcaster) unsubscribe(s *eventstream.Sub) { b.hub.Unsubscribe(s) }
 
 // subscriberCount 供测试断言清理是否到位。
-func (b *eventBroadcaster) subscriberCount() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.subs)
-}
+func (b *eventBroadcaster) subscriberCount() int { return b.hub.Subscribers() }
 
 // sseHeartbeat 是心跳间隔:发一行 SSE 注释,让中间层/浏览器知道连接还活着,
 // 同时让 Write 失败(客户端已消失但 ctx 还没取消)尽早暴露。
@@ -101,22 +87,36 @@ func (b *eventBroadcaster) serveSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, ": ok\n\n")
 	flusher.Flush()
 
-	id, ch := b.subscribe()
-	defer b.unsubscribe(id)
+	sub := b.subscribe()
+	defer b.unsubscribe(sub)
 
 	ticker := time.NewTicker(sseHeartbeat)
 	defer ticker.Stop()
 
 	ctx := r.Context()
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case data := <-ch:
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		// 一次把积压全部写出去,而不是每帧唤醒一次。
+		for {
+			f, ok := sub.TryNext()
+			if !ok {
+				break
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", f.Data); err != nil {
 				return
 			}
 			flusher.Flush()
+		}
+		// 完全不消费状态帧的客户端:断开它,让它重连后重新对齐,而不是继续推一条
+		// 悄悄缺了东西的流(Plan 10 唯一排除的选项就是「静默继续」)。
+		if sub.Overflowed() {
+			fmt.Fprint(w, "event: stream_reset\ndata: {\"reason\":\"client too slow; reconnect to re-sync\"}\n\n")
+			flusher.Flush()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-sub.Wake():
 		case <-ticker.C:
 			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
 				return

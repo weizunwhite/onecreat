@@ -11,7 +11,6 @@ import (
 
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
-	"reasonix/internal/tool"
 	_ "reasonix/internal/tool/builtin" // 注册 complete_step 等内置工具
 )
 
@@ -86,7 +85,7 @@ func (h *bridgeHarness) await(t *testing.T, method string) json.RawMessage {
 func TestApprovalBridge(t *testing.T) {
 	asked := make(chan string, 1)
 	h := newBridgeHarness(t, Options{
-		Ledger: evidence.NewLedger(),
+		Ledger: testRecorder(evidence.NewLedger()),
 		Approver: func(_ context.Context, toolName, subject string) (bool, bool, error) {
 			asked <- toolName
 			return true, false, nil
@@ -113,7 +112,7 @@ func TestApprovalBridge(t *testing.T) {
 // 非交互(headless)下没有 Approver:与 native 的 permission.Gate 一致,Ask 放行。
 func TestPreExecuteAskWithoutApproverAllows(t *testing.T) {
 	h := newBridgeHarness(t, Options{
-		Ledger: evidence.NewLedger(),
+		Ledger: testRecorder(evidence.NewLedger()),
 		Decide: func(string, json.RawMessage) (string, string) { return DecisionAsk, "" },
 	})
 	h.push(t, NotifyToolPreExecute, ToolPreExecuteNotification{ID: "p1", Name: "bash", Arguments: `{"command":"ls"}`})
@@ -130,7 +129,7 @@ func TestPreExecuteAskWithoutApproverAllows(t *testing.T) {
 func TestPreExecuteDenyPropagates(t *testing.T) {
 	snapped := 0
 	h := newBridgeHarness(t, Options{
-		Ledger:  evidence.NewLedger(),
+		Ledger:  testRecorder(evidence.NewLedger()),
 		Decide:  func(string, json.RawMessage) (string, string) { return DecisionDeny, "在 deny 名单上" },
 		PreEdit: func(string, json.RawMessage) { snapped++ },
 	})
@@ -151,15 +150,8 @@ func TestPreExecuteDenyPropagates(t *testing.T) {
 func TestToolBridgeRejectsFabricatedFlash(t *testing.T) {
 	ledger := evidence.NewLedger()
 	h := newBridgeHarness(t, Options{
-		Ledger: ledger,
-		Tools: func(name string) (tool.Tool, bool) {
-			for _, t := range tool.Builtins() {
-				if t.Name() == name {
-					return t, true
-				}
-			}
-			return nil, false
-		},
+		Ledger: testRecorder(ledger),
+		Tools:  testBuiltinInvoker(ledger),
 	})
 	args := `{"step":"烧录固件到 ESP32","result":"固件已烧录到开发板并运行","evidence":[{"kind":"verification","summary":"烧录成功,串口输出 led:on","command":"arduino-cli upload -b esp32:esp32:esp32"}]}`
 	h.push(t, NotifyToolInvoke, ToolInvokeNotification{ID: "t1", Name: "complete_step", Arguments: args})
@@ -191,7 +183,7 @@ func TestToolBridgeRejectsFabricatedFlash(t *testing.T) {
 // 证据喂料:dsh 的 tool/call + tool/result + todo/write 必须进 Go 侧账本。
 func TestConsumeFeedsLedger(t *testing.T) {
 	ledger := evidence.NewLedger()
-	eng, err := New(Options{Ledger: ledger, Sink: event.Discard})
+	eng, err := New(Options{Ledger: testRecorder(ledger), Sink: event.Discard})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

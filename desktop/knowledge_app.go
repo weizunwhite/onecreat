@@ -216,10 +216,9 @@ func (a *App) KnowledgeImportFiles(baseID string) (KnowledgeImportResult, error)
 	if a.ctx == nil {
 		return KnowledgeImportResult{Imported: []KnowledgeDocumentView{}, Skipped: []KnowledgeImportIssue{}}, nil
 	}
-	cur, _ := os.Getwd()
 	paths, err := a.sh().OpenMultipleFilesDialog(DialogOptions{
 		Title:            "导入本地知识库文件",
-		DefaultDirectory: cur,
+		DefaultDirectory: a.workspaceRoot(),
 		Filters: []FileFilter{
 			{
 				DisplayName: "Text, Markdown, Code",

@@ -157,7 +157,7 @@ func TestCredentialsRotatedBeforePrompt(t *testing.T) {
 	eng, err := New(Options{
 		Gateway:    true,
 		Sink:       event.Discard,
-		Ledger:     evidence.NewLedger(),
+		Ledger:     testRecorder(evidence.NewLedger()),
 		BaseURL:    "https://t.example.com/api/onecreat/v1",
 		APIKeyFunc: func() string { return os.Getenv("ONECREAT_GATEWAY_TOKEN") },
 	})

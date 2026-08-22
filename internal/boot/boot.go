@@ -18,12 +18,12 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/account"
 	"reasonix/internal/agent"
 	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
-	"reasonix/internal/engine/dsh"
 	"reasonix/internal/event"
 	"reasonix/internal/hook"
 	"reasonix/internal/jobs"
@@ -38,6 +38,7 @@ import (
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
+	"reasonix/internal/workspace"
 )
 
 // ErrUnknownModel is returned by Build when the configured model can't be
@@ -101,9 +102,49 @@ type Options struct {
 	// before an MCP flash/monitor tool runs, so the tool doesn't hit a busy port.
 	// It must NOT block or veto the call — vetoing is the hook system's job.
 	PreToolUse func(ctx context.Context, name string, args json.RawMessage)
-	// Engine 覆盖配置里的 engine 选择("native" | "dsh")。空 = 用
-	// ONECREAT_ENGINE 环境变量,再回退 config 的 engine(默认 native)。
+	// ExtraPlugins are MCP servers supplied by the caller for this session on top
+	// of the configured ones — the ACP client's `session/new` servers. They start
+	// eagerly with the session: a host that named a server expects its tools on
+	// the first turn.
+	ExtraPlugins []plugin.Spec
+	// HostProvidesCodeIntel suppresses the two workspace services that spawn
+	// long-lived subprocesses of their own — CodeGraph's daemon and the LSP
+	// manager — because the host already provides them. An editor driving
+	// OneCreat over ACP has its own language servers and index; starting a second
+	// set inside the agent costs memory and CPU for capabilities the host already
+	// has. Everything else (memory, skills, hooks, jobs, prompt policy) is
+	// assembled identically.
+	HostProvidesCodeIntel bool
+	// Factory owns the process- and workspace-scoped services (the LSP manager and
+	// the CodeGraph daemon) so several sessions on one project share them. A nil
+	// Factory gives this session a private one, closed with it — which is exactly
+	// the old behaviour, and the right one for a frontend that runs a single
+	// workspace per process (the CLI, a headless run, an ACP session).
+	//
+	// A frontend that can hold several sessions on one project at once (the
+	// desktop) must pass a shared Factory, otherwise closing one tab stops the
+	// language servers and symbol daemon its sibling is using.
+	Factory *Factory
+	// Gateway is the platform account this runtime signs its model requests with.
+	// nil means "import whatever the process was launched with" — the
+	// compatibility path for a CLI/ACP process, which has no account runtime of
+	// its own. The desktop passes its own live Gateway so a token refresh reaches
+	// every already-built session without rebuilding anything.
+	Gateway *account.Gateway
+	// Engine 显式指定本次装配用哪个回合引擎("native" / "dsh"),覆盖配置与
+	// ONECREAT_ENGINE。空串 = 按 engineName 的优先级解析。
 	Engine string
+	// Workspace is the project directory this runtime works in. Everything
+	// workspace-scoped — project config, .mcp.json, memory, skills, the file
+	// tools' relative-path root, bash's working directory, CodeGraph and plugin
+	// subprocess directories — resolves against it.
+	//
+	// The zero Context means "the process working directory", which is what
+	// Build assumed unconditionally before workspaces became explicit; the CLI
+	// leaves it zero. A frontend that can hold several projects at once (the
+	// desktop, one per tab) must set it, otherwise two runtimes silently share
+	// one root.
+	Workspace workspace.Context
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -115,7 +156,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	cfg, err := config.Load()
+	ws := opts.Workspace
+	// The platform account for this runtime. A frontend that owns one (the
+	// desktop) passes it in, so a token refresh reaches every session it built;
+	// anything else imports whatever the process was launched with, once.
+	gw := opts.Gateway
+	if gw == nil {
+		gw = account.FromEnv()
+	}
+	cfg, err := config.LoadIn(ws)
 	if err != nil {
 		return nil, err
 	}
@@ -127,9 +176,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
 	}
-	// onecreat 网关模式:桌面端登录后会设 ONECREAT_GATEWAY_URL/_TOKEN,把模型请求改走
-	// 平台 AI 网关(用登录 token 鉴权、平台统一拿上游 key 计费),而非客户端直连厂商。
-	applyOnecreatGateway(entry)
+	// onecreat 网关模式:登录后把模型请求改走平台 AI 网关(用登录 token 鉴权、平台统一
+	// 拿上游 key 计费),而非客户端直连厂商。账号状态来自显式的 *account.Gateway,不再
+	// 从进程环境变量里读(Plan 09 / A12)。
+	applyOnecreatGateway(entry, gw)
 	if opts.RequireKey {
 		// 校验改写后的 entry(网关模式下已换成 ONECREAT_GATEWAY_TOKEN),不能再 cfg.Validate
 		// 重新解析——ResolveModel 返回副本,重解会拿回未改写的原始 entry,在网关模式下点名底层
@@ -164,7 +214,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return nil, err
 	}
 
-	execProv, err := NewProviderWithProxy(entry, proxySpec)
+	execProv, err := newProviderFor(entry, proxySpec, gw)
 	if err != nil {
 		return nil, err
 	}
@@ -186,15 +236,58 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// durable, cache-stable prefix every turn reuses, so memory costs nothing per
 	// turn. Mid-session changes never touch this prefix — they ride the
 	// controller's transient turn-injection and fold in on the next session.
-	mem := memory.Load(memory.Options{CWD: ".", UserDir: config.MemoryUserDir()})
+	mem := memory.Load(memory.Options{CWD: ws.Resolve("."), UserDir: config.MemoryUserDir()})
 	sysPrompt = memory.Compose(sysPrompt, mem)
 
 	// Skills: discover playbooks (built-in + project/custom/global) and fold their
 	// one-liner index into the same cache-stable prefix — names + descriptions
 	// only; bodies load on demand via run_skill or "/<name>". Bodies never enter
 	// the prefix, so the index costs a fixed, small amount per turn.
-	cwd, _ := os.Getwd()
-	skillStore := skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: cfg.SkillCustomPaths(), Stderr: opts.Stderr})
+	// The workspace root is this runtime's project root. Only when no workspace
+	// was supplied does it fall back to the process working directory.
+	procCwd, _ := os.Getwd()
+	root := ws.RootOr(procCwd)
+
+	// Take a hold on this project's shared services. With a caller-supplied
+	// Factory the hold is refcounted, so several sessions on one project share
+	// the LSP servers and the CodeGraph daemon and the last one out turns them
+	// off. Without one, this session gets a private factory closed alongside it —
+	// the pre-Plan-05 behaviour, and the right one for a single-workspace process.
+	factory := opts.Factory
+	var ownFactory *Factory
+	if factory == nil {
+		ownFactory = NewFactory(ctx)
+		factory = ownFactory
+	}
+	wsHandle := factory.OpenWorkspace(ws, WorkspaceSpec{Config: cfg, Root: root, HostProvidesCodeIntel: opts.HostProvidesCodeIntel})
+	wsSvc := wsHandle.Services()
+	// This runtime's session scope, under that workspace. Everything owned by the
+	// conversation rather than the project — the MCP plugin host below — is
+	// registered on it, so ending the session releases exactly those and leaves
+	// the project's shared services running for its siblings.
+	sess := wsHandle.Scope().NewSession("")
+
+	// Until control.New takes over the cleanup chain, any error return has to
+	// release what has already been acquired itself — otherwise a failed build
+	// pins the workspace open and leaks the eager MCP subprocesses.
+	//
+	// 在 control.New 成功接管 cleanup 之前的任何错误返回,都必须释放已经拿到的资源
+	// (session 作用域上的 MCP 子进程、workspace hold)。否则它们泄漏 —— desktop 用
+	// 永不取消的 ctx 调 Build,失败的 SetModel / 标签重建每次都漏一份(M1)。
+	// 控制器接管后置 success=true,由 Controller.Close() 负责调 cleanup。
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		sess.Close()
+		wsHandle.Release()
+		if ownFactory != nil {
+			ownFactory.Close()
+		}
+	}()
+
+	skillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), Stderr: opts.Stderr})
 	skills := skillStore.List()
 	sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 	sysPrompt += "\n\n" + config.ModelPrivacyPolicy
@@ -208,10 +301,22 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		fmt.Fprintln(stderr, "warning: bash not found on PATH; the shell tool will run commands under Windows PowerShell. Install Git for Windows or WSL to use bash.")
 	}
 	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, stderr)
-	addBuiltins(reg, cfg.Tools.Enabled, cfg.WriteRoots(), bashSpec, searchSpec, stderr)
+	// 这个工作区的子进程环境:进程环境 + 本工作区 `.env` 里进程环境没有的键。
+	// `.env` 不再 os.Setenv(复核 C1),所以每个会自己起子进程的东西 —— bash 工具、
+	// MCP 插件、钩子、语言服务器 —— 都必须显式收下这一份。少给一处,那一处的
+	// `.env` 就静默失效;共用进程环境,两个工作区就又互相污染。
+	childEnv := cfg.Env().Environ()
+	addBuiltins(reg, ws, cfg.Tools.Enabled, cfg.WriteRoots(), bashSpec, searchSpec, childEnv, stderr)
 	// Always construct a host, even with no plugins configured, so the controller's
 	// host pointer is stable for the session and `/mcp add` can hot-add into it.
+	//
+	// The host is session-scoped: `/mcp add` hot-adds into *this* session's host
+	// and a session may carry client-supplied overlays, so it must not be shared
+	// with a sibling on the same project. Registering the shutdown on the session
+	// scope here — at the point of ownership, through a closure because the eager
+	// tier swaps the host below — means no error path can slip out without it.
 	pluginHost := plugin.NewHost()
+	sess.Defer("mcp-host", func() { pluginHost.Close() })
 
 	// Partition configured plugins by tier so eager/lazy/background can each
 	// take the path that fits them. User entries default to lazy — they don't
@@ -236,9 +341,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	eagerEntries = kept
 
-	eagerSpecs := PluginSpecs(eagerEntries)
-	lazySpecs := PluginSpecs(lazyEntries)
-	bgSpecs := PluginSpecs(bgEntries)
+	eagerSpecs := PluginSpecsIn(cfg.Env(), eagerEntries)
+	lazySpecs := PluginSpecsIn(cfg.Env(), lazyEntries)
+	bgSpecs := PluginSpecsIn(cfg.Env(), bgEntries)
+	// Caller-supplied servers join the eager tier: the host named them for this
+	// session, so their tools must exist on the first turn.
+	eagerSpecs = append(eagerSpecs, opts.ExtraPlugins...)
 
 	// CodeGraph is a built-in MCP server fetched on first use. When it resolves,
 	// inject it as one more stdio plugin pinned to the project root (it is
@@ -251,15 +359,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	//
 	// Codegraph stays eager regardless of user tier — symbol-graph tools land
 	// in the system prompt, so the agent must see them on first turn.
-	if cfg.Codegraph.Enabled {
+	if cfg.Codegraph.Enabled && !opts.HostProvidesCodeIntel {
 		bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
 		switch {
 		case ok:
-			if err := codegraph.EnsureInit(ctx, bin, cwd); err != nil {
+			if err := codegraph.EnsureInit(ctx, bin, root); err != nil {
 				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 					Text: "codegraph: init failed (" + err.Error() + ") — symbol-graph tools disabled this session"})
 			}
-			eagerSpecs = append(eagerSpecs, plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: cwd})
+			eagerSpecs = append(eagerSpecs, plugin.Spec{Name: "codegraph", Command: bin, Args: []string{"serve", "--mcp"}, Dir: root})
 		case cfg.Codegraph.AutoInstall:
 			notify := func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg}) }
 			notify("codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session")
@@ -293,6 +401,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bgSpecs[i].Stderr = opts.Stderr
 		}
 	}
+	// 后期追加的 spec 也要拿到本工作区的环境。`PluginSpecsIn` 只覆盖配置里的那些,而
+	// codegraph 与 `opts.ExtraPlugins` 是在那之后才 append 进来的 —— 它们的 BaseEnv
+	// 为 nil,会退回进程环境。C1 之前那没问题(`.env` 就在进程环境里),之后就是静默
+	// 失效:同一个会话里,配置里的 MCP 服务器拿得到项目 `.env`,这两类拿不到。
+	//
+	// 放在这里、和 stderr 那一遍并排,是为了让「每个 tier 都过一遍」成为结构上的事实:
+	// 哪天加了第四个 tier 而漏掉这一遍,stderr 也会一起坏,不会只坏这条安静的。
+	applyChildEnv(workspaceBaseEnv(cfg.Env()), eagerSpecs, lazySpecs, bgSpecs)
 
 	// Eager: block until handshake. Failures show up in /mcp.
 	if len(eagerSpecs) > 0 {
@@ -329,40 +445,26 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg})
 	}
 
-	cleanup := pluginHost.Close
-
-	// CodeGraph 的 MCP 前端进程会 fork 出一个 detached、按工作区共享、带 5 分钟 idle 超时的
-	// 守护进程,杀前端进程杀不到它 → 主程序退出后会残留最多 5 分钟。关插件后按 pidfile 把它
-	// 一并停掉,保证退出即净(Wails 与 Web 两种壳都受益)。见 codegraph.StopDaemon。
-	if cfg.Codegraph.Enabled {
-		prev := cleanup
-		daemonRoot := cwd
-		cleanup = func() { prev(); codegraph.StopDaemon(daemonRoot) }
+	// Closing the session releases what the conversation owns (its MCP host); the
+	// workspace hold is released after that — the project's own services (LSP
+	// servers, the CodeGraph daemon) go away only when the last session on it
+	// does, not when this one ends.
+	cleanup := func() {
+		sess.Close()
+		wsHandle.Release()
+		if ownFactory != nil {
+			ownFactory.Close()
+		}
 	}
 
-	// LSP tools resolve their servers on PATH and spawn lazily on first query, so
-	// registering them is cheap even when no server is installed (a query then
-	// returns an install hint). The manager is session-scoped; chain its shutdown
-	// into the controller's cleanup so servers stop with the session, not the turn.
-	if cfg.LSP.Enabled {
-		lspMgr := lsp.NewManager(cwd, LSPSpecs(cfg.LSP))
-		for _, t := range lsp.Tools(lspMgr) {
+	// LSP tools query the workspace's shared manager (servers resolve on PATH and
+	// spawn lazily on first use). The manager itself belongs to the workspace, so
+	// it is not torn down here: two tabs on one project share the running servers.
+	if wsSvc.lsp != nil && !opts.HostProvidesCodeIntel {
+		for _, t := range lsp.Tools(wsSvc.lsp) {
 			reg.Add(t)
 		}
-		prev := cleanup
-		cleanup = func() { prev(); lspMgr.Close() }
 	}
-
-	// 在 control.New 成功接管 cleanup 之前的任何错误返回,都必须释放已经启动的资源
-	// (eager MCP 子进程、LSP manager)。否则它们泄漏 —— desktop 用永不取消的 ctx 调
-	// Build,失败的 SetModel / 标签重建每次都漏一组子进程(M1)。控制器接管后置 success=true,
-	// 由 Controller.Close() 负责调 cleanup。
-	success := false
-	defer func() {
-		if !success {
-			cleanup()
-		}
-	}()
 
 	maxSteps := cfg.Agent.MaxSteps
 	if opts.MaxSteps > 0 {
@@ -383,13 +485,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// silently execute them). Non-blocking hook output is surfaced to the user as
 	// a Notice through the shared sink. The runner fires PreToolUse/PostToolUse in
 	// the agent loop and UserPromptSubmit/Stop at the controller's turn boundary.
-	hooksTrusted := hook.IsTrusted(cwd, "")
+	hooksTrusted := hook.IsTrusted(root, "")
 	hookRunner := hook.NewRunner(
-		hook.Load(hook.LoadOptions{ProjectRoot: cwd, Trusted: hooksTrusted}),
-		cwd, nil,
+		hook.Load(hook.LoadOptions{ProjectRoot: root, Trusted: hooksTrusted}),
+		root, nil,
 		func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg}) },
-	)
-	if hook.ProjectDefinesHooks(cwd) && !hooksTrusted {
+	).SetEnv(childEnv) // 钩子也是子进程:`.env` 只能从这里到达它们(复核 C1)
+	if hook.ProjectDefinesHooks(root) && !hooksTrusted {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: "this project defines hooks but they are not trusted — run /hooks trust to enable them"})
 	}
@@ -436,7 +538,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// cfg.ResolveModel 解析的是未被 applyOnecreatGateway 改写的原始 entry(直连厂商),会
 		// 绕过平台档位计量,或在无 key 时以泄露底层厂商名的 401 失败。与 planner/classifier
 		// 同理,网关模式统一回退到网关路由的主 executor provider。
-		if modelRef := subagentModelRef(cfg, sk); modelRef != "" && !onecreatGatewayActive() {
+		if modelRef := subagentModelRef(cfg, sk); modelRef != "" && !onecreatGatewayActive(gw) {
 			if me, ok := cfg.ResolveModel(modelRef); ok {
 				if p, err := NewProviderWithProxy(me, proxySpec); err == nil {
 					prov, price, ctxWin = p, me.Price, me.ContextWindow
@@ -512,7 +614,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// onecreat 网关模式下禁用客户端双模型/分类器:平台统一控制模型(档位),客户端再配一个
 	// planner / classifier 没有意义 —— 它们不走网关(applyOnecreatGateway 只改写主 provider),
 	// 会(1)在阶段标记/顶栏 label 里泄露真实模型名,(2)直连厂商绕过网关计量(或无 key 失败)。
-	gatewayActive := onecreatGatewayActive()
+	gatewayActive := onecreatGatewayActive(gw)
 
 	// Two-model collaboration: a distinct planner_model wraps the executor in a
 	// Coordinator with its own session, kept separate for cache stability.
@@ -544,34 +646,32 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		classifier = control.NewProviderAutoPlanClassifier(classifierProv)
 	}
 
-	// ---- 底层引擎分流 ----
-	// engine="dsh" 时只把 runner 换成 dsh sidecar,其余装配(工具注册表、技能、
-	// 记忆、hooks、权限、证据账本、会话文件)一律照旧 —— 于是 Controller 的
-	// Compose / 计划门 / checkpoint / 审批 / 证据全部原样复用,前端零改动。
-	var dshEngine *dsh.Engine
-	if engineName(cfg, opts.Engine) == "dsh" {
-		eng, err := buildDSHEngine(dshEngineDeps{
-			Cfg:          cfg,
-			Sink:         sink,
-			SystemPrompt: sysPrompt,
-			CWD:          cwd,
-			Registry:     reg,
-			Session:      executor.Session(),
-			Ledger:       executor.Evidence(),
-			Policy:       policy,
-		})
-		if err != nil {
-			return nil, err
-		}
-		dshEngine = eng
-		runner = eng
+	// 回合引擎:内置 Go 内核,或 dsh sidecar(见 engine.go)。sidecar 的关闭挂在
+	// 会话作用域上,与 MCP host 同级 —— 它也是随会话生灭的子进程。
+	turnEngine, err := selectEngine(ctx, engineSpec{
+		Cfg:          cfg,
+		Name:         engineName(cfg, opts.Engine),
+		Root:         root,
+		Sink:         sink,
+		Gateway:      gw,
+		Runner:       runner,
+		Secrets:      []string{entry.Model, entry.BaseURL},
+		Scope:        sess,
+		SystemPrompt: sysPrompt,
+		Registry:     reg,
+		Session:      execSess,
+		Ledger:       executor.Policy().Evidence,
+		Pipeline:     executor.Policy(),
+	})
+	if err != nil {
+		return nil, err
 	}
-	// 计划模式的硬门控要读 Controller 的状态,而 Controller 此刻还没造出来;
-	// 用一个指针占位,下面 control.New 之后回填(planModeRef 只在 dsh 路径用)。
-	var planModeRef *control.Controller
 
 	ctrlOpts := control.Options{
-		Runner:        runner,
+		// 会话作用域交给 Controller:每一轮在它下面开一个 runtime.Turn,于是
+		// 关闭会话会自然级联取消在途的那一轮(AR-R12),不再靠手工 Cancel。
+		Scope:         sess,
+		Engine:        turnEngine,
 		Executor:      executor,
 		Sink:          sink,
 		Policy:        policy,
@@ -590,22 +690,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Jobs:          jm,
 		Registry:      reg,
 		PluginCtx:     ctx,
-		WorkspaceRoot: cwd,
+		WorkspaceRoot: root,
+		Gateway:       gw,
 		AutoPlan:      cfg.Agent.AutoPlan,
 	}
 	if classifier != nil {
 		ctrlOpts.Classifier = classifier
 	}
-	if dshEngine != nil {
-		ctrlOpts.Engine = dshEngine
-	}
 	success = true // 控制器接管 cleanup;defer 不再兜底释放
-	ctrl := control.New(ctrlOpts)
-	if dshEngine != nil {
-		planModeRef = ctrl
-		dshEngine.SetDecider(dshDecider(policy, reg, func() bool { return planModeRef.PlanMode() }))
-	}
-	return ctrl, nil
+	return control.New(ctrlOpts), nil
 }
 
 func subagentModelRef(cfg *config.Config, sk skill.Skill) string {
@@ -653,36 +746,33 @@ func subagentModelKeys(name string) []string {
 }
 
 // onecreatGatewayActive 报告当前是否处于 onecreat 网关模式(桌面端登录后会设这个 env)。
-func onecreatGatewayActive() bool {
-	return strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL")) != ""
-}
+func onecreatGatewayActive(gw *account.Gateway) bool { return gw.Active() }
 
 // applyOnecreatGateway 在「onecreat 网关模式」下改写已解析的 provider entry:BaseURL 指向
 // 平台 AI 网关、API key 取登录 token、关掉直连余额查询。仅当 ONECREAT_GATEWAY_URL 存在且该
 // provider 是 openai 兼容类型时生效 —— 只有桌面端登录后才会设这两个 env,命令行/其他前端不
 // 设则完全无副作用(零耦合)。对外 provider 名也统一成 onecreat,避免错误提示泄露底层模型族。
-func applyOnecreatGateway(e *config.ProviderEntry) {
-	gw := strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL"))
-	if gw == "" || e == nil || e.Kind != "openai" {
+func applyOnecreatGateway(e *config.ProviderEntry, gw *account.Gateway) {
+	if !gw.Active() || e == nil || e.Kind != "openai" {
 		return
 	}
 	e.Name = "onecreat"
-	e.BaseURL = gw
-	e.APIKeyEnv = "ONECREAT_GATEWAY_TOKEN" // APIKey() 读这个 env 拿登录 token
-	e.BalanceURL = ""                      // 网关模式下不直连厂商查余额
+	e.BaseURL = gw.URL()
+	e.APIKeyEnv = account.EnvToken // 名字只用于报错话术;token 从 Gateway 拿,不读 env
+	e.BalanceURL = ""              // 网关模式下不直连厂商查余额
 	// 档位模式:把发给上游的 model 改成选中的档位 "tier-N",平台网关再映射到真实模型
 	//(对用户隐藏)。未设档位则保持原 model(过渡期:旧版客户端仍发旧模型名,网关兼容)。
-	if tier := strings.TrimSpace(os.Getenv("ONECREAT_TIER")); tier != "" {
+	if tier := gw.Tier(); tier != "" {
 		e.Model = tier
 	}
 }
 
 // ApplyOnecreatGateway / OnecreatGatewayActive 是上面两个内部函数的导出封装,供 ACP 等
 // 平行装配路径(不走 Build)复用同一网关入口逻辑,避免各自实现漂移导致计费旁路 / 泄露厂商。
-func ApplyOnecreatGateway(e *config.ProviderEntry) { applyOnecreatGateway(e) }
+func ApplyOnecreatGateway(e *config.ProviderEntry, gw *account.Gateway) { applyOnecreatGateway(e, gw) }
 
 // OnecreatGatewayActive 报告是否处于 onecreat 网关模式(见 onecreatGatewayActive)。
-func OnecreatGatewayActive() bool { return onecreatGatewayActive() }
+func OnecreatGatewayActive(gw *account.Gateway) bool { return onecreatGatewayActive(gw) }
 
 // NewProvider builds a provider.Provider from a configured entry. Exported so
 // custom assemblers (e.g. the ACP per-session factory) can reuse it without
@@ -694,11 +784,26 @@ func NewProvider(e *config.ProviderEntry) (provider.Provider, error) {
 // NewProviderWithProxy builds a provider.Provider with the configured ordinary
 // network proxy settings.
 func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (provider.Provider, error) {
+	return newProviderFor(e, proxy, nil)
+}
+
+// newProviderFor builds the provider for one entry. gw is the platform account,
+// non-nil and active only on the gateway path: it is both the credential source
+// (so a token refresh reaches this client on its next request) and the flag that
+// tells the client its upstream is the platform, whose model must never leak
+// through an error message.
+func newProviderFor(e *config.ProviderEntry, proxy netclient.ProxySpec, gw *account.Gateway) (provider.Provider, error) {
+	var creds account.CredentialSource = account.EnvCredential{Var: e.APIKeyEnv}
+	gateway := false
+	if gw.Active() {
+		creds, gateway = gw, true
+	}
 	return provider.New(e.Kind, provider.Config{
-		Name:    e.Name,
-		BaseURL: e.BaseURL,
-		Model:   e.Model,
-		APIKey:  e.APIKey(),
+		Name:        e.Name,
+		BaseURL:     e.BaseURL,
+		Model:       e.Model,
+		Credentials: creds,
+		Gateway:     gateway,
 		// Pass the key's env var so auth failures can name where to fix it, plus
 		// provider-kind-specific knobs (the anthropic provider reads thinking/effort;
 		// the openai one ignores them).
@@ -712,10 +817,15 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 }
 
 // addBuiltins adds enabled built-in tools to reg. An empty list means all of
-// them. writeRoots confines the file-writing built-ins to the workspace: after
-// the (unconfined) defaults are added, each enabled writer is replaced by an
-// instance bound to writeRoots (preserving registry order).
-func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, searchSpec builtin.SearchSpec, stderr io.Writer) {
+// them. writeRoots confines the file-writing built-ins to the workspace, and ws
+// binds every workspace-relative built-in to this runtime's project root: after
+// the (unconfined, process-cwd) defaults are added, each enabled one is replaced
+// by an instance bound to the workspace (preserving registry order).
+//
+// A zero ws leaves the replacements' work dir empty, i.e. process-cwd relative —
+// identical to the registered defaults — so a process-scoped frontend is
+// unaffected.
+func addBuiltins(reg *tool.Registry, ws workspace.Context, enabled, writeRoots []string, bashSpec sandbox.Spec, searchSpec builtin.SearchSpec, childEnv []string, stderr io.Writer) {
 	if len(enabled) == 0 {
 		for _, t := range tool.Builtins() {
 			reg.Add(t)
@@ -729,10 +839,11 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 			}
 		}
 	}
-	// Replace the unconfined defaults with confined instances (registry order is
-	// preserved on replace): file-writers bound to the workspace, bash to the OS
-	// sandbox. Only replace tools actually enabled/present.
-	confined := append(builtin.ConfineWriters(writeRoots), builtin.ConfineBash(bashSpec), builtin.ConfineSearch(searchSpec))
+	// Replace the unconfined defaults with workspace-bound instances (registry
+	// order is preserved on replace): relative paths resolve against the
+	// workspace root, file-writers are confined to writeRoots, bash runs in the
+	// workspace under the OS sandbox. Only replace tools actually enabled/present.
+	confined := builtin.ConfineWorkspace(ws.Root(), writeRoots, bashSpec, searchSpec, childEnv)
 	for _, t := range confined {
 		if _, ok := reg.Get(t.Name()); ok {
 			reg.Add(t)
@@ -759,23 +870,62 @@ func partitionByTier(entries []config.PluginEntry) (eager, lazy, bg []config.Plu
 }
 
 // PluginSpecs maps configured plugin entries to plugin.Spec, expanding ${VAR}
-// references. Exported so custom assemblers can connect the config's plugins
-// alongside their own (e.g. ACP's per-session MCP servers).
+// references from the process environment. Exported so custom assemblers can
+// connect the config's plugins alongside their own (e.g. ACP's per-session MCP
+// servers). Prefer PluginSpecsIn when a workspace config is at hand — it is the
+// only path a project's `.env` reaches its MCP servers by (复核 C1)。
 func PluginSpecs(entries []config.PluginEntry) []plugin.Spec {
+	return PluginSpecsIn(config.Env{}, entries)
+}
+
+// PluginSpecsIn is PluginSpecs bound to one workspace's env overlay: `${VAR}` in
+// a command/arg/header resolves through it, and the child process is launched
+// with that workspace's environment rather than the raw process environment.
+func PluginSpecsIn(env config.Env, entries []config.PluginEntry) []plugin.Spec {
+	baseEnv := workspaceBaseEnv(env)
 	specs := make([]plugin.Spec, len(entries))
 	for i, e := range entries {
-		e = e.ExpandedPlugin() // resolve ${VAR} / ${VAR:-default} from the environment
+		e = e.ExpandedPluginIn(env) // resolve ${VAR} / ${VAR:-default} for this workspace
 		specs[i] = plugin.Spec{
 			Name:    e.Name,
 			Type:    e.Type,
 			Command: e.Command,
 			Args:    e.Args,
 			Env:     e.Env,
+			BaseEnv: baseEnv,
 			URL:     e.URL,
 			Headers: e.Headers,
 		}
 	}
 	return specs
+}
+
+// workspaceBaseEnv 是「这个工作区的插件该用什么基础环境」的唯一规则:没有 `.env` 叠加层
+// 就返回 nil,也就是继承进程环境 —— 改动前的行为,进程级前端(CLI / ACP)该有的行为。
+// 有叠加层才显式组装一份,免得给不需要的会话钉上一个 boot 时的环境快照。
+func workspaceBaseEnv(env config.Env) []string {
+	if env.Empty() {
+		return nil
+	}
+	return env.Environ()
+}
+
+// applyChildEnv 给还没有基础环境的 spec 装上这个工作区的子进程环境。
+//
+// 只填 nil 的那些:调用方显式给过 BaseEnv 就是它的决定,不覆盖。env 为 nil(工作区没有
+// `.env` 叠加层)时整个是 no-op —— nil BaseEnv 的含义就是「继承进程环境」,那是改动前的
+// 行为,也是 CLI / ACP 这类进程级前端该有的行为。
+func applyChildEnv(env []string, tiers ...[]plugin.Spec) {
+	if env == nil {
+		return
+	}
+	for _, tier := range tiers {
+		for i := range tier {
+			if tier[i].BaseEnv == nil {
+				tier[i].BaseEnv = env
+			}
+		}
+	}
 }
 
 // MCPStartupNotice formats the warning shown when configured MCP servers failed

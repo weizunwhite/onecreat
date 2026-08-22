@@ -37,7 +37,7 @@ func TestNewNormalizesTypedNilInterfaces(t *testing.T) {
 
 	a := New(nil, tool.NewRegistry(), NewSession(""), Options{Gate: gate, Hooks: hooks}, sink)
 	a.sink.Emit(event.Event{Kind: event.Text, Text: "typed nil sink should not panic"})
-	if a.gate != nil {
+	if a.policy.Gate != nil {
 		t.Fatal("typed nil gate should be normalized to nil")
 	}
 	if a.hooks != nil {
@@ -50,7 +50,7 @@ func TestSetGateNormalizesTypedNil(t *testing.T) {
 	a := New(nil, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
 
 	a.SetGate(gate)
-	if a.gate != nil {
+	if a.policy.Gate != nil {
 		t.Fatal("typed nil gate should be normalized to nil")
 	}
 }

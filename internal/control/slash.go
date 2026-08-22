@@ -2,7 +2,6 @@ package control
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"reasonix/internal/config"
@@ -279,7 +278,7 @@ func (c *Controller) managementNotice(trimmed string) bool {
 }
 
 func (c *Controller) modelListText() string {
-	if strings.TrimSpace(os.Getenv("ONECREAT_GATEWAY_URL")) != "" {
+	if c.gateway.Active() {
 		return "AI 由 OneCreat 平台智能档位统一调度；当前账号只显示档位，不显示底层模型、服务商或路由。"
 	}
 	cfg, err := config.Load()
@@ -302,12 +301,13 @@ func (c *Controller) modelListText() string {
 }
 
 func (c *Controller) memoryListText() string {
-	if c.mem == nil || len(c.mem.Docs) == 0 {
+	mem := c.memory.Set()
+	if mem == nil || len(mem.Docs) == 0 {
 		return i18n.M.ListMemoryNone
 	}
 	var b strings.Builder
 	b.WriteString(i18n.M.ListMemoryHeader + "\n")
-	for _, d := range c.mem.Docs {
+	for _, d := range mem.Docs {
 		fmt.Fprintf(&b, "  (%s) %s\n", d.Scope, d.Path)
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -347,17 +347,17 @@ func (c *Controller) hookListText() string {
 }
 
 func (c *Controller) mcpListText() string {
-	if c.host == nil || (len(c.host.ServerNames()) == 0 && len(c.host.Failures()) == 0) {
+	if c.mcp.host == nil || (len(c.mcp.host.ServerNames()) == 0 && len(c.mcp.host.Failures()) == 0) {
 		return i18n.M.ListMcpNone
 	}
 	var b strings.Builder
-	if len(c.host.ServerNames()) > 0 {
+	if len(c.mcp.host.ServerNames()) > 0 {
 		b.WriteString(i18n.M.ListMcpHeader + "\n")
-		for _, name := range c.host.ServerNames() {
+		for _, name := range c.mcp.host.ServerNames() {
 			fmt.Fprintf(&b, "  %s\n", name)
 		}
 	}
-	if failures := c.host.Failures(); len(failures) > 0 {
+	if failures := c.mcp.host.Failures(); len(failures) > 0 {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}

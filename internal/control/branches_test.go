@@ -63,9 +63,7 @@ func TestSubmitBranchHonorsNumericTurnTarget(t *testing.T) {
 	}
 	rootPath := c.SessionPath()
 
-	c.mu.Lock()
-	c.cpBound[1] = 3 // displayed turn 2 starts before "second prompt"
-	c.mu.Unlock()
+	c.ckpt.seedBound(1, 3) // displayed turn 2 starts before "second prompt"
 
 	c.Submit("/branch 2 experiment")
 	if c.SessionPath() == rootPath {
@@ -141,11 +139,9 @@ func TestSubmitBranchEmitsErrorNoticeWhileRunning(t *testing.T) {
 			}
 		}),
 	})
-	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
+	c.SetSessionPath(agent.NewSessionPath(c.session.dir, "test"))
 
-	c.mu.Lock()
-	c.running = true
-	c.mu.Unlock()
+	c.turn.markRunning()
 
 	c.Submit("/branch experiment")
 	if len(notices) == 0 {

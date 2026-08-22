@@ -9,7 +9,7 @@ import (
 
 func TestKnowledgeCreateImportSearchAndPrompt(t *testing.T) {
 	t.Setenv("ONECREAT_KNOWLEDGE_DIR", t.TempDir())
-	app := &App{}
+	app := newBareApp(nil, nil)
 
 	base, err := app.KnowledgeCreate("客户硬件资料")
 	if err != nil {
@@ -111,7 +111,7 @@ func tokensContain(tokens []string, want string) bool {
 
 func TestKnowledgeImportSkipsUnsupportedFiles(t *testing.T) {
 	t.Setenv("ONECREAT_KNOWLEDGE_DIR", t.TempDir())
-	app := &App{}
+	app := newBareApp(nil, nil)
 	base, err := app.KnowledgeCreate("资料")
 	if err != nil {
 		t.Fatalf("KnowledgeCreate: %v", err)
@@ -135,7 +135,7 @@ func TestKnowledgeImportSkipsUnsupportedFiles(t *testing.T) {
 
 func TestKnowledgeDeleteRemovesBaseAndDocs(t *testing.T) {
 	t.Setenv("ONECREAT_KNOWLEDGE_DIR", t.TempDir())
-	app := &App{}
+	app := newBareApp(nil, nil)
 	base, err := app.KnowledgeCreate("待删除")
 	if err != nil {
 		t.Fatalf("KnowledgeCreate: %v", err)

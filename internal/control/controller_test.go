@@ -312,7 +312,7 @@ func TestApprovalAllowOnce(t *testing.T) {
 	c, ids, _ := approvalIDs()
 	go func() { c.Approve(<-ids, true, false) }()
 
-	allow, remember, err := gateApprover{c}.Approve(context.Background(), "bash", "go test", nil)
+	allow, remember, err := c.approvals.Approve(context.Background(), "bash", "go test", nil)
 	if err != nil || !allow || remember {
 		t.Fatalf("Approve = (%v,%v,%v), want allow once", allow, remember, err)
 	}
@@ -323,7 +323,7 @@ func TestApprovalDeny(t *testing.T) {
 	c, ids, _ := approvalIDs()
 	go func() { c.Approve(<-ids, false, false) }()
 
-	allow, _, err := gateApprover{c}.Approve(context.Background(), "bash", "rm -rf /", nil)
+	allow, _, err := c.approvals.Approve(context.Background(), "bash", "rm -rf /", nil)
 	if err != nil || allow {
 		t.Fatalf("Approve = (%v,%v), want deny", allow, err)
 	}
@@ -339,7 +339,7 @@ func TestApprovalSessionGrant(t *testing.T) {
 	go func() { c.Approve(<-ids, true, true) }()
 
 	for i := 0; i < 3; i++ {
-		allow, _, err := gateApprover{c}.Approve(context.Background(), "bash", "go build", nil)
+		allow, _, err := c.approvals.Approve(context.Background(), "bash", "go build", nil)
 		if err != nil || !allow {
 			t.Fatalf("call %d = (%v,%v), want allow", i, allow, err)
 		}
@@ -356,7 +356,7 @@ func TestApprovalCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	allow, _, err := gateApprover{c}.Approve(ctx, "bash", "x", nil)
+	allow, _, err := c.approvals.Approve(ctx, "bash", "x", nil)
 	if err == nil || allow {
 		t.Fatalf("Approve on cancelled ctx = (%v,%v), want (false, error)", allow, err)
 	}
