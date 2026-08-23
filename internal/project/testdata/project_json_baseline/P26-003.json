@@ -1,0 +1,14 @@
+{
+  "code": "P26-003",
+  "short_name": "双电梯调度",
+  "full_name": "强化学习双电梯调度",
+  "student": "学生C",
+  "needs_outsourcing": false,
+  "stage": 3,
+  "line": "C",
+  "assignee": {
+    "type": "student",
+    "id": "card_test_01",
+    "name": "学生C"
+  }
+}

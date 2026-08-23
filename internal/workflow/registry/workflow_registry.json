@@ -1,0 +1,302 @@
+{
+  "schema_version": 17,
+  "version": "17.0",
+  "updated": "2026-08-23",
+  "updated_at": "2026-08-23",
+  "note": "科创工作流唯一真源。v17 = v16 的超集收口：v16 全部字段含义不变，新增 enums / aliases / skills_not_materials / source_of_truth，并把散落三处的枚举收进 enums。任何端遇到未注册材料类型必须报错，不得兜底猜测。",
+  "source_of_truth": {
+    "statement": "本文件是科创工作流的唯一真源：阶段、材料、skill、依赖、输出位置、平台 file_type 与全部枚举只在这里定义一次。",
+    "embedded_in": "OneCreat internal/workflow/registry（go:embed workflow_registry.json），Load() 时即校验，校验不过直接报错。",
+    "fail_closed": "未注册的材料类型 → 报错。不许客户端兜底猜测，不许在消费侧补一份枚举。",
+    "change_protocol": "增删流程 = 改本文件 + 加/删对应 skill + 跑 go test ./internal/workflow/...。先改注册表，再由消费侧使用。",
+    "upstream": {
+      "repo": "/Users/localwork/04_project/NASApp",
+      "file": "brain/registry/workflow_registry.json",
+      "version": "16.0",
+      "note": "并行期只读参照。TestNoDriftFromNASAppV16 在该文件存在时逐项比对；M5 数据切换后 NASApp 侧退役，该守卫可删。"
+    },
+    "skill_repo": {
+      "path": "/Users/zunwei/code/oneup-skills",
+      "layout": "<plugin>/skills/<skill>/SKILL.md",
+      "note": "skill 正文不在 OneCreat 仓内，靠 internal/skill 的 ScopeGlobal 目录扫描发现。本注册表只登记 skill 名与所在插件。"
+    }
+  },
+  "enums": {
+    "groups": {
+      "authority": "本文件（收口自 topic_index.py:12 / workflow_registry.json v16:6 / unestablished-path.ts:4 三处）",
+      "note": "学段组别。v16 时代写了三份，v17 起只此一份。",
+      "values": ["小学低", "小学高", "初中", "高中", "混合"]
+    },
+    "sources": {
+      "authority": "本文件（收口自 topic_index.py:13 SOURCE_TYPES）",
+      "note": "题卡来源类型。注意「单题发散」的产物 frontmatter 必须写「深度产题」，否则会被降级成「存量」。",
+      "values": ["快速产题", "深度产题", "快速评题", "深度评题", "存量"]
+    },
+    "lines": {
+      "authority": "本文件（收口自 web/main.py:4517 PROJECT_CODE_RE / macfs_agent.py:93）",
+      "note": "项目业务线。编号形如 P26[CBG]-NNN，三线共用一个后三位序号池；存量 P26-NNN 不迁移。换线只能走 reline_project.py，保留后三位。",
+      "values": ["C", "B", "G"],
+      "detail": [
+        {"value": "C", "label": "个人学生", "note": "C 端直营学生项目"},
+        {"value": "B", "label": "机构", "note": "B 端机构合作项目"},
+        {"value": "G", "label": "学校", "note": "G 端学校合作项目"}
+      ]
+    },
+    "project_stages": {
+      "authority": "本文件（收口自 web/main.py:6366 PROJECT_STAGE_NAMES）",
+      "note": "项目生命周期八段，值域 1–8。第 8 段之后循环回第 1 段。v16 权威在 P 卡（.kanban.json），迁移后权威改为 project.json（规划 §4.1，M5 一次性切换，不双写）。",
+      "values": ["孵化", "立项", "生产", "发布同步", "项目协作", "授课交付", "结题冲刺", "回流归档"],
+      "detail": [
+        {"value": "孵化", "no": 1, "note": "选题在选题工坊里形成候选"},
+        {"value": "立项", "no": 2, "note": "发号+建档一条龙；业务线必选，分配对象可空后补"},
+        {"value": "生产", "no": 3, "note": "项目内容在七目录里长出来；AI 可辅助生成但学生必须能逐行解释、数据必须学生亲手采集"},
+        {"value": "发布同步", "no": 4, "note": "把文件真源、镜像与项目卡拉齐；同步只写初值"},
+        {"value": "项目协作", "no": 5, "note": "人围着项目转；分配只改元数据，项目实体永不搬家"},
+        {"value": "授课交付", "no": 6, "note": "教师平台开课授课，产物按类型回流七目录"},
+        {"value": "结题冲刺", "no": 7, "note": "材料收口进 07_竞赛提交，按赛事规则打包"},
+        {"value": "回流归档", "no": 8, "note": "成果原位沉淀，经验滋养下一轮孵化；之后循环回第 1 段"}
+      ]
+    },
+    "teaching_flows": {
+      "authority": "本文件（收口自 oneup-skills/competition-toolkit/skills/lesson-plan-generator/SKILL.md:48-61）",
+      "note": "教师平台进度轴权威十流程，所有项目通用、顺序固定。每节教案必须打单值「对应流程」标签（平台 flow_no 单值）。v17 以十流程为准；NASApp C 板的十一列是漂移项，见 enums.legacy_board_columns。另有一套教学内容 8 阶段（启发→调研→本质→可视→制作→测试→迭代→成果），它是教案正文的组织方式，不是进度轴，不作为枚举登记。",
+      "values": ["问题分析", "课题定义", "研究调研", "方案设计", "原型构建", "程序调试", "实验测试", "数据总结", "材料整理", "报告与答辩"],
+      "detail": [
+        {"value": "问题分析", "no": 1, "note": "生活观察发现并界定真问题（科技启发、问题发现、5 层追问）"},
+        {"value": "课题定义", "no": 2, "note": "把模糊想法收敛成明确可做的课题（选题三要素、成功标准雏形）；必须独立成节，不得并入问题分析"},
+        {"value": "研究调研", "no": 3, "note": "需求调研、文献/专利检索、问卷访谈"},
+        {"value": "方案设计", "no": 4, "note": "本质分析、技术方案设计、方案可视化（架构图、选型结论）"},
+        {"value": "原型构建", "no": 5, "note": "元器件认识、单元测试、整体组装、硬件联调"},
+        {"value": "程序调试", "no": 6, "note": "写程序、分段调试、程序闭环"},
+        {"value": "实验测试", "no": 7, "note": "实验设计、对比实验、测试验证、用数据证明有效"},
+        {"value": "数据总结", "no": 8, "note": "数据整理、结论提炼、图表化"},
+        {"value": "材料整理", "no": 9, "note": "论文/日志/查新/展板等参赛材料整理"},
+        {"value": "报告与答辩", "no": 10, "note": "成果展示、答辩讲稿、迭代优化总结"}
+      ]
+    },
+    "legacy_board_columns": {
+      "authority": "web/main.py:15398-15399（NASApp C 类看板默认列，只读存量）",
+      "note": "漂移项，只读保留，禁止作为新口径使用。这十一列比权威十流程多一个「通识基础」，且「发现问题/原型制作/报告答辩」三处措辞与十流程不一致。v17 以 enums.teaching_flows 为准；本列表只用于读懂存量 C 板数据，不得据此生成教案标签、不得据此建新板。",
+      "read_only": true,
+      "values": ["发现问题", "课题定义", "通识基础", "研究调研", "方案设计", "原型制作", "程序调试", "实验测试", "数据总结", "材料整理", "报告答辩"],
+      "detail": [
+        {"value": "发现问题", "no": 1, "note": "对应十流程 1 问题分析（措辞漂移）"},
+        {"value": "课题定义", "no": 2, "note": "对应十流程 2 课题定义"},
+        {"value": "通识基础", "no": 3, "note": "十流程里没有这一项——这就是漂移的那一列，无对应"},
+        {"value": "研究调研", "no": 4, "note": "对应十流程 3 研究调研"},
+        {"value": "方案设计", "no": 5, "note": "对应十流程 4 方案设计"},
+        {"value": "原型制作", "no": 6, "note": "对应十流程 5 原型构建（措辞漂移）"},
+        {"value": "程序调试", "no": 7, "note": "对应十流程 6 程序调试"},
+        {"value": "实验测试", "no": 8, "note": "对应十流程 7 实验测试"},
+        {"value": "数据总结", "no": 9, "note": "对应十流程 8 数据总结"},
+        {"value": "材料整理", "no": 10, "note": "对应十流程 9 材料整理"},
+        {"value": "报告答辩", "no": 11, "note": "对应十流程 10 报告与答辩（措辞漂移）"}
+      ]
+    },
+    "topic_states": {
+      "authority": "本文件（收口自 00_产题评题/README.md:53-63 与 topic_index.py 题卡结构）",
+      "note": "题卡状态。铁律：文件位置就是状态，题索引只是扫描产物。",
+      "values": ["candidate", "establishing", "established", "unestablished"],
+      "detail": [
+        {"value": "candidate", "label": "候选", "note": "在 00_产题评题/{产题,评题} 里"},
+        {"value": "establishing", "label": "立项中", "note": "老板点了「立项」，有活跃立项线程；同一题禁止重复发起"},
+        {"value": "established", "label": "已立项", "note": "进 01_在研项目/P26X-NNN_短名/，卡上带 project_code"},
+        {"value": "unestablished", "label": "未立项", "note": "进 01_在研项目/_未立项/<题名>_<组别>_<日期>/，必填 unestablished_reason"}
+      ]
+    },
+    "thread_statuses": {
+      "authority": "本文件（收口自 brain/src/conversation-threads.ts:7-13）",
+      "note": "对话线程状态机 queued → running → awaiting_input → succeeded/failed/cancelled。深度模式且没带 note 时先进 awaiting_input，收到补充消息才起作业——不能把硬停伪装成完成。planned 里两个状态是规划 §4.5 的决策收件箱产物，M3 落地时才写进 values。",
+      "values": ["queued", "running", "awaiting_input", "succeeded", "failed", "cancelled"],
+      "planned": ["awaiting_decision", "decided"]
+    },
+    "decisions": {
+      "authority": "本文件（收口自 workflow_registry.json v16 材料「立项」的 decisions 字段与 brain/src/server.ts:2289）",
+      "note": "立项线程跑完之后的业务决断。只有老板在结果页明确点击确认后才能发号建档；未立项必填 reason 并写《未立项原因.md》。这是业务决策点，不是安全审批，不受 YOLO/bypass 影响。",
+      "values": ["建档", "未立项"]
+    },
+    "stages": {
+      "authority": "本文件的 stages 块（每个 id 的 label/order/落点在那里定义）",
+      "note": "科创一条链五段，材料生产流水线。materials[].stage 只能取这五个值。",
+      "values": ["source", "establish", "collab", "platform", "sprint"]
+    },
+    "material_kinds": {
+      "authority": "本文件",
+      "note": "整套系统里最重要的一个二分。conversational = 有人机对话线程、可 awaiting_input、有建档/未立项决断；oneclick = 一次性生成材料，靠依赖 DAG 编排。",
+      "values": ["conversational", "oneclick"]
+    },
+    "material_statuses": {
+      "authority": "本文件",
+      "note": "v16 只有 available/coming 两值且混着临时交付注释；v17 收口成三值，临时说明一律移进材料的 notes 字段。",
+      "values": ["available", "planned", "retired"],
+      "detail": [
+        {"value": "available", "note": "skill 已交付，可以跑"},
+        {"value": "planned", "note": "已登记但 skill 未交付，不可跑；消费侧应显式拒绝而不是静默跳过"},
+        {"value": "retired", "note": "已退役，只为读懂历史产物而保留；不得作为新任务的入口"}
+      ]
+    },
+    "modes": {
+      "authority": "本文件",
+      "note": "对话型材料的档位。快速/深度差在过程深度和停不停，不差在核心产物规格；发散是 topic-mining 的第三档（A3 单题发散）。",
+      "values": ["快速", "深度", "发散"]
+    },
+    "engines": {
+      "authority": "本文件（收口自 workflow-registry.ts RegistryMaterial.default_engine）",
+      "note": "NASApp 的引擎三档。迁到 OneCreat 后由 internal/engine 的 TurnEngine seam + provider registry 覆盖，此枚举只作为材料的缺省倾向保留。",
+      "values": ["deepseek", "claude", "grok"]
+    },
+    "frontmatter_kinds": {
+      "authority": "本文件",
+      "note": "题来源 Markdown 的 frontmatter kind 值。产题准则文件写「产题准则」，题索引器不得把准则/ 下的文件当课题。",
+      "values": ["产题", "评题", "产题准则"]
+    },
+    "upload_via": {
+      "authority": "本文件",
+      "note": "材料上传教师平台的通道。",
+      "values": ["none", "package-file", "courseware"],
+      "detail": [
+        {"value": "none", "note": "不上传平台"},
+        {"value": "package-file", "note": "作为项目包的一个文件上传，带 platform.file_type"},
+        {"value": "courseware", "note": "走课件上传接口，写 project_lessons，origin=uploaded"}
+      ]
+    },
+    "platform_file_types": {
+      "authority": "本文件（教师平台侧 file_type 枚举的客户端镜像）",
+      "note": "materials[].platform.file_type 的合法取值。复合值用 | 分隔表示「一次产出多个 file_type」，校验时按 | 拆开逐个查。⚠️ 这是对端（teacher 仓）枚举的镜像，M2 接平台上传前必须与对端源码核对一次。",
+      "values": [
+        "technical_proposal",
+        "tutorial_manual",
+        "lesson_plan",
+        "teacher_guide",
+        "research_log_scaffold",
+        "evidence_ledger",
+        "paper_skeleton_md",
+        "paper_preview_docx",
+        "bom",
+        "design",
+        "paper_final_docx"
+      ]
+    }
+  },
+  "naming": {
+    "note": "v16 的 naming.groups 已删除，组别唯一定义在 enums.groups（见 groups_ref）。其余字段含义与 v16 一致。",
+    "groups_ref": "enums.groups",
+    "date_format": "YYYYMMDD",
+    "date_pattern": "^20\\d{6}$",
+    "topic_file": "<简要说明>_<组别>_<日期>.md",
+    "unestablished_dir": "<题名>_<组别>_<日期>",
+    "frontmatter_required": ["kind", "source", "group", "date", "subject", "topics"],
+    "topic_key": "normalize(title): 全角→半角、去空白与标点与书名号、小写",
+    "topic_key_algorithm": {
+      "note": "三处实现（topic_index.py:25-31 / web/main.py:893-899 / conversation-threads.ts:74-79）必须一字不差同源；迁移后收成一份，并且必须与历史文件产生的 key 逐字节一致，否则历史题卡全部变成新题。",
+      "steps": [
+        "unicode NFKC 归一",
+        "转小写",
+        "丢弃全部空白字符",
+        "丢弃 unicode 大类为 P（标点）或 S（符号）的字符"
+      ]
+    },
+    "unestablished_topic_charset": {
+      "note": "未立项目录名的字符集收口规则，来源 brain/src/unestablished-path.ts:7-23，必须与 NAS 侧 UNESTABLISHED_FOLDER_RE 同口径。",
+      "steps": [
+        "unicode NFKC 归一",
+        "把 [^A-Za-z0-9\\u3400-\\u9fff_-] 的连续片段替换成单个 -",
+        "把连续的 - 合并成一个",
+        "去掉首尾的 -",
+        "截断到 100 字符后再去一次尾部 -",
+        "结果为空时回退到默认题名「课题」"
+      ],
+      "max_length": 100,
+      "fallback": "课题",
+      "folder_pattern": "^<规范题名>_(小学低|小学高|初中|高中|混合)_20\\d{6}$"
+    }
+  },
+  "aliases": {
+    "note": "旧客户端仍会发这几个名字。只做输入兼容：解析时归一到目标类型，展示与产出一律用目标类型。收口自 brain/src/workflow-registry.ts:103-108 LEGACY_MATERIAL_ALIASES。",
+    "materials": {
+      "快速选题包": "快速产题",
+      "选题": "深度产题",
+      "评题": "深度评题",
+      "研究日志": "研究日志框架"
+    }
+  },
+  "stages": [
+    {"id": "source", "label": "产题", "order": 1, "kind": "conversational", "app_tab": "产题", "m4_root": "课题/00_产题评题", "nas_root": "/share/项目管理/00_产题评题", "entries": ["快速产题", "深度产题", "单题发散", "快速评题", "深度评题"], "records_from": ["产题", "评题"]},
+    {"id": "establish", "label": "立项", "order": 2, "kind": "conversational", "app_tab": "立项", "m4_root": "课题/00_产题评题 + 课题/01_在研项目/_未立项", "nas_root": "/share/项目管理/00_产题评题 + /share/项目管理/_未立项", "board": "topic_index.json（卡=题；筛选=四来源+存量；状态见 enums.topic_states）", "actions": ["立项(快速|深度)", "立项成功→发号建档", "未立项", "从一个想法开始→评题"]},
+    {"id": "collab", "label": "协作投放", "order": 3, "kind": "oneclick", "app_tab": "研发", "bucket": "06_项目协作/投放"},
+    {"id": "platform", "label": "平台材料", "order": 4, "kind": "oneclick", "app_tab": "研发", "bucket": "02_平台材料"},
+    {"id": "sprint", "label": "竞赛提交", "order": 5, "kind": "oneclick", "app_tab": "研发", "bucket": "07_竞赛提交"}
+  ],
+  "materials": [
+    {"type": "快速产题", "stage": "source", "kind": "conversational", "skill": "topic-express", "skill_plugin": "competition-toolkit", "modes": ["快速"], "default_mode": "快速", "default_engine": "deepseek", "deps": [], "outputs": {"naming": "<机构或主题>_<组别>_<日期>.md（+ _对外版）", "dir": "00_产题评题/产题", "app_dir": "选题工坊/产题", "exts": [".md"], "frontmatter_kind": "产题"}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available", "app": {"icon": "shippingbox", "subtitle": "围绕真实对象快速形成候选题包"}},
+    {"type": "深度产题", "stage": "source", "kind": "conversational", "skill": "topic-mining", "skill_plugin": "competition-toolkit", "modes": ["深度"], "default_mode": "深度", "default_engine": "deepseek", "deps": [], "outputs": {"naming": "<主题>_<组别>_<日期>.md", "dir": "00_产题评题/产题", "app_dir": "选题工坊/产题", "exts": [".md"], "frontmatter_kind": "产题"}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available", "app": {"icon": "scope", "subtitle": "围绕一个主题域或学生素材深挖出题"}},
+    {"type": "单题发散", "stage": "source", "kind": "conversational", "skill": "topic-mining", "skill_plugin": "competition-toolkit", "modes": ["发散"], "default_mode": "发散", "default_engine": "deepseek", "deps": [], "soft_deps": ["快速产题", "深度产题", "快速评题", "深度评题"], "outputs": {"naming": "<题材>_<组别>_<日期>.md", "dir": "00_产题评题/产题", "app_dir": "选题工坊/产题", "exts": [".md"], "frontmatter_kind": "产题"}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available", "app": {"icon": "arrow.triangle.branch", "subtitle": "围绕一个想法摊开可能性地图再收敛"}, "notes": "产物 frontmatter 的 source 必须写「深度产题」，写「单题发散」会被题索引器降级成「存量」。"},
+    {"type": "快速评题", "stage": "source", "kind": "conversational", "skill": "topic-scoring", "skill_plugin": "competition-toolkit", "modes": ["快速"], "default_mode": "快速", "default_engine": "deepseek", "deps": [], "soft_deps": ["快速产题", "深度产题"], "outputs": {"naming": "<题名或批名>_<组别>_<日期>.md", "dir": "00_产题评题/评题", "app_dir": "选题工坊/评题", "exts": [".md"], "frontmatter_kind": "评题"}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available", "app": {"icon": "bolt.badge.checkmark", "subtitle": "本地撞车与粗分，先判断值不值得深评"}},
+    {"type": "深度评题", "stage": "source", "kind": "conversational", "skill": "topic-scoring", "skill_plugin": "competition-toolkit", "modes": ["深度"], "default_mode": "深度", "default_engine": "deepseek", "deps": [], "soft_deps": ["快速产题", "深度产题"], "outputs": {"naming": "<题名>_<组别>_<日期>.md", "dir": "00_产题评题/评题", "app_dir": "选题工坊/评题", "exts": [".md"], "frontmatter_kind": "评题"}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available", "app": {"icon": "checkmark.seal", "subtitle": "按完整评分卡深入判断与给出改法"}},
+    {"type": "立项", "stage": "establish", "kind": "conversational", "skill": "idea-to-build", "skill_plugin": "hardware-toolkit", "modes": ["快速", "深度"], "default_mode": "快速", "default_engine": "deepseek", "deps": [], "soft_deps": ["快速评题", "深度评题", "快速产题", "深度产题"], "outputs": {"naming": "查新速报.md / 技术实现方案.md / 立项确认单.md / 立项报告.md（深度另出 立项报告.html、绘图提示词.md、材料采购清单.xlsx）", "dir": "01_在研项目/<P>/01_立项定题（建档后）| 01_在研项目/_未立项/<题名>_<组别>_<日期>/（未立项）", "app_dir": "选题工坊/立项/<题名>_<组别>_<日期>", "exts": [".md", ".html", ".xlsx"]}, "decisions": ["建档", "未立项"], "platform": {"file_type": null, "upload_via": "none"}, "status": "available", "notes": "两档差在过程深度和停不停，不差在核心产物规格——技术实现方案.md 两档同规格。快速：一趟跑完无硬停，查新只做商品+开源速报，撞死走「早退替补」，唯一人工把关点是审技术实现方案。深度：七步工作流，③亮点确认与⑤方案三档对比两个硬停，查新四类来源，撞死退回评题/发散重来。"},
+    {"type": "项目简要说明", "stage": "collab", "kind": "oneclick", "skill": "project-brief", "skill_plugin": "hardware-toolkit", "deps": ["技术方案"], "outputs": {"dir": "01_立项定题", "exts": [".md"]}, "collab": {"push_dir": "06_项目协作/投放"}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"},
+    {"type": "3D交互视图", "stage": "collab", "kind": "oneclick", "skill": "project-3d-viewer", "skill_plugin": "hardware-toolkit", "deps": ["技术方案"], "outputs": {"dir": "03_研发工作区", "exts": [".html"]}, "collab": {"push_dir": "06_项目协作/投放"}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"},
+    {"type": "技术方案", "stage": "platform", "kind": "oneclick", "skill": "tech-proposal-generator", "skill_plugin": "competition-toolkit", "deps": [], "soft_deps": ["立项"], "outputs": {"dir": "02_平台材料", "exts": [".md", ".docx"]}, "platform": {"file_type": "technical_proposal", "upload_via": "package-file"}, "status": "available"},
+    {"type": "辅导手册", "stage": "platform", "kind": "oneclick", "skill": "project-tutorial-manual", "skill_plugin": "competition-toolkit", "deps": ["技术方案"], "outputs": {"dir": "02_平台材料", "exts": [".md"]}, "platform": {"file_type": "tutorial_manual", "upload_via": "package-file"}, "status": "available"},
+    {"type": "教案", "stage": "platform", "kind": "oneclick", "skill": "lesson-plan-generator", "skill_plugin": "competition-toolkit", "deps": ["技术方案"], "outputs": {"dir": "02_平台材料", "exts": [".md"], "note": "分节文件 + 上课教案_合集_N节.md（上传用合集）"}, "platform": {"file_type": "lesson_plan", "upload_via": "package-file", "preflight": "第N节课教案 标题切节"}, "status": "available", "notes": "每节必须打单值「对应流程」标签，取值只能来自 enums.teaching_flows；标准 12 节完整覆盖十流程。"},
+    {"type": "老师采集手册", "stage": "platform", "kind": "oneclick", "skill": "lesson-plan-generator", "skill_plugin": "competition-toolkit", "mode_hint": "只生成第 7 步老师采集手册", "deps": ["教案"], "outputs": {"dir": "02_平台材料", "naming": "<短名>_老师采集手册.md", "exts": [".md"]}, "platform": {"file_type": "teacher_guide", "upload_via": "package-file"}, "status": "available"},
+    {"type": "研究日志框架", "stage": "platform", "kind": "oneclick", "skill": "project-research-log", "skill_plugin": "competition-toolkit", "deps": ["技术方案"], "soft_deps": ["教案"], "outputs": {"dir": "02_平台材料", "naming": "research_log_scaffold_<简称>.json | <简称>_evidence_ledger.json（台账模式）+ 预览 docx", "exts": [".json", ".docx"]}, "platform": {"file_type": "research_log_scaffold|evidence_ledger", "upload_via": "package-file"}, "status": "available"},
+    {"type": "论文骨架", "stage": "platform", "kind": "oneclick", "skill": "competition-paper-generator", "skill_plugin": "competition-toolkit", "mode_hint": "骨架模式", "deps": ["技术方案"], "outputs": {"dir": "02_平台材料", "naming": "<短名>_论文骨架.md + <短名>_evidence_ledger.json + <短名>_论文效果预览.docx", "exts": [".md", ".json", ".docx"]}, "platform": {"file_type": "paper_skeleton_md|evidence_ledger|paper_preview_docx", "upload_via": "package-file"}, "status": "available"},
+    {"type": "材料清单", "stage": "platform", "kind": "oneclick", "skill": "idea-to-build", "skill_plugin": "hardware-toolkit", "mode_hint": "材料采购清单", "deps": [], "outputs": {"dir": "01_立项定题", "exts": [".xlsx", ".md"]}, "platform": {"file_type": "bom", "upload_via": "package-file"}, "status": "available"},
+    {"type": "图表", "stage": "platform", "kind": "oneclick", "skill": "project-drawio-generator", "skill_plugin": "competition-toolkit", "deps": [], "outputs": {"dir": "03_研发工作区", "exts": [".drawio", ".png", ".svg"]}, "platform": {"file_type": "design", "upload_via": "package-file"}, "status": "available"},
+    {"type": "课件", "stage": "platform", "kind": "oneclick", "skill": "courseware-generator", "skill_plugin": "competition-toolkit", "deps": ["教案"], "soft_deps": ["技术方案", "辅导手册"], "outputs": {"dir": "02_平台材料/课件/specs", "naming": "lesson{N}.json（平台 strict schema：lessonNo/title/flowNo?/teachingBrief/slides[]）", "exts": [".json"]}, "platform": {"file_type": null, "upload_via": "courseware", "note": "教师平台课件上传（写 project_lessons，origin=uploaded），回执 已发布 n 节"}, "status": "available", "notes": "skill courseware-generator 于 2026-08-17 交付进 competition-toolkit（v16 把这句话放在 status_note 里，v17 移到 notes，status 只留状态值）。"},
+    {"type": "研究方案", "stage": "sprint", "kind": "oneclick", "skill": "research-proposal-generator", "skill_plugin": "competition-toolkit", "deps": ["技术方案"], "outputs": {"dir": "07_竞赛提交", "exts": [".docx"]}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"},
+    {"type": "论文", "stage": "sprint", "kind": "oneclick", "skill": "competition-paper-generator", "skill_plugin": "competition-toolkit", "mode_hint": "装配模式（需结题素材包）", "deps": ["论文骨架"], "soft_deps": ["研究日志框架", "原始资料"], "outputs": {"dir": "07_竞赛提交", "exts": [".docx"]}, "platform": {"file_type": "paper_final_docx", "upload_via": "none"}, "status": "available", "notes": "论文图不自动嵌、要人工组装——图多且图文编号要严格对应，自动放会错位。这是刻意保留的人工把关点。缺素材如实标注，不许用编造内容填坑。"},
+    {"type": "原始资料", "stage": "sprint", "kind": "oneclick", "skill": "research-material-templates", "skill_plugin": "competition-toolkit", "deps": ["技术方案"], "outputs": {"dir": "07_竞赛提交", "exts": [".docx"]}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"},
+    {"type": "照片清单", "stage": "sprint", "kind": "oneclick", "skill": "photo-checklist-generator", "skill_plugin": "competition-toolkit", "deps": [], "outputs": {"dir": "07_竞赛提交", "exts": [".docx"]}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"},
+    {"type": "答辩PPT", "stage": "sprint", "kind": "oneclick", "skill": "presentation-generator", "skill_plugin": "competition-toolkit", "deps": ["论文"], "outputs": {"dir": "07_竞赛提交", "exts": [".pptx"]}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"},
+    {"type": "金鹏视频", "stage": "sprint", "kind": "oneclick", "skill": "jinpeng-video-ppt", "skill_plugin": "competition-toolkit", "deps": ["论文"], "outputs": {"dir": "07_竞赛提交", "exts": [".pptx", ".docx"]}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"},
+    {"type": "匿名化检查", "stage": "sprint", "kind": "oneclick", "skill": "jinpeng-anonymization-checker", "skill_plugin": "competition-toolkit", "deps": [], "outputs": {"dir": "07_竞赛提交", "naming": "匿名化检查_<日期>.md", "exts": [".md"]}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available", "notes": "只检查不改源文件。金鹏赛制要求：不得出现学生姓名、学校名称、指导教师姓名。"},
+    {"type": "提交整理打包", "stage": "sprint", "kind": "oneclick", "skill": "jinpeng-submission-organizer", "skill_plugin": "competition-toolkit", "deps": ["论文"], "outputs": {"dir": "07_竞赛提交", "exts": [".zip"]}, "platform": {"file_type": null, "upload_via": "none"}, "status": "available"}
+  ],
+  "platform_actions": [
+    {"type": "拉取平台素材", "stage": "sprint", "via": "material-export", "outputs": {"dir": "07_竞赛提交/平台素材包"}},
+    {"type": "生成课件(平台)", "stage": "platform", "via": "generate-lessons + lesson-job", "note": "保留作兜底；主路径改为 课件 JSON 直传"}
+  ],
+  "skills_not_materials": [
+    {
+      "skill": "package-sync",
+      "plugin": "competition-toolkit",
+      "purpose": "一条命令完成科创项目包的上传（教师平台上传 API，走嗅探/manifest/实验列名/台账激活校验链）与备份（NAS 项目管理/2026B端合作）。读证据台账 JSON 的 meta.files{} 当类型映射真源。",
+      "verdict": "不登记为材料",
+      "reason": "它不产出材料，是「把已有材料送出去」的分发动作，且强依赖 NAS 挂载与平台上传 token。是否作为 platform_actions 的第三项，取决于规划 §9 问题 3（教师平台项目包上传由谁做）拍板结果，M0 不自行决定。"
+    },
+    {
+      "skill": "topic-class",
+      "plugin": "competition-toolkit",
+      "purpose": "B 端「选题课」标准课材料：标准课程包（通用版，老师人手一套反复用）+ 每次开课的配发件（课题卡、学生/老师评分表、专家评审卡、立项卡）。链条位置在 topic-express 选题包与 idea-to-build 立项之间。",
+      "verdict": "不登记为材料（M3 候选）",
+      "reason": "它产出的是「课堂教具」而不是项目材料——不进任何一个项目的七目录，也不进平台项目包，落点是 B 端教学包。且它自己声明边界：不产题、不评题、不立项。真要登记需要先有第六个 stage（教学交付）；M0 不擅自扩五段，留给 M3 与 B 端产品形态一起定。"
+    },
+    {
+      "skill": "video-compress",
+      "plugin": "competition-toolkit",
+      "purpose": "ffmpeg 视频压缩/转码/人脸打码/字幕（含 Whisper 自动字幕），带金鹏/青创赛/宋赛的预设档。",
+      "verdict": "不登记为材料",
+      "reason": "通用工具，不是工作流节点：它加工别的材料产出的视频文件（如金鹏视频），没有 stage、没有依赖、没有落桶规则。属于 skill 库里的横向工具，按需被调用即可。"
+    }
+  ],
+  "board": {
+    "topic_index": {"file": "topic_index.json", "location": "NAS TOPIC_BOARD_DIR", "producer": "oneup-scripts refresh_board", "card": ["key", "title", "brief", "sources[]", "group", "dates[]", "score", "state", "files[]", "thread_id?", "project_code?", "unestablished_reason?"]},
+    "project_board": {"source": "P 卡（NASApp 看板）", "subcolumns": ["平台材料", "竞赛提交"], "actions": ["确认进入生产", "绑定教师平台项目(可选)"]}
+  },
+  "topic_rules": {
+    "note": "产题偏好准则（2026-08-21 老板拍板）：老板星级反馈 + 口述补充条款 → 大脑蒸馏草稿 → 老板确认生效；正本是 Markdown 文件、版本化、全系统唯一真源。交互面（App RLHF 页控制台，确定性按钮）与大脑面（topic_rules 工具，对话即时操作）并存，操作同一份状态；确认权只在老板。不是材料类型，不进 materials/产物清单，题索引器不得把 准则/ 下的文件当课题。",
+    "state": "brain runtime/topic-rules.json（版本/正文/草稿/历史/补充条款；runtime/topic-feedback.json 为反馈库）",
+    "doc": "产题偏好准则.md",
+    "doc_kind": "产题准则",
+    "dir": "00_产题评题/准则",
+    "app_dir": "选题工坊/准则",
+    "m4_root": "课题/00_产题评题/准则",
+    "nas_root": "/share/项目管理/00_产题评题/准则",
+    "tree": ["README.md", "产题偏好准则.md", "历史/产题偏好准则_vN.md", "草稿/产题偏好准则_草稿.md", "补充/补充条款.md"],
+    "flow": "mini 导出（状态每变即全量重写）→ project_sync 每 30 分钟拉回 Mac → 镜像到 NAS（追加式）",
+    "api": {"brain": "GET/POST /api/topic-rules", "nas": "GET/POST /api/agent/topic-rules（distill=Agent；confirm/rollback/discard/add_principle/remove_principle=管理员）"},
+    "consumers": ["brain pipeline 注入：快速产题/深度产题/单题发散（对照产出）+ 快速评题/深度评题（评分透镜）", "skill topic-express/topic-mining/topic-scoring：prompt 未注入时按 m4_root→nas_root 读正本文件", "大脑 system prompt：每轮带现行准则摘要"]
+  }
+}

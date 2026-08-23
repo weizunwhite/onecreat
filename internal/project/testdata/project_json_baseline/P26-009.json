@@ -1,0 +1,14 @@
+{
+  "code": "P26-009",
+  "short_name": "纹影观测仪",
+  "full_name": "纹影法气流观测仪",
+  "student": "学生D",
+  "needs_outsourcing": false,
+  "stage": 6,
+  "assignee": {
+    "type": "student",
+    "id": "card_test_02",
+    "name": "学生D"
+  },
+  "line": "C"
+}

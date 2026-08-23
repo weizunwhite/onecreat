@@ -1,0 +1,689 @@
+[
+  {
+    "input": "Mac散热监控",
+    "key": "mac散热监控",
+    "source": "project.json"
+  },
+  {
+    "input": "Mac散热设计",
+    "key": "mac散热设计",
+    "source": "project.json"
+  },
+  {
+    "input": "v162",
+    "key": "v162",
+    "source": "project.json"
+  },
+  {
+    "input": "v16联调2",
+    "key": "v16联调2",
+    "source": "project.json"
+  },
+  {
+    "input": "三端联调",
+    "key": "三端联调",
+    "source": "project.json"
+  },
+  {
+    "input": "动态疏散",
+    "key": "动态疏散",
+    "source": "project.json"
+  },
+  {
+    "input": "垃圾清运调度",
+    "key": "垃圾清运调度",
+    "source": "project.json"
+  },
+  {
+    "input": "天蓝极值天空色域测绘仪",
+    "key": "天蓝极值天空色域测绘仪",
+    "source": "project.json"
+  },
+  {
+    "input": "小区路灯智能防飞虫聚集与光污染控制系统",
+    "key": "小区路灯智能防飞虫聚集与光污染控制系统",
+    "source": "project.json"
+  },
+  {
+    "input": "平衡训练站",
+    "key": "平衡训练站",
+    "source": "project.json"
+  },
+  {
+    "input": "手部震颤测量仪",
+    "key": "手部震颤测量仪",
+    "source": "project.json"
+  },
+  {
+    "input": "智慧垃圾清运调度模型",
+    "key": "智慧垃圾清运调度模型",
+    "source": "project.json"
+  },
+  {
+    "input": "智能盲道导航鞋",
+    "key": "智能盲道导航鞋",
+    "source": "project.json"
+  },
+  {
+    "input": "松果仿生空气湿度可视化装置",
+    "key": "松果仿生空气湿度可视化装置",
+    "source": "project.json"
+  },
+  {
+    "input": "校园鸟类声纹多样性监测站",
+    "key": "校园鸟类声纹多样性监测站",
+    "source": "project.json",
+    "collides_with": "【校园鸟类声纹多样性监测站】"
+  },
+  {
+    "input": "渐冻患者智能化眼保健操",
+    "key": "渐冻患者智能化眼保健操",
+    "source": "project.json"
+  },
+  {
+    "input": "眼控轮椅",
+    "key": "眼控轮椅",
+    "source": "project.json"
+  },
+  {
+    "input": "种子活力",
+    "key": "种子活力",
+    "source": "project.json"
+  },
+  {
+    "input": "纹影观测仪",
+    "key": "纹影观测仪",
+    "source": "project.json"
+  },
+  {
+    "input": "路灯防虫",
+    "key": "路灯防虫",
+    "source": "project.json"
+  },
+  {
+    "input": "轮椅集成腿部康复装置",
+    "key": "轮椅集成腿部康复装置",
+    "source": "project.json"
+  },
+  {
+    "input": "还书机",
+    "key": "还书机",
+    "source": "project.json"
+  },
+  {
+    "input": "配餐台",
+    "key": "配餐台",
+    "source": "project.json"
+  },
+  {
+    "input": "飞鸟志",
+    "key": "飞鸟志",
+    "source": "project.json"
+  },
+  {
+    "input": "",
+    "key": "",
+    "source": "synthetic",
+    "collides_with": [
+      "   ",
+      "!!!???..."
+    ]
+  },
+  {
+    "input": "   ",
+    "key": "",
+    "source": "synthetic",
+    "collides_with": [
+      "",
+      "!!!???..."
+    ]
+  },
+  {
+    "input": "   前后带空白的题名\t",
+    "key": "前后带空白的题名",
+    "source": "synthetic"
+  },
+  {
+    "input": "!!!???...",
+    "key": "",
+    "source": "synthetic",
+    "collides_with": [
+      "",
+      "   "
+    ]
+  },
+  {
+    "input": "123 编号前缀 项目",
+    "key": "123编号前缀项目",
+    "source": "synthetic",
+    "collides_with": "①②③ 编号前缀 项目"
+  },
+  {
+    "input": "AI+IoT 智能垃圾桶 v2.0",
+    "key": "aiiot智能垃圾桶v20",
+    "source": "synthetic"
+  },
+  {
+    "input": "SMART TRASH BIN",
+    "key": "smarttrashbin",
+    "source": "synthetic",
+    "collides_with": [
+      "Smart Trash Bin",
+      "smart   trash　bin"
+    ]
+  },
+  {
+    "input": "Smart Trash Bin",
+    "key": "smarttrashbin",
+    "source": "synthetic",
+    "collides_with": [
+      "SMART TRASH BIN",
+      "smart   trash　bin"
+    ]
+  },
+  {
+    "input": "smart   trash　bin",
+    "key": "smarttrashbin",
+    "source": "synthetic",
+    "collides_with": [
+      "Smart Trash Bin",
+      "SMART TRASH BIN"
+    ]
+  },
+  {
+    "input": "Ⅷ 罗马数字 罗盘",
+    "key": "viii罗马数字罗盘",
+    "source": "synthetic"
+  },
+  {
+    "input": "①②③ 编号前缀 项目",
+    "key": "123编号前缀项目",
+    "source": "synthetic",
+    "collides_with": "123 编号前缀 项目"
+  },
+  {
+    "input": "《会追太阳的自清洁太阳能板》",
+    "key": "会追太阳的自清洁太阳能板",
+    "source": "synthetic",
+    "collides_with": [
+      "会追太阳的自清洁太阳能板",
+      "会追太阳的自清洁太阳能板 "
+    ]
+  },
+  {
+    "input": "【校园鸟类声纹多样性监测站】",
+    "key": "校园鸟类声纹多样性监测站",
+    "source": "synthetic",
+    "collides_with": "校园鸟类声纹多样性监测站"
+  },
+  {
+    "input": "㍿ 株式会社 传感器",
+    "key": "株式会社株式会社传感器",
+    "source": "synthetic"
+  },
+  {
+    "input": "会追太阳的自清洁太阳能板 ",
+    "key": "会追太阳的自清洁太阳能板",
+    "source": "synthetic",
+    "collides_with": [
+      "会追太阳的自清洁太阳能板",
+      "《会追太阳的自清洁太阳能板》"
+    ]
+  },
+  {
+    "input": "太阳能板!?~·—…（试验）",
+    "key": "太阳能板试验",
+    "source": "synthetic"
+  },
+  {
+    "input": "智能垃圾桶🚮♻️ 分类助手",
+    "key": "智能垃圾桶️分类助手",
+    "source": "synthetic"
+  },
+  {
+    "input": "會追太陽的自清潔太陽能板",
+    "key": "會追太陽的自清潔太陽能板",
+    "source": "synthetic"
+  },
+  {
+    "input": "校园鸟类声纹多样性监测站（2026-07-10）",
+    "key": "校园鸟类声纹多样性监测站20260710",
+    "source": "synthetic"
+  },
+  {
+    "input": "超长题名：面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台",
+    "key": "超长题名面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台面向青少年科技创新竞赛的多模态传感融合与边缘推理一体化教学实验平台",
+    "source": "synthetic"
+  },
+  {
+    "input": "ＡＢＣ１２３ ａｂｃ",
+    "key": "abc123abc",
+    "source": "synthetic"
+  },
+  {
+    "input": "ＡＩ ｖｓ 体育老师：投篮动作纠正对照",
+    "key": "aivs体育老师投篮动作纠正对照",
+    "source": "synthetic",
+    "collides_with": "AI vs 体育老师：投篮动作纠正对照"
+  },
+  {
+    "input": "ｶﾞﾝﾀﾞﾑ 半角片假名",
+    "key": "ガンダム半角片假名",
+    "source": "synthetic"
+  },
+  {
+    "input": "AI vs 体育老师：投篮动作纠正对照",
+    "key": "aivs体育老师投篮动作纠正对照",
+    "source": "产题frontmatter",
+    "collides_with": "ＡＩ ｖｓ 体育老师：投篮动作纠正对照"
+  },
+  {
+    "input": "H + M",
+    "key": "hm",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "一款适老化智能空调轮椅的设计（一等奖）",
+    "key": "一款适老化智能空调轮椅的设计一等奖",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "一种适用于无人机的仿生环翼降噪螺旋桨",
+    "key": "一种适用于无人机的仿生环翼降噪螺旋桨",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "书法握笔/运笔姿势视觉纠正器",
+    "key": "书法握笔运笔姿势视觉纠正器",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "体育器材紧固件松动检测装置",
+    "key": "体育器材紧固件松动检测装置",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "写作业趴桌→驼背/近视（2026-07-17）",
+    "key": "写作业趴桌驼背近视20260717",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "可移动球门/篮球架倾覆风险检测装置",
+    "key": "可移动球门篮球架倾覆风险检测装置",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "图书馆占座识别提醒屏",
+    "key": "图书馆占座识别提醒屏",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "宠物猫饮食量AI监测碗",
+    "key": "宠物猫饮食量ai监测碗",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "广场舞定向音响",
+    "key": "广场舞定向音响",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "教室噪声-专注度回归预测板",
+    "key": "教室噪声专注度回归预测板",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "教辅纸张透印清晰度对书写辨识度影响定量测试仪",
+    "key": "教辅纸张透印清晰度对书写辨识度影响定量测试仪",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "校园跑道守护者——一种新型复合降温塑胶跑道研究（一等奖）",
+    "key": "校园跑道守护者一种新型复合降温塑胶跑道研究一等奖",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "浇水量对照植物生长观察箱",
+    "key": "浇水量对照植物生长观察箱",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "猫脱毛（2026-07-17）",
+    "key": "猫脱毛20260717",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "盲道占用视觉巡检记录仪",
+    "key": "盲道占用视觉巡检记录仪",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "直饮水机滤芯老化-出水浊度时序监测仪",
+    "key": "直饮水机滤芯老化出水浊度时序监测仪",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "科技创新项目 · 选题建议（小学中低年级 / 3 年级）",
+    "key": "科技创新项目选题建议小学中低年级3年级",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "老人鞋防滑性能测试台（承接 v1）",
+    "key": "老人鞋防滑性能测试台承接v1",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "色弱电路色码触觉辅助器",
+    "key": "色弱电路色码触觉辅助器",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "观察作业单：校园场景（小学 4-6 年级 · 一周 · 通用版）",
+    "key": "观察作业单校园场景小学46年级一周通用版",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "课桌椅-身高匹配度快速普查装置",
+    "key": "课桌椅身高匹配度快速普查装置",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "跟学校有关",
+    "key": "跟学校有关",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "防水雾干扰PM2.5检测仪",
+    "key": "防水雾干扰pm25检测仪",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "食堂后厨卫生AI巡检仪",
+    "key": "食堂后厨卫生ai巡检仪",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "黑板槽负压吸尘装置",
+    "key": "黑板槽负压吸尘装置",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "🚀 50个高含金量初中生工程发明类课题",
+    "key": "50个高含金量初中生工程发明类课题",
+    "source": "产题frontmatter"
+  },
+  {
+    "input": "166021",
+    "key": "166021",
+    "source": "产题文件名"
+  },
+  {
+    "input": "AI方向选题指南_初中及以上",
+    "key": "ai方向选题指南初中及以上",
+    "source": "产题文件名"
+  },
+  {
+    "input": "B端_6年级",
+    "key": "b端6年级",
+    "source": "产题文件名"
+  },
+  {
+    "input": "ChatGPT课题",
+    "key": "chatgpt课题",
+    "source": "产题文件名"
+  },
+  {
+    "input": "Gemini-课题",
+    "key": "gemini课题",
+    "source": "产题文件名"
+  },
+  {
+    "input": "claude_2026-08-08_三四年级AI课题3题",
+    "key": "claude20260808三四年级ai课题3题",
+    "source": "产题文件名"
+  },
+  {
+    "input": "一种防止花粉过敏患者快速阻止的头盔",
+    "key": "一种防止花粉过敏患者快速阻止的头盔",
+    "source": "产题文件名"
+  },
+  {
+    "input": "一页纸定题单_老人关怀_三选一",
+    "key": "一页纸定题单老人关怀三选一",
+    "source": "产题文件名"
+  },
+  {
+    "input": "会追太阳的自清洁太阳能板",
+    "key": "会追太阳的自清洁太阳能板",
+    "source": "产题文件名",
+    "collides_with": [
+      "《会追太阳的自清洁太阳能板》",
+      "会追太阳的自清洁太阳能板 "
+    ]
+  },
+  {
+    "input": "偏振光",
+    "key": "偏振光",
+    "source": "产题文件名"
+  },
+  {
+    "input": "初中",
+    "key": "初中",
+    "source": "产题文件名"
+  },
+  {
+    "input": "忘记吃药",
+    "key": "忘记吃药",
+    "source": "产题文件名"
+  },
+  {
+    "input": "校园场景_12课题",
+    "key": "校园场景12课题",
+    "source": "产题文件名"
+  },
+  {
+    "input": "校园场景_六年级_20课题",
+    "key": "校园场景六年级20课题",
+    "source": "产题文件名"
+  },
+  {
+    "input": "校园无人机_六年级",
+    "key": "校园无人机六年级",
+    "source": "产题文件名"
+  },
+  {
+    "input": "水运仪象台",
+    "key": "水运仪象台",
+    "source": "产题文件名"
+  },
+  {
+    "input": "社会价值类",
+    "key": "社会价值类",
+    "source": "产题文件名"
+  },
+  {
+    "input": "老人关怀_校园联结_12课题",
+    "key": "老人关怀校园联结12课题",
+    "source": "产题文件名"
+  },
+  {
+    "input": "观察作业单_校园无人机_六年级",
+    "key": "观察作业单校园无人机六年级",
+    "source": "产题文件名"
+  },
+  {
+    "input": "观察作业单_老人关怀_通用版",
+    "key": "观察作业单老人关怀通用版",
+    "source": "产题文件名"
+  },
+  {
+    "input": "解决问题类",
+    "key": "解决问题类",
+    "source": "产题文件名"
+  },
+  {
+    "input": "选题包_对外版",
+    "key": "选题包对外版",
+    "source": "产题文件名"
+  },
+  {
+    "input": "音乐声乐",
+    "key": "音乐声乐",
+    "source": "产题文件名"
+  },
+  {
+    "input": "App立项",
+    "key": "app立项",
+    "source": "未立项目录"
+  },
+  {
+    "input": "低功耗传感网络",
+    "key": "低功耗传感网络",
+    "source": "未立项目录"
+  },
+  {
+    "input": "功耗显微镜",
+    "key": "功耗显微镜",
+    "source": "未立项目录"
+  },
+  {
+    "input": "昆虫趋光行为平台",
+    "key": "昆虫趋光行为平台",
+    "source": "未立项目录"
+  },
+  {
+    "input": "李萨如音程训练仪",
+    "key": "李萨如音程训练仪",
+    "source": "未立项目录"
+  },
+  {
+    "input": "跑道配速引导系统",
+    "key": "跑道配速引导系统",
+    "source": "未立项目录"
+  },
+  {
+    "input": "音色返听测量仪",
+    "key": "音色返听测量仪",
+    "source": "未立项目录"
+  },
+  {
+    "input": "骨折固定期肩戴式辅助机械臂",
+    "key": "骨折固定期肩戴式辅助机械臂",
+    "source": "未立项目录"
+  },
+  {
+    "input": "#102 双人担架同步冲击加速度仪",
+    "key": "102双人担架同步冲击加速度仪",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "#22 随机鼓掌→同步鼓掌临界观测台",
+    "key": "22随机鼓掌同步鼓掌临界观测台",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "#32 双耳时差声源定位训练头盔",
+    "key": "32双耳时差声源定位训练头盔",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "#87 猫砂除臭材料气敏嗅辨双指标舱",
+    "key": "87猫砂除臭材料气敏嗅辨双指标舱",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "可移动球门倾覆风险检测装置",
+    "key": "可移动球门倾覆风险检测装置",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "家用握力趋势记录装置",
+    "key": "家用握力趋势记录装置",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "批1#4 外卖保温箱温保效能测绘仪",
+    "key": "批14外卖保温箱温保效能测绘仪",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "课桌椅-身高匹配度普查装置",
+    "key": "课桌椅身高匹配度普查装置",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "课题评分报告：基于溴麝香草酚蓝（BTB）颜色梯度识别的酵母菌无氧呼吸速率监测仪",
+    "key": "课题评分报告基于溴麝香草酚蓝btb颜色梯度识别的酵母菌无氧呼吸速率监测仪",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "走 idea-to-build ② 联网深度查新",
+    "key": "走ideatobuild2联网深度查新",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "量筒读数视差消除器与误差量化台",
+    "key": "量筒读数视差消除器与误差量化台",
+    "source": "评题frontmatter"
+  },
+  {
+    "input": "166041",
+    "key": "166041",
+    "source": "评题文件名"
+  },
+  {
+    "input": "2026-07-10_grok课题",
+    "key": "20260710grok课题",
+    "source": "评题文件名"
+  },
+  {
+    "input": "五年级校园",
+    "key": "五年级校园",
+    "source": "评题文件名"
+  },
+  {
+    "input": "图像取色RGB滴定调色标定装置",
+    "key": "图像取色rgb滴定调色标定装置",
+    "source": "评题文件名"
+  },
+  {
+    "input": "定题单_三选一直接可用",
+    "key": "定题单三选一直接可用",
+    "source": "评题文件名"
+  },
+  {
+    "input": "定题单_五年级校园五选一",
+    "key": "定题单五年级校园五选一",
+    "source": "评题文件名"
+  },
+  {
+    "input": "循线导航地铁轮椅接驳车",
+    "key": "循线导航地铁轮椅接驳车",
+    "source": "评题文件名"
+  },
+  {
+    "input": "循线导航地铁轮椅接驳车_六年级",
+    "key": "循线导航地铁轮椅接驳车六年级",
+    "source": "评题文件名"
+  },
+  {
+    "input": "橡皮消字率定量测试台",
+    "key": "橡皮消字率定量测试台",
+    "source": "评题文件名"
+  },
+  {
+    "input": "轮椅惯性测量路况记录仪",
+    "key": "轮椅惯性测量路况记录仪",
+    "source": "评题文件名"
+  },
+  {
+    "input": "轮椅惯性测量路况记录仪_六年级",
+    "key": "轮椅惯性测量路况记录仪六年级",
+    "source": "评题文件名"
+  },
+  {
+    "input": "酵母无氧呼吸BTB监测仪",
+    "key": "酵母无氧呼吸btb监测仪",
+    "source": "评题文件名"
+  }
+]

@@ -1,0 +1,14 @@
+{
+  "code": "P26C-020",
+  "short_name": "飞鸟志",
+  "full_name": "校园鸟类声纹多样性监测站",
+  "student": "学生E",
+  "line": "C",
+  "assignee": {
+    "type": "student",
+    "id": "card_test_04",
+    "name": "学生E"
+  },
+  "needs_outsourcing": false,
+  "stage": 3
+}

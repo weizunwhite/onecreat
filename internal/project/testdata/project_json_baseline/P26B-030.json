@@ -1,0 +1,14 @@
+{
+  "code": "P26B-030",
+  "short_name": "追光清洁板",
+  "full_name": "会追太阳的自清洁太阳能板",
+  "student": "机构A",
+  "line": "B",
+  "assignee": {
+    "type": "org",
+    "id": "card_test_03",
+    "name": "机构A"
+  },
+  "needs_outsourcing": false,
+  "stage": 3
+}
