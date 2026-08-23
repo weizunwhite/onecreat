@@ -17,13 +17,21 @@ export type EventKind =
   | "turn_done"
   | "compaction_started"
   | "compaction_done"
-  | "mcp_surface_ready";
+  | "mcp_surface_ready"
+  | "workflow_material";
 
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"
   messages?: number; // done: how many messages were folded into the summary
   summary?: string; // done: the briefing (empty on an aborted pass)
   archive?: string; // done: archive path, if any
+}
+
+// WireWorkflow 是一次科创材料作业的一帧进度(kind: "workflow_material")。
+export interface WireWorkflow {
+  material: string; // 材料类型,如 "技术方案"
+  phase: string; // started / succeeded / failed
+  detail?: string; // 一句人话
 }
 
 export interface WireTool {
@@ -107,6 +115,7 @@ export interface WireEvent {
   approval?: WireApproval;
   ask?: WireAsk;
   compaction?: WireCompaction;
+  workflow?: WireWorkflow;
   err?: string;
 }
 

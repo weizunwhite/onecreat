@@ -30,6 +30,7 @@ import (
 	"reasonix/internal/lsp"
 	"reasonix/internal/memory"
 	"reasonix/internal/netclient"
+	"reasonix/internal/nilutil"
 	"reasonix/internal/outputstyle"
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
@@ -134,6 +135,19 @@ type Options struct {
 	// Engine 显式指定本次装配用哪个回合引擎("native" / "dsh"),覆盖配置与
 	// ONECREAT_ENGINE。空串 = 按 engineName 的优先级解析。
 	Engine string
+	// Gate 让装配层为这次会话换上**更严**的工具门禁,替代按配置构建的那个。
+	//
+	// 存在的理由只有一个:科创材料作业(`reasonix workflow gen`)是无人值守的批量
+	// 生成,它的门禁口径与交互式会话根本不同——没有 ask,只有 allow/deny(M2 拍板 1,
+	// 见 docs/科创工作流迁移/06_M2执行方案.md §1)。那是一次**性质不同的会话**,不是
+	// 用户配置的偏好,所以它不该、也不能写进 onecreat.toml 的 [permissions]。
+	//
+	// nil = 按 cfg.Permissions 构建默认门禁,也就是既有行为;这里没有"关掉门禁"的
+	// 取值——一个能被一行配置关掉的门不是门(见 CLAUDE.md 引擎段)。装进来的门禁对
+	// **两条引擎路径同时生效**:native 走 executor 的 toolpolicy 流水线,dsh 走
+	// dshDecider,而后者用的就是同一条流水线的同一个 Gate。子代理(task / skill)
+	// 也继承它,否则收紧的门禁可以被"派个子代理去做"绕过去。
+	Gate agent.Gate
 	// Workspace is the project directory this runtime works in. Everything
 	// workspace-scoped — project config, .mcp.json, memory, skills, the file
 	// tools' relative-path root, bash's working directory, CodeGraph and plugin
@@ -478,7 +492,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// Sub-agents always run headless: they have no UI to answer a prompt, so they
 	// inherit this same gate.
 	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
-	headlessGate := permission.NewGate(policy, nil)
+	var headlessGate agent.Gate = permission.NewGate(policy, nil)
+	// 装配层装进来的更严门禁(材料作业专用)整体替代配置门禁,并顺着 headlessGate
+	// 这一个变量流到 executor / task / skill 三处——它们本来就该是同一个门。
+	if !nilutil.IsNil(opts.Gate) {
+		headlessGate = opts.Gate
+	}
 
 	// Hooks: load the global settings.json plus the project's (only when trusted —
 	// project hooks run arbitrary shell commands, so cloning a repo must not

@@ -48,7 +48,15 @@ type Event struct {
 	Approval   *Approval   `json:"approval,omitempty"`
 	Ask        *Ask        `json:"ask,omitempty"`
 	Compaction *Compaction `json:"compaction,omitempty"`
+	Workflow   *Workflow   `json:"workflow,omitempty"`
 	Err        string      `json:"err,omitempty"`
+}
+
+// Workflow 是 event.Workflow 的 wire 形态:科创材料作业的一帧进度。
+type Workflow struct {
+	Material string `json:"material"`
+	Phase    string `json:"phase"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // Compaction is the JSON form of an event.Compaction. On a compaction_started
@@ -138,6 +146,7 @@ var KindNames = map[event.Kind]string{
 	event.CompactionDone:    "compaction_done",
 	event.ToolProgress:      "tool_progress",
 	event.MCPSurfaceReady:   "mcp_surface_ready", // 漏了它 → MCP phase B 完成时前端收到 kind:"" 被丢弃(E8)
+	event.WorkflowMaterial:  "workflow_material",
 }
 
 // EncodeAsk converts an event.Ask into its transport form.
@@ -199,6 +208,10 @@ func Encode(e event.Event) Event {
 		w.Compaction = &Compaction{
 			Trigger: e.Compaction.Trigger, Messages: e.Compaction.Messages,
 			Summary: e.Compaction.Summary, Archive: e.Compaction.Archive,
+		}
+	case event.WorkflowMaterial:
+		w.Workflow = &Workflow{
+			Material: e.Workflow.Material, Phase: e.Workflow.Phase, Detail: e.Workflow.Detail,
 		}
 	case event.TurnDone:
 		if e.Err != nil {

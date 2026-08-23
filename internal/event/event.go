@@ -73,6 +73,12 @@ const (
 	// status without polling. Text carries "<server>: <surface> ready (<count>
 	// items)". Appended last to keep the Kind values before it wire-stable.
 	MCPSurfaceReady
+	// WorkflowMaterial 报告一次「材料作业」的进度(Workflow: Material/Phase/Detail)。
+	// 科创工作流把一种材料的生成当成一整轮会话来跑,这个 Kind 是那一轮在事件流里的
+	// 骨架:开始 / 成功 / 失败各一帧,M4 的科创工作台按它渲染流水线进度。默认 durable
+	// ——它带的是消费者等不到下一帧就补不回来的状态。追加在末尾,保持前面的 Kind 值
+	// 在 wire 上稳定。
+	WorkflowMaterial
 )
 
 // Level classifies a Notice so sinks can style or filter it.
@@ -157,6 +163,17 @@ type Compaction struct {
 	Archive  string // Done: path the dropped originals were archived to ("" if none)
 }
 
+// Workflow 是 WorkflowMaterial 事件的载荷:哪种材料、走到哪个阶段、一句人话细节。
+//
+// 故意只有三个字符串:材料作业的权威账本是 .onecreat/workflow.jsonl(领域层写),
+// 事件流只负责"让人看见现在在跑什么",不承担对账职责——把产物清单、重试次数这类
+// 账目也塞进事件,就会出现第二份真源。
+type Workflow struct {
+	Material string // 材料类型(注册表 materials[].type),如 "技术方案"
+	Phase    string // 阶段:started / succeeded / failed(与 journal 的动词同源)
+	Detail   string // 一句人话,如 "超时 20m0s" / "写入 2 个文件"
+}
+
 // AskAnswer is the user's reply to one AskQuestion: the chosen option label(s)
 // (a free-typed answer is carried as a single Selected entry).
 type AskAnswer struct {
@@ -184,6 +201,7 @@ type Event struct {
 	Ask         Ask        // AskRequest
 	Err         error      // TurnDone: non-nil on failure
 	Compaction  Compaction // Compaction
+	Workflow    Workflow   // WorkflowMaterial
 }
 
 // Sink consumes a turn's events. The agent calls Emit serially from its run

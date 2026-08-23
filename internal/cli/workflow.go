@@ -23,10 +23,11 @@ const defaultKetiRoot = "/Users/localwork/课题"
 // projectsSubDir 是课题根下的在研项目目录名（topic 包内部也认这个名字）。
 const projectsSubDir = "01_在研项目"
 
-// workflowCommand backs `reasonix workflow` —— 科创工作流的只读查询入口。
+// workflowCommand backs `reasonix workflow` —— 科创工作流入口。
 //
-// 本期（M1）只有两条只读子命令：scan 看全库、status 看单个项目的材料齐备度。
-// 它**不写任何文件**，也不发号。
+// scan / status 是只读查询（M1）：**不写任何文件**，也不发号。
+// gen 是一键生成一种材料（M2）：它会跑模型、会往项目目录里写文件，所以它单独守着
+// 一条红线 —— 真实课题目录默认拒绝，`--allow-real` 才放行（06 执行方案 §1 拍板 2）。
 func workflowCommand(args []string) int {
 	sub := ""
 	if len(args) > 0 {
@@ -37,6 +38,8 @@ func workflowCommand(args []string) int {
 		return workflowScan(args[1:])
 	case "status":
 		return workflowStatus(args[1:])
+	case "gen":
+		return workflowGen(args[1:])
 	case "", "help", "-h", "--help":
 		workflowUsage()
 		return 0
@@ -48,25 +51,35 @@ func workflowCommand(args []string) int {
 }
 
 func workflowUsage() {
-	fmt.Printf(`reasonix workflow —— 科创工作流只读查询
+	fmt.Printf(`reasonix workflow —— 科创工作流
 
 用法：
   reasonix workflow scan   [--root 课题根] [--json]        扫全库：项目清单 + 题库三态计数
   reasonix workflow status <编号或短名> [--root 课题根] [--json]
                                                           看单个项目的材料齐备度
+  reasonix workflow gen <编号或短名> <材料名> [flags]      一键生成一种材料（会写文件）
+      --engine native|dsh   回合引擎，默认 native
+      --mode 快速|深度      档位，默认取注册表 default_mode
+      --note "..."          附加说明，附在 prompt 末尾
+      --dry-run             只打印装配结果，不跑模型、不写文件
+      --allow-real          允许写真实课题目录（默认拒绝）
 
 说明：
   --root  课题库根目录，默认 %s
   --json  输出机器可读格式（给脚本用；人看就别加）
 
-两条子命令**全程只读**：不建目录、不改名、不写任何文件。
+scan / status **全程只读**：不建目录、不改名、不写任何文件。
 材料齐备度按注册表的落桶目录 + 扩展名 + 命名关键词三重条件判定，
 宁可漏判（报缺失）也不误判；判不了的材料标 ? 而不是假装判过。
+
+gen 的门禁是材料作业专用口径：项目目录内文件读写 allow、bash 只允许 mkdir/ls，
+其余（联网、子代理、提问、目录外路径）一律 deny —— 没有 ask，无人值守也不会静默放行。
 
 示例：
   reasonix workflow scan
   reasonix workflow status P26C-020
   reasonix workflow status 飞鸟志 --json
+  reasonix workflow gen P26C-020 技术方案 --dry-run
 `, defaultKetiRoot)
 }
 

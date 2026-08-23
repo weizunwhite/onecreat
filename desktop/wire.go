@@ -16,6 +16,7 @@ type wireAsk = eventwire.Ask
 type wireTool = eventwire.Tool
 type wireUsage = eventwire.Usage
 type wireApproval = eventwire.Approval
+type wireWorkflow = eventwire.Workflow
 
 var kindNames = eventwire.KindNames
 
