@@ -659,7 +659,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Scope:        sess,
 		SystemPrompt: sysPrompt,
 		Registry:     reg,
-		Session:      execSess,
+		SessionFunc:  executor.Session,
 		Ledger:       executor.Policy().Evidence,
 		Pipeline:     executor.Policy(),
 	})

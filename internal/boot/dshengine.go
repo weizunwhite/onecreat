@@ -61,8 +61,11 @@ type dshEngineDeps struct {
 	SystemPrompt string
 	CWD          string
 	Registry     *tool.Registry
-	Session      *agent.Session
-	Ledger       *evidence.Ledger
+	// SessionFunc 现取当前的 Go 会话镜像(executor.Session 方法值)。必须传函数:
+	// Controller 的 NewSession / Resume 会换掉 executor 里的会话对象,指针快照会让
+	// 引擎写进已弃用的旧会话,History 只剩系统提示。
+	SessionFunc func() *agent.Session
+	Ledger      *evidence.Ledger
 	// Pipeline 是工具策略流水线(plan mode / 权限 / hook / 检查点),
 	// dsh 的预执行钩子直接走它,不另起一套门禁。
 	Pipeline *toolpolicy.Pipeline
@@ -124,7 +127,7 @@ func buildDSHEngine(deps dshEngineDeps) (*dsh.Engine, error) {
 		TierFunc:       dshTierFunc(gw, gateway),
 		HardwareMCP:    resolveHardwareMCPBin(),
 		SessionRoot:    filepath.Join(config.SessionDir(), "dsh"),
-		Session:        deps.Session,
+		SessionFunc:    deps.SessionFunc,
 		Ledger:         dshRecorder(deps.Ledger),
 		Tools:          dshToolInvoker(deps.Registry, deps.Ledger),
 		Decide:         dshDecider(deps.Pipeline, deps.Registry),

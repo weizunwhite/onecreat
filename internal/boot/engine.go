@@ -44,8 +44,9 @@ type engineSpec struct {
 	SystemPrompt string
 	// Registry 是 Go 侧工具注册表,工具桥用(complete_step 由 Go 执行)。
 	Registry *tool.Registry
-	// Session 是 Go 侧消息镜像,引擎每轮把 user/assistant 文本投影进去。
-	Session *agent.Session
+	// SessionFunc 现取 Go 侧消息镜像,引擎每轮把 user/assistant 文本投影进去。
+	// 是函数不是指针:Controller 的 NewSession / Resume 会换掉 executor 的会话对象。
+	SessionFunc func() *agent.Session
 	// Ledger 是证据账本(经 dshRecorder 包成注入闭包后交给引擎)。
 	Ledger *evidence.Ledger
 	// Pipeline 是工具策略流水线,dsh 的预执行钩子经 dshDecider 走它。
@@ -95,7 +96,7 @@ func selectEngine(ctx context.Context, spec engineSpec) (engine.TurnEngine, erro
 			SystemPrompt: spec.SystemPrompt,
 			CWD:          spec.Root,
 			Registry:     spec.Registry,
-			Session:      spec.Session,
+			SessionFunc:  spec.SessionFunc,
 			Ledger:       spec.Ledger,
 			Pipeline:     spec.Pipeline,
 			Gateway:      spec.Gateway,

@@ -122,10 +122,15 @@ type Options struct {
 	HardwareMCP string
 	// SessionRoot 是 dsh 自己的会话 store 目录。
 	SessionRoot string
-	// Session 是 Go 侧的消息镜像:引擎在每轮结束把 user/assistant 文本写进去,
+	// SessionFunc 现取 Go 侧的消息镜像:引擎在每轮结束把 user/assistant 文本写进去,
 	// 于是 History / 会话落盘 / 会话标题 / 前端恢复全都照旧工作。
 	// dsh 自己的 store 仍是模型可见历史的真源,这里只是投影(只读用途)。
-	Session *agent.Session
+	//
+	// 传取值函数而不是指针快照:Controller 的 NewSession / Resume 会把 executor 里的
+	// 会话换成**新对象**(control/controller.go 的 SetSession、session_store.go 的
+	// Adopt),只持有装配时的旧指针会让镜像继续写进已弃用的会话,History 于是只剩
+	// 系统提示(2026-08 实测坑,与 APIKeyFunc 同理)。
+	SessionFunc func() *agent.Session
 	// Tools 是工具桥的 Go 侧执行函数。
 	Tools ToolInvoker
 	// Approver 是审批桥的 Go 侧回调。nil = 非交互(headless),与 native 的
@@ -467,9 +472,7 @@ func (e *Engine) Run(ctx context.Context, input string) error {
 		e.mu.Unlock()
 	}()
 
-	if e.opts.Session != nil {
-		e.opts.Session.Add(provider.Message{Role: provider.RoleUser, Content: input})
-	}
+	e.mirrorUser(input)
 
 	if err := rpc.Call(ctx, MethodSessionPrompt, SessionPromptParams{
 		SessionID:     sid,
@@ -508,6 +511,22 @@ func (e *Engine) wrapErr(err error) error {
 	return fmt.Errorf("%w (sidecar: %s)", err, tail)
 }
 
+// session 现取当前的 Go 会话镜像(见 Options.SessionFunc 的注释:必须每次现取,
+// 不能持有装配时的指针快照)。
+func (e *Engine) session() *agent.Session {
+	if e.opts.SessionFunc == nil {
+		return nil
+	}
+	return e.opts.SessionFunc()
+}
+
+// mirrorUser 把用户输入写进 Go 会话镜像。只在 Run 的 goroutine 上调用。
+func (e *Engine) mirrorUser(input string) {
+	if s := e.session(); s != nil {
+		s.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	}
+}
+
 // flushPending 把本轮 dsh 侧产出的 assistant 文本写进 Go 会话镜像。只在 Run 的
 // goroutine 上调用,满足 Session 单写者纪律。
 func (e *Engine) flushPending() {
@@ -515,11 +534,12 @@ func (e *Engine) flushPending() {
 	msgs := e.pending
 	e.pending = nil
 	e.mu.Unlock()
-	if e.opts.Session == nil {
+	s := e.session()
+	if s == nil {
 		return
 	}
 	for _, m := range msgs {
-		e.opts.Session.Add(m)
+		s.Add(m)
 	}
 }
 
