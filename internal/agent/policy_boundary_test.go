@@ -27,6 +27,12 @@ var productPolicyPackages = []string{
 	"reasonix/internal/checkpoint",
 	"reasonix/internal/hook",
 	"reasonix/internal/billing",
+	// 科创工作流的四个领域包（L4）：模型循环同样不该认识它们。
+	"reasonix/internal/project",
+	"reasonix/internal/topic",
+	"reasonix/internal/numbering",
+	"reasonix/internal/workflow",
+	"reasonix/internal/workflow/registry",
 }
 
 func packageImports(t *testing.T) map[string][]string {

@@ -78,6 +78,10 @@ func Run(args []string, version string) int {
 	case "doctor":
 		configureCLIThemeFromConfigNoProbe()
 		return doctorCommand(rest, version)
+	case "workflow":
+		// 科创工作流只读查询（scan / status）。见 internal/cli/workflow.go。
+		configureCLIThemeFromConfigNoProbe()
+		return workflowCommand(rest)
 	case "version", "--version", "-v":
 		fmt.Println("reasonix", version)
 		return 0

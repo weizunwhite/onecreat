@@ -116,6 +116,12 @@ var applicationPolicyPkgs = []string{
 	"reasonix/internal/skill",
 	"reasonix/internal/tool",
 	"reasonix/internal/plugin",
+	// 科创工作流的四个领域包（L4）：引擎在它们**下面**，同样零 import。
+	"reasonix/internal/project",
+	"reasonix/internal/topic",
+	"reasonix/internal/numbering",
+	"reasonix/internal/workflow",
+	"reasonix/internal/workflow/registry",
 }
 
 // assertNoImports 断言 dir 下的非测试 .go 文件不 import 任何 banned 包。
