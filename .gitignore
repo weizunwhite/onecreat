@@ -60,3 +60,7 @@ dsh/.sessions/
 
 # 打包缓存(内置 Node 运行时的下载压缩包)
 build-cache/
+
+# Python 字节码
+__pycache__/
+*.pyc

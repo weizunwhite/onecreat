@@ -191,8 +191,8 @@ PROJECT_STAGE_NAMES = ["孵化", "立项", "生产", "发布同步", "项目协�
 - **身份文件** `project.json`（Mac 项目根目录唯一允许的散文件）。实测样本 `/Users/localwork/课题/01_在研项目/P26C-020_飞鸟志/project.json`：
   ```json
   { "code":"P26C-020", "short_name":"飞鸟志", "full_name":"校园鸟类声纹多样性监测站",
-    "student":"常思诚", "line":"C",
-    "assignee":{"type":"student","id":"card_7dd63fa21567","name":"常思诚"},
+    "student":"学生102", "line":"C",
+    "assignee":{"type":"student","id":"card_<已脱敏>","name":"学生102"},
     "needs_outsourcing":false, "stage":3 }
   ```
 - **七目录**（Mac 与 NAS `00_项目总库` 同名同构，`01_在研项目/README.md:29-41`）：
