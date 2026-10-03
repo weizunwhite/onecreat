@@ -345,7 +345,7 @@ func renderDSH(b *strings.Builder, c *Config) {
 	if d.GatewayBaseURL != "" {
 		fmt.Fprintf(b, "gateway_base_url = %q\n", d.GatewayBaseURL)
 	} else {
-		b.WriteString("# gateway_base_url = \"https://t.weizunxy.com/api/onecreat/v1\"\n")
+		b.WriteString("# gateway_base_url = \"https://t.onecreat.cn/api/onecreat/v1\"\n")
 	}
 	if d.GatewayTokenEnv != "" {
 		fmt.Fprintf(b, "gateway_token_env = %q\n", d.GatewayTokenEnv)

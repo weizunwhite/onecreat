@@ -89,7 +89,7 @@ func platformBaseURL() string {
 	if v := strings.TrimSpace(os.Getenv("ONECREAT_PLATFORM_URL")); v != "" {
 		return strings.TrimRight(v, "/")
 	}
-	return "https://t.weizunxy.com"
+	return "https://t.onecreat.cn"
 }
 
 // gatewayActive 报告当前是否处于「onecreat 网关模式」(已登录、AI 走平台网关)。判据是
